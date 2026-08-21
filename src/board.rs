@@ -226,17 +226,19 @@ impl Board {
     }
 
     pub fn get_piece(&self, x: usize, y: usize) -> Option<&PieceView> {
-        (x < 8 && y < 8)
-            .then(|| self.occ[x][y])
-            .flatten()
-            .and_then(|key| self.pieces.get(key))
+        if x >= 8 || y >= 8 {
+            return None;
+        }
+
+        self.occ[x][y].and_then(|key| self.pieces.get(key))
     }
 
     pub fn get_mut_piece(&mut self, x: usize, y: usize) -> Option<&mut PieceView> {
-        (x < 8 && y < 8)
-            .then(|| self.occ[x][y])
-            .flatten()
-            .and_then(|key| self.pieces.get_mut(key))
+        if x >= 8 || y >= 8 {
+            return None;
+        }
+
+        self.occ[x][y].and_then(|key| self.pieces.get_mut(key))
     }
 
     pub fn is_inv_attacked(&self, fut_board: &Board, by: Color, sq: Sq) -> bool {
