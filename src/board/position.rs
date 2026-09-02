@@ -32,6 +32,8 @@ impl Default for Board {
                 color,
                 inverted: false,
                 active: true,
+                can_react: false,
+                move_cancelled: false,
             };
 
             board.occ[sq.0][sq.1] = Some(id);

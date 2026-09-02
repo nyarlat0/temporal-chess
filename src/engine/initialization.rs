@@ -25,10 +25,13 @@ impl Default for Engine {
                 loop_turn: 0,
                 alive: true,
                 active: true,
+                can_react: false,
+                move_cancelled: false,
                 kind,
                 color,
                 inverted: false,
                 informed: ArrayVec::new(),
+                loop_pivots: Vec::new(),
             };
 
             // one worldline per piece, age 0 only

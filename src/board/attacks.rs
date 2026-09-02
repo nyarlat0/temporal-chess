@@ -7,7 +7,7 @@ impl Board {
         let now_board = self;
 
         // pawns
-        let dir = if matches!(by, Color::White) { 1 } else { -1 };
+        let dir = by.pawn_dir();
         for &dx in &[-1, 1] {
             if let Some(Sq(x, y)) = sq.shift(dx, -dir)
                 && let Some(p) = fut_board.get_piece(x, y)
@@ -84,7 +84,7 @@ impl Board {
         let board = self;
 
         // pawns
-        let dir = if matches!(by, Color::White) { 1 } else { -1 };
+        let dir = by.pawn_dir();
         for &dx in &[-1, 1] {
             if let Some(Sq(x, y)) = sq.shift(dx, -dir)
                 && let Some(p) = board.get_piece(x, y)

@@ -31,11 +31,11 @@ impl Engine {
     /// undoes position change of the piece
     /// and makes it active again,
     /// updates buffers and action lines after.
-    pub fn undo_mv(&mut self, mvid: MoveId) -> Result<(), EngineErr> {
+    pub fn undo_mv(&mut self, mv_id: MoveId) -> Result<(), EngineErr> {
         // Remove old move
         let mv = self
             .move_history
-            .remove(&mvid)
+            .remove(&mv_id)
             .ok_or(EngineErr::WrongMove)?;
 
         // Piv before move, undid states will be set to it

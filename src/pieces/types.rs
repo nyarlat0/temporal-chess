@@ -1,4 +1,4 @@
-use crate::engine::State;
+use crate::engine::{Castling, Move, State};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Color {
@@ -19,6 +19,13 @@ impl Color {
             Color::White
         } else {
             Color::Black
+        }
+    }
+
+    pub fn pawn_dir(&self) -> i8 {
+        match self {
+            Color::White => 1,
+            Color::Black => -1,
         }
     }
 }
@@ -63,7 +70,12 @@ pub struct PieceView {
     pub color: Color,
     pub sq: Sq,
     pub inverted: bool,
+    // piece is activated when it moves in time to a new board
     pub active: bool,
+    // piece can react if its information changes, meaning it can attack more pieces
+    pub can_react: bool,
+    // piece can re-move if its move was cancelled
+    pub move_cancelled: bool,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -98,6 +110,8 @@ impl PieceView {
             color,
             inverted,
             active,
+            can_react,
+            move_cancelled,
             loop_turn,
             ..
         } = *st;
@@ -114,6 +128,8 @@ impl PieceView {
             color,
             inverted,
             active,
+            can_react,
+            move_cancelled,
         }
     }
 
@@ -132,5 +148,59 @@ impl PieceView {
     pub fn fix_with(&mut self, piv: PieceView) {
         self.sq = piv.sq;
         self.kind = piv.kind;
+    }
+
+    pub fn is_movable(&self) -> bool {
+        self.active || self.can_react || self.move_cancelled
+    }
+
+    /// Only one piece of the same order can make a move,
+    /// the order is defined by (fut_seen, loop_turn),
+    /// but for safety we also check color.
+    pub fn same_order(&self, piv: PieceView) -> bool {
+        (self.color == piv.color)
+            && (self.fut_seen == piv.fut_seen)
+            && (self.loop_turn == piv.loop_turn)
+    }
+
+    /// Used for pretending a move only
+    pub fn apply_mv(&self, mv: Move) -> PieceView {
+        let mut new_piv = *self;
+        // Apply new position
+        new_piv.sq = mv.sq;
+        // Apply time-polarity
+        new_piv.inverted = mv.to_past;
+        // Make piece older
+        new_piv.age += 1;
+
+        // Piece-dependent state changes
+        match &mut new_piv.kind {
+            PieceKind::P { moved } => {
+                *moved = true;
+
+                if let Some(new_kind) = mv.promotion {
+                    new_piv.kind = new_kind;
+                };
+            }
+            PieceKind::R { moved } => {
+                *moved = true;
+
+                if let Some(castl) = mv.castling {
+                    let dx_from_king = match castl {
+                        // to the left from king
+                        Castling::Short => -1,
+                        // to the right from king
+                        Castling::Long => 1,
+                    };
+                    new_piv.sq = new_piv.sq.shift(dx_from_king, 0).unwrap();
+                }
+            }
+            PieceKind::K { moved } => {
+                *moved = true;
+            }
+            _ => {}
+        }
+
+        new_piv
     }
 }
