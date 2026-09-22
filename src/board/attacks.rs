@@ -47,13 +47,15 @@ impl Board {
         for &(dx, dy) in BISHOP_DIRS {
             let mut cur = sq;
             while let Some(nsq @ Sq(x, y)) = cur.shift(dx, dy) {
-                if let Some(p) = fut_board.get_piece(x, y) {
-                    if p.color == by && matches!(p.kind, PieceKind::B | PieceKind::Q) && p.inverted
-                    {
-                        return true;
-                    } else if now_board.get_piece(x, y).is_some() {
-                        break;
-                    }
+                if let Some(p) = fut_board.get_piece(x, y)
+                    && p.color == by
+                    && matches!(p.kind, PieceKind::B | PieceKind::Q)
+                    && p.inverted
+                {
+                    return true;
+                }
+                if now_board.get_piece(x, y).is_some() {
+                    break;
                 }
                 cur = nsq;
             }
@@ -63,15 +65,15 @@ impl Board {
         for &(dx, dy) in ROOK_DIRS {
             let mut cur = sq;
             while let Some(nsq @ Sq(x, y)) = cur.shift(dx, dy) {
-                if let Some(p) = fut_board.get_piece(x, y) {
-                    if p.color == by
-                        && matches!(p.kind, PieceKind::R { .. } | PieceKind::Q)
-                        && p.inverted
-                    {
-                        return true;
-                    } else if now_board.get_piece(x, y).is_some() {
-                        break;
-                    }
+                if let Some(p) = fut_board.get_piece(x, y)
+                    && p.color == by
+                    && matches!(p.kind, PieceKind::R { .. } | PieceKind::Q)
+                    && p.inverted
+                {
+                    return true;
+                }
+                if now_board.get_piece(x, y).is_some() {
+                    break;
                 }
                 cur = nsq;
             }

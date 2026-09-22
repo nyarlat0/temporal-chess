@@ -1,117 +1,161 @@
 use crate::pieces::{Color, PieceView, Sq};
 
-use super::{Castling, Engine, EngineErr, Move, MoveId};
+use super::{Castling, Engine, EngineErr, Move};
 
 impl Engine {
+    /// Commit a complete turn, including reconciliation. On error nothing changes.
     pub fn apply_new_mv(&mut self, mv: Move) -> Result<(), EngineErr> {
-        // Check that moved piece can be played
-        let piv = self.get_piv_from_mv(mv).ok_or(EngineErr::WrongPiece)?;
-        if !piv.is_movable() {
+        self.transaction(|candidate| {
+            candidate.apply_move_inner(mv)?;
+            candidate.turn = candidate.turn.opposite();
+            candidate.reconcile()?;
+            if candidate.history.moves.get(&mv.id()) != Some(&mv) {
+                return Err(EngineErr::WrongMove);
+            }
+            Ok(())
+        })
+    }
+
+    fn apply_move_inner(&mut self, mv: Move) -> Result<(), EngineErr> {
+        let piece = self.get_piv_from_mv(mv).ok_or(EngineErr::WrongPiece)?;
+        if piece.color != self.turn || !piece.can_move() {
+            return Err(EngineErr::WrongTurn);
+        }
+        if !piece.is_movable() {
             return Err(EngineErr::WrongPiece);
         }
-
-        // Check that move belongs to possible moves
-        if !self.possible_moves(piv.origin, piv.age)?.contains(&mv) {
+        if !self.possible_moves(piece.origin, piece.age)?.contains(&mv) {
             return Err(EngineErr::WrongMove);
         }
-
-        // If new move substitudes another move then remove
-        // and undo it, but only if not to_past -> to_past of the same piece,
-        // since undoing would clear the backward loop and we need to fix it,
-        // else new move will just replace old by insert
-        let mv_id = MoveId::from_piv(piv);
-        if let Some(old_mv) = self.move_history.get(&mv_id)
-            && !(old_mv.pid == mv.pid && old_mv.to_past && mv.to_past)
-        {
-            self.undo_mv(mv_id)?;
+        // The original prototype generated these moves but never built the loop.
+        // Keep the unsupported transition explicit until loop construction is defined.
+        if mv.to_past() != piece.inverted {
+            return Err(EngineErr::UnsupportedMove(
+                "changing time direction requires loop construction",
+            ));
         }
+        let rook = self.castling_rook(mv, piece)?;
 
-        // Deactivate pieces with the same order (fut_seen, loop_turn)
-        self.deact_same_order(piv)?;
-
-        // Deactivate all optionally movable pieces
-        self.deact_prev_reactable(piv.color, piv.t);
-
-        // If this move is from the last accessible t
-        // then prolongate the worldlines to build new board
-        if piv.t + 1 == self.preboards.len() {
-            self.prolongate_wlines();
+        if self.history.moves.contains_key(&mv.id()) {
+            self.undo_mv(mv.id())?;
         }
+        self.deact_same_order(piece);
+        self.deact_prev_reactable(piece.color, piece.t);
 
-        // If move is to the
-
-        // Apply new move
+        let end_t = self
+            .projection
+            .preboards
+            .last_key_value()
+            .map(|(&t, _)| t)
+            .unwrap_or(0);
+        if piece.t == end_t {
+            self.prolongate_wlines(end_t)?;
+        }
+        // An inverted endpoint may advance into an already existing board.
+        let line = &mut self.history.worldlines[piece.origin];
+        if line.len() == piece.age + 1 {
+            line.push(
+                line.last()
+                    .ok_or(EngineErr::WrongPiece)?
+                    .prolongate()
+                    .ok_or(EngineErr::WrongMove)?,
+            );
+        }
         self.fix_position(mv)?;
-
-        self.move_history.insert(mv_id, mv);
-
+        if let Some(rook) = rook {
+            self.relocate_after(rook, mv)?;
+        }
+        if let Some(square) = mv.en_passant() {
+            let victim = self
+                .projection
+                .preboards
+                .get(&piece.t)
+                .and_then(|board| board.space[square.0][square.1].first())
+                .copied()
+                .ok_or(EngineErr::WrongPiece)?;
+            self.kill_piece(victim.origin, victim.age + 1)?;
+        }
+        self.history.moves.insert(mv.id(), mv);
         Ok(())
     }
 
-    /// Applies new position to newly moved piece.
-    /// Should be used after old move undo,
-    /// but only if old move wasnt of the same piece to_past -> to_past
-    /// in order to NOT clear the backward loop, but fix it.
-    pub fn fix_position(&mut self, new_mv: Move) -> Result<(), EngineErr> {
-        // Piv before move
-        let bf_piv = self.get_piv_from_mv(new_mv).ok_or(EngineErr::WrongPiece)?;
+    pub(super) fn fix_position(&mut self, mv: Move) -> Result<(), EngineErr> {
+        let piece = self.get_piv_from_mv(mv).ok_or(EngineErr::WrongPiece)?;
+        self.relocate_after(piece, mv)
+    }
 
-        // Piv just after undid move,
-        // is used to know what posion to undo
-        let ud_piv = self
-            .get_piv_necro(bf_piv.origin, bf_piv.age + 1)
+    fn relocate_after(&mut self, piece: PieceView, mv: Move) -> Result<(), EngineErr> {
+        let line = self
+            .history
+            .worldlines
+            .get_mut(piece.origin)
             .ok_or(EngineErr::WrongPiece)?;
-
-        let wl = self
-            .wlines
-            .get_mut(bf_piv.origin)
-            .ok_or(EngineErr::WrongPiece)?;
-
-        // Apply new move to afterward states that are already in history
-        for st in wl.iter_mut().skip(bf_piv.age + 1) {
-            if (st.x, st.y) == (ud_piv.sq.0, ud_piv.sq.1) {
-                st.apply_mv(new_mv);
-            } else {
+        let next = line.get(piece.age + 1).ok_or(EngineErr::WrongPiece)?;
+        let old_square = Sq(next.x, next.y);
+        for state in line.iter_mut().skip(piece.age + 1) {
+            if Sq(state.x, state.y) != old_square {
                 break;
             }
+            state.apply_mv(mv);
         }
-
         Ok(())
     }
 
-    pub fn prolongate_wlines(&mut self) {
-        let end_t = self.preboards.len().saturating_sub(1);
-        for wl in self.wlines.iter_mut() {
-            let last_st = wl.last().unwrap();
-            if last_st.t == end_t && !last_st.inverted {
-                let new_st = last_st.prolongate();
-                wl.push(new_st);
-            }
-        }
+    pub(super) fn castling_rook(
+        &self,
+        mv: Move,
+        king: PieceView,
+    ) -> Result<Option<PieceView>, EngineErr> {
+        let Some(castling) = mv.castling() else {
+            return Ok(None);
+        };
+        let x = match castling {
+            Castling::Long => 0,
+            Castling::Short => 7,
+        };
+        let y = match king.color {
+            Color::White => 0,
+            Color::Black => 7,
+        };
+        self.projection
+            .preboards
+            .get(&mv.t)
+            .and_then(|board| {
+                board.space[x][y].iter().find(|piece| {
+                    piece.color == king.color
+                        && matches!(piece.kind, crate::pieces::PieceKind::R { .. })
+                })
+            })
+            .copied()
+            .map(Some)
+            .ok_or(EngineErr::WrongPiece)
     }
 
-    pub fn deact_same_order(&mut self, piv: PieceView) -> Result<(), EngineErr> {
-        let board = self.boards.get(&piv.t).ok_or(EngineErr::AbsentBoard)?;
-        for p in board.pieces.iter() {
-            if p.is_movable() && p.same_order(piv) {
-                self.wlines
-                    .get_mut(p.origin)
-                    .ok_or(EngineErr::WrongPiece)?
-                    .get_mut(p.age)
-                    .ok_or(EngineErr::WrongPiece)?
-                    .make_unmovable();
+    fn prolongate_wlines(&mut self, end_t: usize) -> Result<(), EngineErr> {
+        for line in &mut self.history.worldlines {
+            let last = line.last().ok_or(EngineErr::WrongPiece)?;
+            if last.t == end_t && !last.inverted {
+                line.push(last.prolongate().ok_or(EngineErr::WrongMove)?);
             }
         }
-
         Ok(())
     }
 
-    pub fn deact_prev_reactable(&mut self, of: Color, until_t: usize) {
-        for wl in self.wlines.iter_mut() {
-            for st in wl.iter_mut() {
-                if st.color == of && st.t <= until_t && st.is_react_movable() {
-                    st.make_unrectable();
+    fn deact_same_order(&mut self, piece: PieceView) {
+        for (origin, line) in self.history.worldlines.iter_mut().enumerate() {
+            for (age, state) in line.iter_mut().enumerate() {
+                if state.t == piece.t && PieceView::from_state(state, origin, age).same_order(piece)
+                {
+                    state.make_unmovable();
                 }
+            }
+        }
+    }
+
+    fn deact_prev_reactable(&mut self, side: Color, until_t: usize) {
+        for state in self.history.worldlines.iter_mut().flatten() {
+            if state.color == side && state.t <= until_t {
+                state.expire_reactions();
             }
         }
     }

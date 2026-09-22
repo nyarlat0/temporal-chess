@@ -1,268 +1,152 @@
-use std::collections::HashMap;
-
-use arrayvec::ArrayVec;
+use std::collections::{BTreeMap, HashMap};
+use std::fmt;
 
 use crate::board::{Board, PreBoard};
-use crate::pieces::{Color, PieceKind, PieceView, Sq};
+use crate::model::{Move, MoveId, PieceAt, ShortPieceId, State};
+use crate::pieces::{Color, PieceView};
 
-#[derive(Clone)]
+/// Authoritative state. Board projections and lookup tables are never stored here.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct History {
+    pub(super) worldlines: Vec<Vec<State>>,
+    pub(super) moves: BTreeMap<MoveId, Move>,
+}
+
+impl History {
+    pub fn worldlines(&self) -> &[Vec<State>] {
+        &self.worldlines
+    }
+    pub fn moves(&self) -> &BTreeMap<MoveId, Move> {
+        &self.moves
+    }
+}
+
+/// Entirely derived from History. Rebuilt together after every history mutation.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct Projection {
+    pub preboards: BTreeMap<usize, PreBoard>,
+    pub boards: BTreeMap<usize, Board>,
+    pub pieces: HashMap<PieceAt, ShortPieceId>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Engine {
-    pub wlines: Vec<Vec<State>>, // wid -> age -> state
-    pub move_history: HashMap<MoveId, Move>,
-    pub preboards: HashMap<usize, PreBoard>,
-    pub boards: HashMap<usize, Board>,
-    pub pbuf: HashMap<PieceId, ShortPieceId>, // pieceid -> (wid, age)
-    pub turn: Color,
-    pub action_lines: (Option<usize>, Option<usize>),
+    pub(super) history: History,
+    pub(super) projection: Projection,
+    pub(super) turn: Color,
 }
 
-#[derive(Clone)]
-pub struct State {
-    pub t: usize,
-    pub x: usize,
-    pub y: usize,
-    // furthest seen t
-    pub fut_seen: usize,
-    // number of time-turnes. Its incremented +1 when changing time orientation
-    // and decremented -2 when passing (t > t_loop) loop pivot
-    pub loop_turn: usize,
-    pub alive: bool,
-    // piece is activated when it moves in time to a new board
-    pub active: bool,
-    // piece can react if its information changes, meaning it can attack more pieces
-    pub can_react: bool,
-    // piece can re-move if its move was cancelled
-    pub move_cancelled: bool,
-    pub kind: PieceKind,
-    pub color: Color,
-    pub inverted: bool,
-    pub informed: ArrayVec<PieceId, 8>,
-    // points in time, on which piece inverted to and began moving to past.
-    pub loop_pivots: Vec<usize>,
+impl Engine {
+    pub fn history(&self) -> &History {
+        &self.history
+    }
+    pub fn turn(&self) -> Color {
+        self.turn
+    }
+    pub fn board(&self, t: usize) -> Option<&Board> {
+        self.projection.boards.get(&t)
+    }
+    pub fn preboard(&self, t: usize) -> Option<&PreBoard> {
+        self.projection.preboards.get(&t)
+    }
+
+    /// All currently playable occurrences, in board-time order. No board takes
+    /// priority: ordinary moves and reactions are both optional choices.
+    pub fn move_sources(&self) -> impl Iterator<Item = PieceView> + '_ {
+        self.projection
+            .boards
+            .values()
+            .flat_map(|board| board.pieces().iter().copied())
+            .filter(|piece| piece.color == self.turn && piece.can_move() && piece.is_movable())
+    }
+
+    /// Publish a command's result only after all its checks have succeeded.
+    pub(super) fn transaction<T>(
+        &mut self,
+        command: impl FnOnce(&mut Self) -> Result<T, EngineErr>,
+    ) -> Result<T, EngineErr> {
+        let mut candidate = self.clone();
+        let result = command(&mut candidate)?;
+        *self = candidate;
+        Ok(result)
+    }
 }
 
-/// Long-term identification of a move
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct MoveId {
-    pub(super) t: usize,
-    pub(super) fut_seen: usize,
-    pub(super) loop_turn: usize,
-}
-
-/// Long-term identification of a piece
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct PieceId {
-    pub wid: usize,
-    pub fut_seen: usize,
-    pub loop_turn: usize,
-}
-
-/// Short-term identification of a piece
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct ShortPieceId {
-    pub wid: usize,
-    pub age: usize,
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum Castling {
-    Long,
-    Short,
-}
-
-#[derive(Clone, Copy, PartialEq)]
-pub struct Move {
-    pub pid: PieceId,
-    pub t: usize,
-    pub sq: Sq,
-    pub to_past: bool,
-    pub castling: Option<Castling>,
-    pub en_passant: Option<Sq>,
-    pub promotion: Option<PieceKind>,
-}
-
-#[derive(Clone, Copy, PartialEq)]
-pub enum ValidRes {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ValidRes {
     HistChanged,
     Unchanged,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EngineErr {
     WrongPiece,
     AbsentBoard,
     WrongMove,
+    WrongTurn,
     InfLoop,
-    NoMoves,
+    InvalidHistory(&'static str),
+    UnsupportedMove(&'static str),
     BoardErr(BoardErr),
 }
 
-#[derive(Clone)]
+impl fmt::Display for EngineErr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::WrongPiece => f.write_str("piece occurrence is absent or cannot act"),
+            Self::AbsentBoard => f.write_str("board is unavailable"),
+            Self::WrongMove => f.write_str("move is not legal in this position"),
+            Self::WrongTurn => f.write_str("piece cannot act on this turn"),
+            Self::InfLoop => f.write_str("history reconciliation entered a cycle"),
+            Self::InvalidHistory(reason) => write!(f, "invalid history: {reason}"),
+            Self::UnsupportedMove(reason) => write!(f, "unsupported move: {reason}"),
+            Self::BoardErr(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for EngineErr {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::BoardErr(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BoardErr {
     InvalidTime,
     InvalidBoard(BoardConflict),
 }
 
-#[derive(Clone)]
+impl fmt::Display for BoardErr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidTime => f.write_str("no board at this time"),
+            Self::InvalidBoard(conflict) => {
+                write!(f, "{} pieces occupy one square", conflict.pieces().len())
+            }
+        }
+    }
+}
+
+impl std::error::Error for BoardErr {}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BoardConflict {
     pub(super) pivs: Vec<PieceView>,
 }
 
-#[derive(Clone, Copy)]
-pub struct PieceCollision {
-    pub(super) bf_collider: PieceView,
-    pub(super) collider: PieceView,
-    pub(super) collided: PieceView,
-}
-
-impl PieceId {
-    pub fn from_state(st: &State, wid: usize) -> Self {
-        Self {
-            wid,
-            fut_seen: st.fut_seen,
-            loop_turn: st.loop_turn,
-        }
-    }
-
-    pub fn from_piv(piv: PieceView) -> Self {
-        Self {
-            wid: piv.origin,
-            fut_seen: piv.fut_seen,
-            loop_turn: piv.loop_turn,
-        }
+impl BoardConflict {
+    pub fn pieces(&self) -> &[PieceView] {
+        &self.pivs
     }
 }
 
-impl ShortPieceId {
-    pub fn from_piv(piv: &PieceView) -> Self {
-        Self {
-            wid: piv.origin,
-            age: piv.age,
-        }
-    }
-}
-
-impl MoveId {
-    pub fn from_piv(piv: PieceView) -> Self {
-        Self {
-            t: piv.t,
-            fut_seen: piv.fut_seen,
-            loop_turn: piv.loop_turn,
-        }
-    }
-
-    pub fn from_state(st: &State) -> Self {
-        Self {
-            t: st.t,
-            fut_seen: st.fut_seen,
-            loop_turn: st.loop_turn,
-        }
-    }
-}
-
-impl State {
-    /// Copies everything besides info,
-    /// should be used only for boards of opposite color.
-    pub fn shallow_cp(&self) -> Self {
-        Self {
-            t: self.t,
-            x: self.x,
-            y: self.y,
-            fut_seen: self.fut_seen,
-            loop_turn: self.loop_turn,
-            alive: self.alive,
-            active: self.active,
-            can_react: self.can_react,
-            move_cancelled: self.move_cancelled,
-            kind: self.kind,
-            color: self.color,
-            inverted: self.inverted,
-            informed: ArrayVec::new(),
-            loop_pivots: self.loop_pivots.clone(),
-        }
-    }
-
-    pub fn is_movable(&self) -> bool {
-        self.active || self.can_react || self.move_cancelled
-    }
-
-    /// If the piece can react to changes in history - new info or its move cancel
-    pub fn is_react_movable(&self) -> bool {
-        self.can_react || self.move_cancelled
-    }
-
-    pub fn make_unmovable(&mut self) {
-        self.active = false;
-        self.can_react = false;
-        self.move_cancelled = false;
-    }
-
-    pub fn make_unrectable(&mut self) {
-        self.can_react = false;
-        self.move_cancelled = false;
-    }
-
-    /// Used for applying new move to the same time-oriented pieces
-    pub fn apply_mv(&mut self, mv: Move) {
-        // Apply position
-        self.x = mv.sq.0;
-        self.y = mv.sq.1;
-
-        // Piece-dependent state changes
-        match &mut self.kind {
-            PieceKind::P { moved } => {
-                *moved = true;
-
-                if let Some(new_kind) = mv.promotion {
-                    self.kind = new_kind;
-                };
-            }
-            PieceKind::R { moved } => {
-                *moved = true;
-
-                if let Some(castl) = mv.castling {
-                    let dx_from_king = match castl {
-                        // to the left from king
-                        Castling::Short => -1,
-                        // to the right from king
-                        Castling::Long => 1,
-                    };
-                    self.x = (self.x as i8 + dx_from_king) as usize;
-                }
-            }
-            PieceKind::K { moved } => {
-                *moved = true;
-            }
-            _ => {}
-        }
-    }
-
-    /// Creates a new state from the last in the world line,
-    /// OR from last in the time-loop
-    pub fn prolongate(&self) -> Self {
-        let mut new_st = self.shallow_cp();
-
-        // If its next board of the same color then make it active
-        new_st.active = Color::from_board(self.t + 1) == self.color;
-
-        // Moves backward in time if inverted and forward if isnt
-        if new_st.inverted {
-            new_st.t = new_st.t.saturating_sub(1);
-        } else {
-            new_st.t += 1;
-        }
-
-        new_st.fut_seen = new_st.fut_seen.max(new_st.t);
-
-        // If state is past pivot t then decrease loop_turn
-        if new_st
-            .loop_pivots
-            .pop_if(|pivot_t| new_st.t > *pivot_t)
-            .is_some()
-        {
-            new_st.loop_turn = new_st.loop_turn.saturating_sub(2);
-        }
-
-        new_st
-    }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct PieceCollision {
+    pub bf_collider: PieceView,
+    pub collider: PieceView,
+    pub collided: PieceView,
 }

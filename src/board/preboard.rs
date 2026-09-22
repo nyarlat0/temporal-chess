@@ -2,7 +2,7 @@ use crate::pieces::PieceView;
 
 use super::Board;
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PreBoard {
     pub t: usize,
     pub space: [[Vec<PieceView>; 8]; 8],
@@ -32,30 +32,19 @@ impl PreBoard {
             return None;
         }
 
-        let preboard = self;
-        let t = preboard.t;
-        let mut pieces = Vec::new();
-        let mut occ = [[None; 8]; 8];
-
-        for (y, row) in preboard.space.iter().enumerate() {
-            for (x, prep) in row.iter().enumerate() {
-                if prep.len() > 1 {
-                    return None;
-                } else {
-                    if let Some(p) = prep.first() {
-                        let idx = pieces.len();
-                        pieces.push(*p);
-                        occ[x][y] = Some(idx);
+        let mut board = Board::empty(self.t);
+        for (x, column) in self.space.iter().enumerate() {
+            for (y, cell) in column.iter().enumerate() {
+                if let Some(piece) = cell.first() {
+                    if piece.sq != crate::pieces::Sq(x, y) || piece.t != self.t {
+                        return None;
                     }
+                    board.add_piece(*piece);
                 }
             }
         }
 
-        Some(Board {
-            pieces,
-            occ,
-            age: t,
-        })
+        Some(board)
     }
 
     pub fn is_empty(&self) -> bool {

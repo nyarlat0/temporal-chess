@@ -1,5 +1,5 @@
 use crate::board::{Board, PreBoard};
-use crate::engine::Castling;
+use crate::model::Castling;
 
 use super::{Color, PieceKind, PieceView, Sq};
 
@@ -190,6 +190,10 @@ impl PieceView {
             Color::White => (0, 4, 2, 3, 5, 6, 0, 7),
             Color::Black => (7, 4, 2, 3, 5, 6, 0, 7),
         };
+
+        if self.sq != Sq(e, home_y) {
+            return v;
+        }
 
         // helper closures
         let empty = |x: usize| board.is_empty(Sq(x, home_y));

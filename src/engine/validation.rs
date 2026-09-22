@@ -1,112 +1,95 @@
-use crate::pieces::{Color, PieceKind};
+use crate::pieces::Sq;
 
 use super::{Engine, EngineErr, ShortPieceId, ValidRes};
 
 impl Engine {
-    /// Validates moves of alive pieces till this turn action line,
-    /// undoes invalid, removes them from history and updates buffers and action_lines.
-    pub fn validate_moves(&mut self) -> Result<ValidRes, EngineErr> {
-        let last_t = match self.turn {
-            Color::White => self.action_lines.0.ok_or(EngineErr::NoMoves)?,
-            Color::Black => self.action_lines.1.ok_or(EngineErr::NoMoves)?,
-        };
-        let mut res = ValidRes::Unchanged;
-
-        for (mv_id, mv) in self
-            .move_history
-            .clone()
-            .iter()
-            .filter(|(id, _mv)| id.t <= last_t)
-        {
-            let ShortPieceId { wid, age } = *self.pbuf.get(&mv.pid).ok_or(EngineErr::WrongPiece)?;
-            if self
-                .wlines
-                .get(wid)
-                .ok_or(EngineErr::WrongPiece)?
-                .get(age)
-                .ok_or(EngineErr::WrongPiece)?
-                .alive
-                && !self.possible_moves(wid, age)?.contains(mv)
+    /// Cancel one invalid move in chronological/causal order, then rebuild.
+    fn validate_moves(&mut self) -> Result<ValidRes, EngineErr> {
+        for (id, mv) in self.history.moves.clone() {
+            let ShortPieceId { wid, age } = *self
+                .projection
+                .pieces
+                .get(&mv.source())
+                .ok_or(EngineErr::WrongPiece)?;
+            if self.history.worldlines[wid][age].alive
+                && !self.possible_moves(wid, age)?.contains(&mv)
             {
-                res = ValidRes::HistChanged;
-                self.undo_mv(*mv_id)?;
+                self.undo_mv(id)?;
+                return Ok(ValidRes::HistChanged);
             }
         }
-
-        Ok(res)
+        Ok(ValidRes::Unchanged)
     }
 
-    pub fn mass_ressurection(&mut self) -> Result<ValidRes, EngineErr> {
-        let mut out = ValidRes::Unchanged;
-
-        for wl in self.wlines.iter_mut() {
-            let mut res_line = true;
-
-            for st in wl.iter_mut() {
-                if !st.alive {
-                    let pb = self.preboards.get(&st.t).ok_or(EngineErr::AbsentBoard)?;
-
-                    for piv in pb.space[st.x][st.y].iter() {
-                        if (piv.sq.0, piv.sq.1) == (st.x, st.y)
-                            || (matches!(piv.kind, PieceKind::P { .. })
-                                && match st.color {
-                                    Color::White => (piv.sq.0, piv.sq.1 + 1) == (st.x, st.y),
-                                    Color::Black => (piv.sq.0, piv.sq.1) == (st.x, st.y + 1),
-                                })
-                        {
-                            res_line = false;
-                        }
-                    }
-                    if res_line {
-                        out = ValidRes::HistChanged;
-                        st.alive = true;
-                    }
-                }
+    /// Restore one dead suffix whose original collision has disappeared.
+    /// Later collisions will be resolved on the next pass, from fresh boards.
+    fn resurrect(&mut self) -> Result<ValidRes, EngineErr> {
+        for line in &mut self.history.worldlines {
+            let Some(age) = line.iter().position(|state| !state.alive) else {
+                continue;
+            };
+            let state = &line[age];
+            let board = self
+                .projection
+                .preboards
+                .get(&state.t)
+                .ok_or(EngineErr::AbsentBoard)?;
+            if !board.space[state.x][state.y].is_empty() {
+                continue;
             }
+            // En passant leaves the victim's square empty, so retain its recorded cause.
+            let en_passant = self.history.moves.values().any(|mv| {
+                let arrival = mv.direction.step(mv.t);
+                mv.en_passant() == Some(Sq(state.x, state.y))
+                    && arrival == Some(state.t)
+                    && self.projection.pieces.get(&mv.source()).is_some_and(|id| {
+                        // Worldlines are mutably borrowed above; the alive mover's
+                        // source is also available in the preboard projection.
+                        self.projection
+                            .preboards
+                            .get(&mv.t)
+                            .and_then(|pb| pb.find_piv(id.wid, id.age))
+                            .is_some_and(|piece| piece.color != state.color)
+                    })
+            });
+            if en_passant {
+                continue;
+            }
+            for state in &mut line[age..] {
+                state.alive = true;
+            }
+            return Ok(ValidRes::HistChanged);
         }
-
-        Ok(out)
+        Ok(ValidRes::Unchanged)
     }
 
-    pub fn global_validation(&mut self) -> Result<(), EngineErr> {
-        let mut pb_buf = vec![];
-
+    /// Reach a fixed point of collision resolution, move validation and revival.
+    /// Cycle detection uses the source state, including dead pieces and move records.
+    pub(super) fn reconcile(&mut self) -> Result<(), EngineErr> {
+        let mut seen = Vec::new();
         loop {
-            // Stage 0 -- compare and save engine state
-
-            if pb_buf.contains(&self.preboards) {
-                // If state of engine repeats then throw infinite loop err
+            if seen.contains(&self.history) {
                 return Err(EngineErr::InfLoop);
-            } else {
-                // Else save new state
-                pb_buf.push(self.preboards.clone());
             }
-
-            // Stage 1 -- build boards
-
-            self.build_boards()?;
-
-            // Stage 2 -- validate moves
-
-            match self.validate_moves()? {
-                ValidRes::HistChanged => continue,
-                ValidRes::Unchanged => (),
+            seen.push(self.history.clone());
+            self.update_bufs()?;
+            if self.build_boards()? == ValidRes::HistChanged {
+                continue;
             }
-
-            // Stage 3 -- ressurect pieces
-
-            match self.mass_ressurection()? {
-                ValidRes::HistChanged => continue,
-                ValidRes::Unchanged => (),
+            if self.validate_moves()? == ValidRes::HistChanged {
+                continue;
             }
-
-            // Stage 4 -- update info of all pieces BUT leave action lines unchanged
-            // action lines will only point to the board on which you MUST make a move
+            if self.resurrect()? == ValidRes::HistChanged {
+                continue;
+            }
 
             self.update_infos();
-            break;
+            // Only reaction flags changed. Reproject them for all board times.
+            self.update_bufs()?;
+            if self.build_boards()? == ValidRes::HistChanged {
+                continue;
+            }
+            return Ok(());
         }
-
-        Ok(())
     }
 }

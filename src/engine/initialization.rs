@@ -1,87 +1,76 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
-use arrayvec::ArrayVec;
+use crate::pieces::{Color, Sq, initial_position};
 
-use crate::pieces::{Color, PieceKind};
-
-use super::{Engine, State};
+use super::{Engine, EngineErr, History, Projection, State};
 
 impl Default for Engine {
     fn default() -> Self {
-        // Board coordinate system:
-        // (x, y) with x=0..7 left->right, y=0..7 bottom->top.
-        // White starts at y=0/1, Black at y=7/6.
+        let worldlines = initial_position()
+            .into_iter()
+            .map(|(kind, color, sq)| vec![State::new(kind, color, sq)])
+            .collect();
+        Self::from_worldlines(worldlines, Color::White)
+            .expect("the built-in starting position is valid")
+    }
+}
 
-        let mut wlines = Vec::new();
-        let pbuf = HashMap::new();
+impl Engine {
+    /// Build a scenario from worldlines, validating and projecting it immediately.
+    pub fn from_worldlines(worldlines: Vec<Vec<State>>, turn: Color) -> Result<Self, EngineErr> {
+        Self::from_history(
+            History {
+                worldlines,
+                moves: BTreeMap::new(),
+            },
+            turn,
+        )
+    }
 
-        // Helper: create initial state at t=0, fut_seen=0, loop_turn=0.
-        let mut spawn = |kind: PieceKind, color: Color, x: usize, y: usize| {
-            let st = State {
-                t: 0,
-                x,
-                y,
-                fut_seen: 0,
-                loop_turn: 0,
-                alive: true,
-                active: true,
-                can_react: false,
-                move_cancelled: false,
-                kind,
-                color,
-                inverted: false,
-                informed: ArrayVec::new(),
-                loop_pivots: Vec::new(),
+    /// Restore an owned snapshot without trusting any cached boards or lookups.
+    pub fn from_history(history: History, turn: Color) -> Result<Self, EngineErr> {
+        for line in &history.worldlines {
+            let Some(first) = line.first() else {
+                return Err(EngineErr::InvalidHistory("empty worldline"));
             };
-
-            // one worldline per piece, age 0 only
-            wlines.push(vec![st]);
+            for state in line {
+                if !Sq(state.x, state.y).on_board() {
+                    return Err(EngineErr::InvalidHistory("square outside the board"));
+                }
+                if state.fut_seen < state.t {
+                    return Err(EngineErr::InvalidHistory("invalid temporal coordinates"));
+                }
+                if state.color != first.color {
+                    return Err(EngineErr::InvalidHistory("a worldline changes color"));
+                }
+            }
+            for pair in line.windows(2) {
+                if pair[1].fut_seen < pair[0].fut_seen {
+                    return Err(EngineErr::InvalidHistory(
+                        "future knowledge decreases along a worldline",
+                    ));
+                }
+                if !pair[0].alive && pair[1].alive {
+                    return Err(EngineErr::InvalidHistory(
+                        "a dead worldline has a live suffix",
+                    ));
+                }
+                let expected = if pair[1].inverted {
+                    pair[0].t.checked_sub(1)
+                } else {
+                    pair[0].t.checked_add(1)
+                };
+                if expected != Some(pair[1].t) {
+                    return Err(EngineErr::InvalidHistory("non-adjacent worldline states"));
+                }
+            }
+        }
+        let mut engine = Self {
+            history,
+            projection: Projection::default(),
+            turn,
         };
-
-        // --- WHITE ---
-        let w = Color::White;
-
-        // rank 0 (y=0)
-        spawn(PieceKind::R { moved: false }, w, 0, 0);
-        spawn(PieceKind::N, w, 1, 0);
-        spawn(PieceKind::B, w, 2, 0);
-        spawn(PieceKind::Q, w, 3, 0);
-        spawn(PieceKind::K { moved: false }, w, 4, 0);
-        spawn(PieceKind::B, w, 5, 0);
-        spawn(PieceKind::N, w, 6, 0);
-        spawn(PieceKind::R { moved: false }, w, 7, 0);
-
-        // rank 1 (y=1)
-        for x in 0..8 {
-            spawn(PieceKind::P { moved: false }, w, x, 1);
-        }
-
-        // --- BLACK ---
-        let b = Color::Black;
-
-        // rank 7 (y=7)
-        spawn(PieceKind::R { moved: false }, b, 0, 7);
-        spawn(PieceKind::N, b, 1, 7);
-        spawn(PieceKind::B, b, 2, 7);
-        spawn(PieceKind::Q, b, 3, 7);
-        spawn(PieceKind::K { moved: false }, b, 4, 7);
-        spawn(PieceKind::B, b, 5, 7);
-        spawn(PieceKind::N, b, 6, 7);
-        spawn(PieceKind::R { moved: false }, b, 7, 7);
-
-        // rank 6 (y=6)
-        for x in 0..8 {
-            spawn(PieceKind::P { moved: false }, b, x, 6);
-        }
-
-        Self {
-            wlines,
-            move_history: HashMap::new(),
-            preboards: HashMap::new(),
-            boards: HashMap::new(),
-            pbuf,
-            turn: Color::White,
-            action_lines: (Some(0), None),
-        }
+        engine.reconcile()?;
+        Ok(engine)
     }
 }

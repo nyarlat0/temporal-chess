@@ -1,6 +1,8 @@
 use std::cmp::min;
 
-use crate::pieces::{Color, PieceView};
+use crate::pieces::PieceView;
+
+use super::collision_rules::{CollisionEffect, collision_effects};
 
 use super::{BoardConflict, Engine, EngineErr, PieceCollision};
 
@@ -9,9 +11,10 @@ impl Engine {
     /// Is fixed by separating pieces to pairs,
     /// tracking each pair collision (root of conflict) and fixing it.
     /// This function only fixes one collision and updates global state.
-    pub fn try_fix_conflict(&mut self, mut bc: BoardConflict) -> Result<(), EngineErr> {
+    pub(super) fn try_fix_conflict(&mut self, mut bc: BoardConflict) -> Result<(), EngineErr> {
         // Sort by future seen for casuality
-        bc.pivs.sort_by_key(|a| a.fut_seen);
+        bc.pivs
+            .sort_by_key(|a| (a.fut_seen, a.loop_turn, a.origin, a.age));
 
         // Get pairs of conflicting pieces
         let piv = *bc.pivs.first().ok_or(EngineErr::WrongPiece)?;
@@ -21,85 +24,25 @@ impl Engine {
             .track_collision(piv, other_piv)
             .ok_or(EngineErr::WrongPiece)?;
 
-        let _prev_survived = Some(self.fix_collision(col, piv.t)?);
+        for effect in collision_effects(col) {
+            match effect {
+                CollisionEffect::KillFrom(id) => self.kill_piece(id.wid, id.age)?,
+                CollisionEffect::CancelLastMove(piece) => self.undo_last_mv(piece)?,
+            }
+        }
 
         Ok(())
     }
 
     /// Collision is the root of intersection of figures (aka conflict).
     /// Collision time is the first conflict time.
-    /// Method undoes move or kills piece, returns the piece that stays unchanged.
-    /// Gets conflict time as input to return correct survivor in case of mutual destruction.
-    pub fn fix_collision(
-        &mut self,
-        col: PieceCollision,
-        conf_t: usize,
-    ) -> Result<PieceView, EngineErr> {
-        let PieceCollision {
-            bf_collider,
-            collider,
-            collided,
-        } = col;
-        let surv: PieceView;
-
-        // Pieces of the same side
-        if collider.color == collided.color {
-            // In oncoming collision
-            // collider = ordinary,
-            // collided = inverted
-            if collider.inverted != collided.inverted {
-                // Inverted kills ordinary on board of its color
-                if Color::from_board(collider.t) == collider.color {
-                    self.kill_piece(collider.origin, collider.age)?;
-                    surv = collided;
-                } else {
-                    // Else undo inverted move
-                    self.undo_last_mv(collided)?;
-                    surv = collider;
-                }
-            } else {
-                // In co-directional undo collider move
-                self.undo_last_mv(collider)?;
-                surv = collided;
-            }
-        // Enemy pieces
-        } else {
-            // In oncoming collision
-            // collider = ordinary,
-            // collided = inverted
-            if collider.inverted != collided.inverted {
-                // If ordinary moved and knew future before collision
-                // then it kills inverted in collision board,
-                // but is killed after collision board
-                if bf_collider.sq != collider.sq && bf_collider.knows_future() {
-                    self.kill_piece(collided.origin, collided.age)?;
-                    self.kill_piece(collider.origin, collider.age + 1)?;
-
-                    if conf_t == collider.t {
-                        surv = collider;
-                    } else {
-                        surv = collided;
-                    }
-                } else {
-                    // Else just kill ordinary
-                    self.kill_piece(collider.origin, collider.age)?;
-                    surv = collided;
-                }
-            } else {
-                // Else collided is killed
-                self.kill_piece(collided.origin, collided.age)?;
-                surv = collider;
-            }
-        }
-
-        Ok(surv)
-    }
-
-    /// Collision is the root of intersection of figures (aka conflict).
-    /// Collision time is the first conflict time.
     /// If oncoming (inverted vs ordinary) collision,
     /// always return ordinary as collider and inv as collided.
-    pub fn track_collision(&self, piv: PieceView, other_piv: PieceView) -> Option<PieceCollision> {
+    pub(super) fn track_collision(
+        &self,
+        piv: PieceView,
+        other_piv: PieceView,
+    ) -> Option<PieceCollision> {
         // First checked for sq change is piv with
         // most future seen in case both figures move
         // at the same time
@@ -157,8 +100,8 @@ impl Engine {
             let mut prev_ord = ord;
 
             for d in 1..=ord.age {
-                let ord_bf = self.get_piv(piv.origin, piv.age.saturating_sub(d))?;
-                let mb_inv_aft = self.get_piv(other_piv.origin, other_piv.age + d);
+                let ord_bf = self.get_piv(ord.origin, ord.age.checked_sub(d)?)?;
+                let mb_inv_aft = self.get_piv(inv.origin, inv.age.checked_add(d)?);
 
                 if let Some(inv_aft) = mb_inv_aft {
                     if ord_bf.sq != ord.sq {

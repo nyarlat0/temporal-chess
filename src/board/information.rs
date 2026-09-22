@@ -1,6 +1,6 @@
-use arrayvec::ArrayVec;
+use std::collections::BTreeSet;
 
-use crate::engine::{PieceId, ShortPieceId};
+use crate::model::{PieceId, ShortPieceId};
 use crate::pieces::Color;
 
 use super::{Board, PreBoard};
@@ -11,7 +11,7 @@ impl Board {
         &self,
         opt_past: Option<&PreBoard>,
         opt_fut: Option<&PreBoard>,
-    ) -> Vec<(ShortPieceId, ArrayVec<PieceId, 8>)> {
+    ) -> Vec<(ShortPieceId, BTreeSet<PieceId>)> {
         let side = Color::from_board(self.age);
         let mut out = Vec::new();
 
@@ -19,14 +19,14 @@ impl Board {
             if p.color != side {
                 continue;
             }
-            let mut info = ArrayVec::new();
+            let mut info = BTreeSet::new();
 
             // Basic moves
             let sqs = p.basic_moves(self);
             for sq in sqs.iter() {
                 if self.is_enemy(side, *sq) {
                     let enemy = self.get_piece(sq.0, sq.1).unwrap();
-                    info.push(PieceId::from_piv(*enemy));
+                    info.insert(PieceId::from_piv(*enemy));
                 }
             }
 
@@ -35,7 +35,7 @@ impl Board {
                 let enpass_mvs = p.en_passant_moves(self, past_pboard);
                 for (_sq, eaten) in enpass_mvs {
                     let enemy = self.get_piece(eaten.0, eaten.1).unwrap();
-                    info.push(PieceId::from_piv(*enemy));
+                    info.insert(PieceId::from_piv(*enemy));
                 }
             }
 
@@ -44,12 +44,9 @@ impl Board {
                 let enpass_mvs = p.en_passant_moves(self, fut_pboard);
                 for (_sq, eaten) in enpass_mvs {
                     let enemy = self.get_piece(eaten.0, eaten.1).unwrap();
-                    info.push(PieceId::from_piv(*enemy));
+                    info.insert(PieceId::from_piv(*enemy));
                 }
             }
-
-            // Sort info for futher comparison
-            info.sort_unstable();
 
             out.push((ShortPieceId::from_piv(p), info));
         }
