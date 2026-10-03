@@ -1,18 +1,85 @@
-use crate::pieces::{Color, PieceKind};
-
-use super::{Castling, Engine, EngineErr, Move, MoveEffect, PieceId, Promotion, TimeDirection};
+use super::{
+    Castling, Engine, EngineErr, Move, MoveEffect, MoveId, PieceId, Promotion, TimeDirection,
+};
+use crate::board::Board;
+use crate::pieces::{Color, PieceKind, PieceView};
 
 impl Engine {
-    /// Spatially legal candidates at a worldline occurrence, including past-directed
-    /// candidates. This does not check turn ownership, optional reaction rights or
-    /// whether constructing a new temporal loop is implemented.
+    /// Board on which movement is tested, with this move's own old effects undone.
+    /// Existing target boards take precedence; only forward moves may fall back.
+    pub(super) fn move_board(
+        &self,
+        piece: PieceView,
+        direction: TimeDirection,
+    ) -> Result<Board, EngineErr> {
+        let target_time = direction.step(piece.t);
+        let target = target_time.and_then(|t| self.projection.boards.get(&t));
+        let target_exists = target.is_some();
+        let selected = match target {
+            Some(board) => board,
+            None if direction == TimeDirection::Future => self
+                .projection
+                .boards
+                .get(&piece.t)
+                .ok_or(EngineErr::AbsentBoard)?,
+            None => return Err(EngineErr::AbsentBoard),
+        };
+        let mut board = selected.clone();
+        if target_exists {
+            let state = &self.history.worldlines[piece.origin][piece.age];
+            if let Some(next) = state.step(direction) {
+                let key = super::PieceAt {
+                    piece: PieceId::from_state(&next, piece.origin),
+                    t: next.t,
+                };
+                if let Some(own) = self.occurrence(key)
+                    && board
+                        .get_piece(own.sq.0, own.sq.1)
+                        .is_some_and(|p| p.origin == own.origin && p.age == own.age)
+                {
+                    board.remove_piece(own.sq);
+                }
+            }
+        } else if board.is_me(&piece, piece.sq) {
+            board.remove_piece(piece.sq);
+        }
+        if let Some(old) = self
+            .history
+            .moves
+            .get(&MoveId::from_piv(piece))
+            .filter(|mv| mv.pid == PieceId::from_piv(piece) && mv.direction == direction)
+        {
+            if let Some(targets) = self.history.targets.get(&old.id()) {
+                for &target in targets {
+                    if let Some(victim) = self.occurrence(target)
+                        && victim.t == board.time()
+                        && board.is_empty(victim.sq)
+                    {
+                        board.add_piece(victim);
+                    }
+                }
+            }
+            if old.castling().is_some()
+                && let Some(rook) = self.castling_rook(*old, piece)?
+            {
+                let successor = self.get_piv_necro(rook.origin, rook.age + 1);
+                if let Some(successor) = successor
+                    && board.is_me(&successor, successor.sq)
+                {
+                    board.remove_piece(successor.sq);
+                }
+                if board.is_empty(rook.sq) {
+                    board.add_piece(rook);
+                }
+            }
+        }
+        Ok(board)
+    }
+
+    /// Candidate movement is evaluated on t+1 (or t when absent) / t-1.
+    /// Turn ownership and the reason a piece may act are checked by the command.
     pub fn possible_moves(&self, wid: usize, age: usize) -> Result<Vec<Move>, EngineErr> {
         let piece = self.get_piv(wid, age).ok_or(EngineErr::WrongPiece)?;
-        let board = self
-            .projection
-            .boards
-            .get(&piece.t)
-            .ok_or(EngineErr::AbsentBoard)?;
         let candidate = |sq, direction, effect| Move {
             pid: PieceId::from_piv(piece),
             t: piece.t,
@@ -21,81 +88,83 @@ impl Engine {
             effect,
         };
         let mut moves = Vec::new();
-        for square in piece.basic_moves(board) {
-            moves.push(candidate(square, TimeDirection::Future, MoveEffect::Normal));
-            if piece.t > 1 {
-                moves.push(candidate(square, TimeDirection::Past, MoveEffect::Normal));
-            }
-        }
-        for (square, castling) in piece.castling_moves(board) {
-            moves.push(candidate(
-                square,
-                TimeDirection::Future,
-                MoveEffect::Castle(castling),
-            ));
-        }
         for direction in [TimeDirection::Future, TimeDirection::Past] {
+            if direction == TimeDirection::Past && piece.t <= 1 {
+                continue;
+            }
+            let board = match self.move_board(piece, direction) {
+                Ok(board) => board,
+                Err(EngineErr::AbsentBoard) if direction == TimeDirection::Past => continue,
+                Err(error) => return Err(error),
+            };
+            let mut directed = Vec::new();
+            for square in piece.basic_moves(&board) {
+                directed.push(candidate(square, direction, MoveEffect::Normal));
+            }
+            // Preserve the prototype's forward-only castling rule.
+            if direction == TimeDirection::Future {
+                for (square, castling) in piece.castling_moves(&board) {
+                    directed.push(candidate(square, direction, MoveEffect::Castle(castling)));
+                }
+            }
             let previous_time = match direction {
                 TimeDirection::Future => piece.t.checked_sub(1),
-                TimeDirection::Past if piece.t > 1 => piece.t.checked_add(1),
-                TimeDirection::Past => None,
+                TimeDirection::Past => piece.t.checked_add(1),
             };
             if let Some(previous) = previous_time.and_then(|t| self.projection.preboards.get(&t)) {
-                for (square, captured) in piece.en_passant_moves(board, previous) {
-                    moves.push(candidate(
+                for (square, captured) in piece.en_passant_moves(&board, previous) {
+                    directed.push(candidate(
                         square,
                         direction,
                         MoveEffect::EnPassant { captured },
                     ));
                 }
             }
-        }
-
-        if matches!(piece.kind, PieceKind::P { .. }) {
-            let last_y = if piece.color == Color::White { 7 } else { 0 };
-            moves = moves
-                .into_iter()
-                .flat_map(|mv| {
-                    if mv.sq.1 == last_y {
-                        Promotion::ALL
-                            .into_iter()
-                            .map(|kind| Move {
-                                effect: MoveEffect::Promote(kind),
-                                ..mv
-                            })
-                            .collect()
-                    } else {
-                        vec![mv]
-                    }
-                })
-                .collect();
-        }
-
-        // Check every king of this color (a time slice can contain several ages).
-        moves.retain(|mv| {
-            let mut pretend = board.clone();
-            pretend.remove_piece(piece.sq);
-            pretend.remove_piece(mv.sq);
-            if let Some(square) = mv.en_passant() {
-                pretend.remove_piece(square);
+            if matches!(piece.kind, PieceKind::P { .. }) {
+                let last_y = if piece.color == Color::White { 7 } else { 0 };
+                directed = directed
+                    .into_iter()
+                    .flat_map(|mv| {
+                        if mv.sq.1 == last_y {
+                            Promotion::ALL
+                                .into_iter()
+                                .map(|kind| Move {
+                                    effect: MoveEffect::Promote(kind),
+                                    ..mv
+                                })
+                                .collect()
+                        } else {
+                            vec![mv]
+                        }
+                    })
+                    .collect();
             }
-            if let Some(castling) = mv.castling() {
-                let rook_x = match castling {
-                    Castling::Long => 0,
-                    Castling::Short => 7,
-                };
-                if let Some(rook) = pretend.get_piece(rook_x, piece.sq.1).copied() {
-                    pretend.remove_piece(rook.sq);
-                    pretend.add_piece(rook.apply_mv(*mv));
+            directed.retain(|mv| {
+                let mut pretend = board.clone();
+                // Source-square occupants of a different time are not the mover.
+                pretend.remove_piece(mv.sq);
+                if let Some(square) = mv.en_passant() {
+                    pretend.remove_piece(square);
                 }
-            }
-            pretend.add_piece(piece.apply_mv(*mv));
-            pretend
-                .pieces
-                .iter()
-                .filter(|p| p.color == piece.color && matches!(p.kind, PieceKind::K { .. }))
-                .all(|king| !pretend.is_attacked(piece.color.opposite(), king.sq))
-        });
+                if let Some(castling) = mv.castling() {
+                    let rook_x = match castling {
+                        Castling::Long => 0,
+                        Castling::Short => 7,
+                    };
+                    if let Some(rook) = pretend.get_piece(rook_x, piece.sq.1).copied() {
+                        pretend.remove_piece(rook.sq);
+                        pretend.add_piece(rook.apply_mv(*mv));
+                    }
+                }
+                pretend.add_piece(piece.apply_mv(*mv));
+                pretend
+                    .pieces
+                    .iter()
+                    .filter(|p| p.color == piece.color && matches!(p.kind, PieceKind::K { .. }))
+                    .all(|king| !pretend.is_attacked(piece.color.opposite(), king.sq))
+            });
+            moves.extend(directed);
+        }
         Ok(moves)
     }
 }

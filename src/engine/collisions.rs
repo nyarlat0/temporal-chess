@@ -59,10 +59,12 @@ impl Engine {
             let mut prev_piv = piv;
             let mut prev_other_piv = other_piv;
 
-            for d in 1..=min(piv.age, other_piv.age) {
-                let piv_bf = self.get_piv(piv.origin, piv.age.saturating_sub(d))?;
-                let other_piv_bf =
-                    self.get_piv(other_piv.origin, other_piv.age.saturating_sub(d))?;
+            for _ in 1..=min(piv.age, other_piv.age) {
+                let piv_bf = self.previous_piece(prev_piv)?;
+                let other_piv_bf = self.previous_piece(prev_other_piv)?;
+                if piv_bf.t != other_piv_bf.t {
+                    return None;
+                }
 
                 if piv_bf.sq != piv.sq {
                     let bf_collider = piv_bf;
@@ -99,9 +101,9 @@ impl Engine {
             let mut prev_inv = inv;
             let mut prev_ord = ord;
 
-            for d in 1..=ord.age {
-                let ord_bf = self.get_piv(ord.origin, ord.age.checked_sub(d)?)?;
-                let mb_inv_aft = self.get_piv(inv.origin, inv.age.checked_add(d)?);
+            for _ in 1..=ord.age {
+                let ord_bf = self.previous_piece(prev_ord)?;
+                let mb_inv_aft = self.next_piece(prev_inv).filter(|p| p.t == ord_bf.t);
 
                 if let Some(inv_aft) = mb_inv_aft {
                     if ord_bf.sq != ord.sq {

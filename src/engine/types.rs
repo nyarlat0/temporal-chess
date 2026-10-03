@@ -2,22 +2,30 @@ use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 
 use crate::board::{Board, PreBoard};
-use crate::model::{Move, MoveId, PieceAt, ShortPieceId, State};
+use crate::model::{Move, MoveId, PieceAt, ShortPieceId, Worldline};
 use crate::pieces::{Color, PieceView};
 
 /// Authoritative state. Board projections and lookup tables are never stored here.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct History {
-    pub(super) worldlines: Vec<Vec<State>>,
+    pub(super) worldlines: Vec<Worldline>,
     pub(super) moves: BTreeMap<MoveId, Move>,
+    /// Targets observed when a move was played. Dead targets are restored only
+    /// in its legality view, so a recorded pawn capture can be revalidated.
+    pub(super) targets: BTreeMap<MoveId, Vec<PieceAt>>,
+    /// The timeline still advances when its newest board contains no pieces.
+    pub(super) horizon: usize,
 }
 
 impl History {
-    pub fn worldlines(&self) -> &[Vec<State>] {
+    pub fn worldlines(&self) -> &[Worldline] {
         &self.worldlines
     }
     pub fn moves(&self) -> &BTreeMap<MoveId, Move> {
         &self.moves
+    }
+    pub fn horizon(&self) -> usize {
+        self.horizon
     }
 }
 

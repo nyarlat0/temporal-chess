@@ -147,7 +147,7 @@ fn failed_move_preserves_the_complete_engine() {
 }
 
 #[test]
-fn failure_during_collision_resolution_rolls_back_an_already_applied_move() {
+fn an_occupied_future_square_is_rejected_before_applying_a_move() {
     let first = State::new(PieceKind::R { moved: true }, Color::White, Sq(0, 0));
     let mut other = State::new(PieceKind::R { moved: true }, Color::White, Sq(7, 0));
     other.fut_seen = 5;
@@ -166,34 +166,58 @@ fn failure_during_collision_resolution_rolls_back_an_already_applied_move() {
     )
     .unwrap();
     let snapshot = engine.clone();
-    let mv = engine
-        .possible_moves(0, 0)
-        .unwrap()
-        .into_iter()
-        .find(|mv| mv.sq == Sq(0, 1))
-        .unwrap();
+    assert!(
+        !engine
+            .possible_moves(0, 0)
+            .unwrap()
+            .iter()
+            .any(|mv| mv.sq == Sq(0, 1))
+    );
+    let mv = Move {
+        pid: PieceId::from_piv(engine.get_piv(0, 0).unwrap()),
+        t: 0,
+        sq: Sq(0, 1),
+        direction: nolan_chess::model::TimeDirection::Future,
+        effect: nolan_chess::model::MoveEffect::Normal,
+    };
     assert_eq!(engine.apply_new_mv(mv), Err(EngineErr::WrongMove));
     assert_eq!(engine, snapshot);
 }
 
 #[test]
-fn unsupported_inversion_is_explicit_and_does_not_mutate_history() {
+fn inversion_from_an_ordinary_opening_creates_a_playable_past_incarnation() {
     let mut engine = Engine::default();
     play(&mut engine, Sq(4, 1), Sq(4, 3));
     play(&mut engine, Sq(4, 6), Sq(4, 4));
-    let snapshot = engine.clone();
     let piece = *engine.board(2).unwrap().get_piece(6, 0).unwrap();
     let mv = engine
         .possible_moves(piece.origin, piece.age)
         .unwrap()
         .into_iter()
-        .find(|mv| mv.to_past())
+        .find(|mv| mv.to_past() && mv.sq == Sq(7, 2))
         .unwrap();
-    assert!(matches!(
-        engine.apply_new_mv(mv),
-        Err(EngineErr::UnsupportedMove(_))
-    ));
-    assert_eq!(engine, snapshot);
+    engine.apply_new_mv(mv).unwrap();
+    assert_eq!(engine.turn(), Color::Black);
+    assert!(
+        engine
+            .board(3)
+            .unwrap()
+            .find_by_origin(piece.origin)
+            .is_empty()
+    );
+    let past = engine.board(0).unwrap().get_piece(7, 2).unwrap();
+    assert_eq!(
+        (past.origin, past.loop_turn, past.fut_seen),
+        (piece.origin, 1, 2)
+    );
+    assert!(past.inverted && past.rights.ordinary);
+    // A real opponent move hands the turn to the new past incarnation.
+    play(&mut engine, Sq(1, 7), Sq(2, 5));
+    assert!(
+        engine
+            .move_sources()
+            .any(|p| p.origin == piece.origin && p.t == 0 && p.inverted)
+    );
 }
 
 #[test]
@@ -389,7 +413,9 @@ fn malformed_history_is_rejected_without_panics() {
             ]],
             Color::White
         ),
-        Err(EngineErr::InvalidHistory("ambiguous piece occurrence"))
+        Err(EngineErr::InvalidHistory(
+            "inconsistent temporal transition"
+        ))
     ));
 }
 

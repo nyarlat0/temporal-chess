@@ -18,10 +18,18 @@ impl Default for Engine {
 impl Engine {
     /// Build a scenario from worldlines, validating and projecting it immediately.
     pub fn from_worldlines(worldlines: Vec<Vec<State>>, turn: Color) -> Result<Self, EngineErr> {
+        let horizon = worldlines
+            .iter()
+            .flatten()
+            .map(|state| state.t)
+            .max()
+            .unwrap_or(0);
         Self::from_history(
             History {
-                worldlines,
+                worldlines: worldlines.into_iter().map(Into::into).collect(),
                 moves: BTreeMap::new(),
+                targets: BTreeMap::new(),
+                horizon,
             },
             turn,
         )
@@ -33,18 +41,26 @@ impl Engine {
             let Some(first) = line.first() else {
                 return Err(EngineErr::InvalidHistory("empty worldline"));
             };
-            for state in line {
+            for state in line.iter() {
                 if !Sq(state.x, state.y).on_board() {
                     return Err(EngineErr::InvalidHistory("square outside the board"));
                 }
-                if state.fut_seen < state.t {
+                if state.fut_seen < state.t || state.t > history.horizon {
                     return Err(EngineErr::InvalidHistory("invalid temporal coordinates"));
                 }
                 if state.color != first.color {
                     return Err(EngineErr::InvalidHistory("a worldline changes color"));
                 }
             }
-            for pair in line.windows(2) {
+            for (age, pair) in line.windows(2).enumerate() {
+                if let Some(gap) = line.gap_after(age) {
+                    if line.gaps[gap].resume != Some(super::MoveId::from_state(&pair[1])) {
+                        return Err(EngineErr::InvalidHistory(
+                            "causal gap does not meet its preserved future",
+                        ));
+                    }
+                    continue;
+                }
                 if pair[1].fut_seen < pair[0].fut_seen {
                     return Err(EngineErr::InvalidHistory(
                         "future knowledge decreases along a worldline",
@@ -62,6 +78,35 @@ impl Engine {
                 };
                 if expected != Some(pair[1].t) {
                     return Err(EngineErr::InvalidHistory("non-adjacent worldline states"));
+                }
+                let step = pair[0]
+                    .step(super::TimeDirection::from_inverted(pair[1].inverted))
+                    .ok_or(EngineErr::InvalidHistory(
+                        "temporal counter overflow or underflow",
+                    ))?;
+                if step.loop_turn != pair[1].loop_turn
+                    || step.loop_pivots != pair[1].loop_pivots
+                    || step.fut_seen != pair[1].fut_seen
+                {
+                    return Err(EngineErr::InvalidHistory(
+                        "inconsistent temporal transition",
+                    ));
+                }
+            }
+            for gap in &line.gaps {
+                let Some(entry) = line.locate(gap.entry) else {
+                    return Err(EngineErr::InvalidHistory("missing loop entry"));
+                };
+                let Some(after) = line.locate(gap.after) else {
+                    return Err(EngineErr::InvalidHistory("missing loop endpoint"));
+                };
+                if entry > after
+                    || gap
+                        .resume
+                        .is_some_and(|key| line.locate(key) != Some(after + 1))
+                    || (gap.resume.is_none() && after + 1 != line.len())
+                {
+                    return Err(EngineErr::InvalidHistory("invalid causal gap"));
                 }
             }
         }

@@ -162,10 +162,12 @@ fn oncoming_tracking_uses_orientation_even_when_inverted_piece_knows_more_future
     let engine = Engine {
         history: History {
             worldlines: vec![
-                vec![ordinary, ordinary_next],
-                vec![inverted, inverted_next, inverted_last],
+                vec![ordinary, ordinary_next].into(),
+                vec![inverted, inverted_next, inverted_last].into(),
             ],
             moves: BTreeMap::new(),
+            targets: BTreeMap::new(),
+            horizon: 2,
         },
         projection: Projection::default(),
         turn: Color::White,

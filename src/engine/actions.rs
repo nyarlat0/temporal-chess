@@ -1,9 +1,8 @@
-use crate::pieces::{Color, PieceView, Sq};
-
 use super::{Castling, Engine, EngineErr, Move};
+use crate::pieces::{Color, PieceView};
 
 impl Engine {
-    /// Commit a complete turn, including reconciliation. On error nothing changes.
+    /// Commit the move, temporal edits, reconciliation and turn change atomically.
     pub fn apply_new_mv(&mut self, mv: Move) -> Result<(), EngineErr> {
         self.transaction(|candidate| {
             candidate.apply_move_inner(mv)?;
@@ -17,7 +16,7 @@ impl Engine {
     }
 
     fn apply_move_inner(&mut self, mv: Move) -> Result<(), EngineErr> {
-        let piece = self.get_piv_from_mv(mv).ok_or(EngineErr::WrongPiece)?;
+        let mut piece = self.get_piv_from_mv(mv).ok_or(EngineErr::WrongPiece)?;
         if piece.color != self.turn || !piece.can_move() {
             return Err(EngineErr::WrongTurn);
         }
@@ -27,17 +26,26 @@ impl Engine {
         if !self.possible_moves(piece.origin, piece.age)?.contains(&mv) {
             return Err(EngineErr::WrongMove);
         }
-        // The original prototype generated these moves but never built the loop.
-        // Keep the unsupported transition explicit until loop construction is defined.
-        if mv.to_past() != piece.inverted {
-            return Err(EngineErr::UnsupportedMove(
-                "changing time direction requires loop construction",
-            ));
-        }
+        let checking = self.move_board(piece, mv.direction)?;
+        let target_sq = mv.en_passant().unwrap_or(mv.sq);
+        let target = checking
+            .get_piece(target_sq.0, target_sq.1)
+            .copied()
+            .filter(|target| target.color != piece.color);
         let rook = self.castling_rook(mv, piece)?;
-
-        if self.history.moves.contains_key(&mv.id()) {
-            self.undo_mv(mv.id())?;
+        if let Some(old) = self.history.moves.get(&mv.id()).copied() {
+            if old.pid != mv.pid || (old.castling().is_some() && !mv.to_past()) {
+                self.undo_mv(old.id())?;
+            } else if old.to_past() && !mv.to_past() {
+                self.remove_past_route(piece)?;
+            } else if old.castling().is_some() {
+                // Preserve the king's future when inverting, but the replaced
+                // castling command no longer moves the separate rook worldline.
+                self.undo_castling_rook(old, piece)?;
+            }
+            self.history.moves.remove(&old.id());
+            self.history.targets.remove(&old.id());
+            piece = self.get_piv_from_mv(mv).ok_or(EngineErr::WrongPiece)?;
         }
         self.deact_same_order(piece);
         self.deact_prev_reactable(piece.color, piece.t);
@@ -48,56 +56,40 @@ impl Engine {
             .last_key_value()
             .map(|(&t, _)| t)
             .unwrap_or(0);
-        if piece.t == end_t {
-            self.prolongate_wlines(end_t)?;
-        }
-        // An inverted endpoint may advance into an already existing board.
-        let line = &mut self.history.worldlines[piece.origin];
-        if line.len() == piece.age + 1 {
-            line.push(
-                line.last()
-                    .ok_or(EngineErr::WrongPiece)?
-                    .prolongate()
-                    .ok_or(EngineErr::WrongMove)?,
-            );
-        }
-        self.fix_position(mv)?;
+        let horizon = if piece.t == end_t {
+            self.prolongate_wlines(end_t, mv.to_past().then_some(piece.origin))?;
+            end_t.checked_add(1).ok_or(EngineErr::WrongMove)?
+        } else {
+            end_t
+        };
+        self.history.horizon = horizon;
+        self.apply_route(piece, mv, horizon)?;
         if let Some(rook) = rook {
-            self.relocate_after(rook, mv)?;
+            // Castling never inserts a backward segment; both source ages remain valid.
+            self.apply_route(rook, mv, horizon)?;
         }
-        if let Some(square) = mv.en_passant() {
-            let victim = self
-                .projection
-                .preboards
-                .get(&piece.t)
-                .and_then(|board| board.space[square.0][square.1].first())
-                .copied()
-                .ok_or(EngineErr::WrongPiece)?;
-            self.kill_piece(victim.origin, victim.age + 1)?;
+        self.update_bufs()?;
+        if let Some(target) = target {
+            let arrival = mv.direction.step(mv.t).ok_or(EngineErr::WrongMove)?;
+            let victim = if target.t == arrival {
+                Some(target)
+            } else {
+                self.history.worldlines[target.origin]
+                    .iter()
+                    .enumerate()
+                    .find(|(_, state)| state.t == arrival && state.loop_turn == target.loop_turn)
+                    .map(|(age, state)| PieceView::from_state(state, target.origin, age))
+            };
+            if let Some(victim) = victim {
+                self.history
+                    .targets
+                    .insert(mv.id(), vec![Self::piece_at(victim)]);
+                if mv.en_passant().is_some() {
+                    self.kill_piece(victim.origin, victim.age)?;
+                }
+            }
         }
         self.history.moves.insert(mv.id(), mv);
-        Ok(())
-    }
-
-    pub(super) fn fix_position(&mut self, mv: Move) -> Result<(), EngineErr> {
-        let piece = self.get_piv_from_mv(mv).ok_or(EngineErr::WrongPiece)?;
-        self.relocate_after(piece, mv)
-    }
-
-    fn relocate_after(&mut self, piece: PieceView, mv: Move) -> Result<(), EngineErr> {
-        let line = self
-            .history
-            .worldlines
-            .get_mut(piece.origin)
-            .ok_or(EngineErr::WrongPiece)?;
-        let next = line.get(piece.age + 1).ok_or(EngineErr::WrongPiece)?;
-        let old_square = Sq(next.x, next.y);
-        for state in line.iter_mut().skip(piece.age + 1) {
-            if Sq(state.x, state.y) != old_square {
-                break;
-            }
-            state.apply_mv(mv);
-        }
         Ok(())
     }
 
@@ -131,16 +123,6 @@ impl Engine {
             .ok_or(EngineErr::WrongPiece)
     }
 
-    fn prolongate_wlines(&mut self, end_t: usize) -> Result<(), EngineErr> {
-        for line in &mut self.history.worldlines {
-            let last = line.last().ok_or(EngineErr::WrongPiece)?;
-            if last.t == end_t && !last.inverted {
-                line.push(last.prolongate().ok_or(EngineErr::WrongMove)?);
-            }
-        }
-        Ok(())
-    }
-
     fn deact_same_order(&mut self, piece: PieceView) {
         for (origin, line) in self.history.worldlines.iter_mut().enumerate() {
             for (age, state) in line.iter_mut().enumerate() {
@@ -153,7 +135,12 @@ impl Engine {
     }
 
     fn deact_prev_reactable(&mut self, side: Color, until_t: usize) {
-        for state in self.history.worldlines.iter_mut().flatten() {
+        for state in self
+            .history
+            .worldlines
+            .iter_mut()
+            .flat_map(|line| line.iter_mut())
+        {
             if state.color == side && state.t <= until_t {
                 state.expire_reactions();
             }

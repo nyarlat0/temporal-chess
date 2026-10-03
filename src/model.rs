@@ -6,8 +6,10 @@
 use std::collections::BTreeSet;
 
 mod pieces;
+mod worldline;
 
 pub use pieces::{Color, PieceKind, PieceView, Sq};
+pub use worldline::{CausalGap, Worldline};
 
 /// Independent reasons why an occurrence may act. Expiring reactions never
 /// consumes an ordinary move; only playing in its causal slot consumes that.
@@ -327,10 +329,24 @@ impl State {
     /// Creates a new state from the last in the world line,
     /// OR from last in the time-loop
     pub fn prolongate(&self) -> Option<Self> {
+        self.step(TimeDirection::from_inverted(self.inverted))
+    }
+
+    /// Advance subjective age by one tick in the requested direction.
+    /// A pivot is crossed strictly after its time, and only going forward.
+    pub fn step(&self, direction: TimeDirection) -> Option<Self> {
         let mut new_st = self.shallow_cp();
 
+        if direction.is_inverted() != self.inverted {
+            new_st.loop_turn = new_st.loop_turn.checked_add(1)?;
+            if direction == TimeDirection::Past {
+                new_st.loop_pivots.push(self.t);
+            }
+        }
+        new_st.inverted = direction.is_inverted();
+
         // Moves backward in time if inverted and forward if isnt
-        new_st.t = TimeDirection::from_inverted(new_st.inverted).step(new_st.t)?;
+        new_st.t = direction.step(self.t)?;
 
         new_st.rights = MoveRights {
             ordinary: new_st.alive && Color::from_board(new_st.t) == new_st.color,
@@ -340,12 +356,13 @@ impl State {
         new_st.fut_seen = new_st.fut_seen.max(new_st.t);
 
         // If state is past pivot t then decrease loop_turn
-        while new_st
-            .loop_pivots
-            .pop_if(|pivot_t| new_st.t > *pivot_t)
-            .is_some()
+        while direction == TimeDirection::Future
+            && new_st
+                .loop_pivots
+                .pop_if(|pivot_t| new_st.t > *pivot_t)
+                .is_some()
         {
-            new_st.loop_turn = new_st.loop_turn.saturating_sub(2);
+            new_st.loop_turn = new_st.loop_turn.checked_sub(2)?;
         }
 
         Some(new_st)

@@ -11,6 +11,9 @@ impl Engine {
                 .pieces
                 .get(&mv.source())
                 .ok_or(EngineErr::WrongPiece)?;
+            if self.history.worldlines[wid].is_borrowed(age) {
+                continue;
+            }
             if self.history.worldlines[wid][age].alive
                 && !self.possible_moves(wid, age)?.contains(&mv)
             {
@@ -28,6 +31,9 @@ impl Engine {
             let Some(age) = line.iter().position(|state| !state.alive) else {
                 continue;
             };
+            if line.is_borrowed(age) {
+                continue;
+            }
             let state = &line[age];
             let board = self
                 .projection
@@ -55,7 +61,8 @@ impl Engine {
             if en_passant {
                 continue;
             }
-            for state in &mut line[age..] {
+            let end = line.segment_end(age);
+            for state in &mut line[age..end] {
                 state.alive = true;
             }
             return Ok(ValidRes::HistChanged);
@@ -83,7 +90,7 @@ impl Engine {
                 continue;
             }
 
-            self.update_infos();
+            self.update_infos()?;
             // Only reaction flags changed. Reproject them for all board times.
             self.update_bufs()?;
             if self.build_boards()? == ValidRes::HistChanged {

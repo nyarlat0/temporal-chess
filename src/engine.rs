@@ -5,6 +5,7 @@ mod collisions;
 mod history;
 mod initialization;
 mod move_generation;
+mod temporal;
 mod timeline;
 mod types;
 mod validation;
@@ -16,5 +17,7 @@ pub use crate::model::{
 pub use types::{BoardConflict, BoardErr, Engine, EngineErr, History};
 use types::{PieceCollision, Projection, ValidRes};
 
+#[cfg(test)]
+mod temporal_tests;
 #[cfg(test)]
 mod tests;

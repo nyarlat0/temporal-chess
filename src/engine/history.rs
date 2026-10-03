@@ -10,7 +10,8 @@ impl Engine {
             .get_mut(wid)
             .ok_or(EngineErr::WrongPiece)?;
 
-        for st in wl.get_mut(age..).ok_or(EngineErr::WrongPiece)? {
+        let end = wl.segment_end(age);
+        for st in wl.get_mut(age..end).ok_or(EngineErr::WrongPiece)? {
             st.alive = false;
         }
 
@@ -24,8 +25,11 @@ impl Engine {
             .get(piv.origin)
             .ok_or(EngineErr::WrongPiece)?;
 
+        let start = (0..piv.age)
+            .rfind(|&age| wl.gap_after(age).is_some())
+            .map_or(0, |age| age + 1);
         let id = wl
-            .get(..piv.age)
+            .get(start..piv.age)
             .ok_or(EngineErr::WrongPiece)?
             .iter()
             .rev()
@@ -50,14 +54,41 @@ impl Engine {
             .moves
             .remove(&mv_id)
             .ok_or(EngineErr::WrongMove)?;
+        self.history.targets.remove(&mv_id);
 
         // Piv before move, undid states will be set to it
         let bf_piv = self.get_piv_from_mv(mv).ok_or(EngineErr::WrongPiece)?;
-        let rook = self.castling_rook(mv, bf_piv)?;
+        self.undo_castling_rook(mv, bf_piv)?;
         if mv.to_past() != bf_piv.inverted {
-            return Err(EngineErr::UnsupportedMove(
-                "undoing a time-direction change requires loop reconstruction",
-            ));
+            if mv.to_past() {
+                self.remove_past_route(bf_piv)?;
+            } else {
+                self.remove_return_route(bf_piv)?;
+            }
+            let horizon = self
+                .projection
+                .preboards
+                .last_key_value()
+                .map(|(&t, _)| t)
+                .unwrap_or(bf_piv.t);
+            let wait = super::Move {
+                sq: bf_piv.sq,
+                direction: super::TimeDirection::from_inverted(bf_piv.inverted),
+                effect: super::MoveEffect::Normal,
+                ..mv
+            };
+            // At t=0 an inverted endpoint has no passive predecessor board.
+            // Undo the return without inventing a negative-time state.
+            if wait.direction.step(bf_piv.t).is_some() {
+                self.apply_route(bf_piv, wait, horizon)?;
+                let source = self.history.worldlines[bf_piv.origin][bf_piv.age].clone();
+                self.relocate_from(bf_piv.origin, bf_piv.age + 1, &source);
+            }
+            self.history.worldlines[bf_piv.origin][bf_piv.age]
+                .rights
+                .cancelled_move = true;
+            self.update_bufs()?;
+            return Ok(());
         }
 
         // Piv just after undid move,
@@ -78,7 +109,8 @@ impl Engine {
             mv_st.rights.cancelled_move = true;
         }
 
-        for st in wl.iter_mut().skip(bf_piv.age + 1) {
+        let end = wl.segment_end(bf_piv.age);
+        for st in wl[bf_piv.age + 1..end].iter_mut() {
             if (st.x, st.y) == (ud_piv.sq.0, ud_piv.sq.1) {
                 st.x = bf_piv.sq.0;
                 st.y = bf_piv.sq.1;
@@ -88,30 +120,24 @@ impl Engine {
             }
         }
 
-        // For castling we need to undo rook move as well
-        if let Some(bf_rk) = rook {
-            let ud_rk = self
-                .get_piv_necro(bf_rk.origin, bf_rk.age + 1)
-                .ok_or(EngineErr::WrongPiece)?;
-
-            let wl = self
-                .history
-                .worldlines
-                .get_mut(bf_rk.origin)
-                .ok_or(EngineErr::WrongPiece)?;
-            for st in wl.iter_mut().skip(bf_rk.age + 1) {
-                if (st.x, st.y) == (ud_rk.sq.0, ud_rk.sq.1) {
-                    st.x = bf_rk.sq.0;
-                    st.y = bf_rk.sq.1;
-                    st.kind = bf_rk.kind;
-                } else {
-                    break;
-                }
-            }
-        }
-
         self.update_bufs()?;
 
+        Ok(())
+    }
+
+    pub(super) fn undo_castling_rook(
+        &mut self,
+        mv: super::Move,
+        king: PieceView,
+    ) -> Result<(), EngineErr> {
+        if let Some(rook) = self.castling_rook(mv, king)? {
+            let line = &self.history.worldlines[rook.origin];
+            if line.get(rook.age + 1).is_none() {
+                return Err(EngineErr::WrongPiece);
+            }
+            let source = line[rook.age].clone();
+            self.relocate_from(rook.origin, rook.age + 1, &source);
+        }
         Ok(())
     }
 }

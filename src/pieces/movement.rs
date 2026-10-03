@@ -154,18 +154,17 @@ impl PieceView {
                 continue;
             }
             // and it must have just moved two squares straight
-            let prev_age = adj.age.saturating_sub(1);
             let Some(prev_adj) = past_pboard
                 .space
                 .iter()
                 .flat_map(|row| row.iter())
                 .flat_map(|prep| prep.iter())
-                .find(|p| p.origin == adj.origin && p.age == prev_age)
+                .find(|p| p.origin == adj.origin && p.age < adj.age && adj.age - p.age <= 2)
             else {
                 continue;
             };
 
-            if (prev_adj.sq.1 as i8 - adj.sq.1 as i8).abs() != 2 {
+            if prev_adj.sq.0 != adj.sq.0 || (prev_adj.sq.1 as i8 - adj.sq.1 as i8).abs() != 2 {
                 continue;
             }
 
