@@ -140,6 +140,13 @@ impl Engine {
                     .collect();
             }
             directed.retain(|mv| {
+                // Royal capture ends the game. In particular an available
+                // inverse capture cannot be suppressed by an unrelated check.
+                if board.get_piece(mv.sq.0, mv.sq.1).is_some_and(|target| {
+                    target.color != piece.color && matches!(target.kind, PieceKind::K { .. })
+                }) {
+                    return true;
+                }
                 let mut pretend = board.clone();
                 // Source-square occupants of a different time are not the mover.
                 pretend.remove_piece(mv.sq);

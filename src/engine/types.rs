@@ -5,6 +5,48 @@ use crate::board::{Board, PreBoard};
 use crate::model::{Move, MoveId, PieceAt, ShortPieceId, Worldline};
 use crate::pieces::{Color, PieceView};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WinReason {
+    KingCaptured,
+    Paradox,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GameOutcome {
+    Victory { winner: Color, reason: WinReason },
+    Stalemate,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WaitingReason {
+    OpponentPastMoves,
+    KingUnderAttack,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum GameStatus {
+    #[default]
+    Ongoing,
+    Waiting {
+        player: Color,
+        reason: WaitingReason,
+    },
+    Finished(GameOutcome),
+}
+
+/// Frontier/spatial threats and backward capture candidates are reported separately.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CheckStatus {
+    pub ordinary: Vec<PieceAt>,
+    pub inverted: Vec<PieceAt>,
+}
+
+impl CheckStatus {
+    pub fn is_check(&self) -> bool {
+        !self.ordinary.is_empty() || !self.inverted.is_empty()
+    }
+}
+
 /// Authoritative state. Board projections and lookup tables are never stored here.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct History {
@@ -15,6 +57,7 @@ pub struct History {
     pub(super) targets: BTreeMap<MoveId, Vec<PieceAt>>,
     /// The timeline still advances when its newest board contains no pieces.
     pub(super) horizon: usize,
+    pub(super) status: GameStatus,
 }
 
 impl History {
@@ -45,6 +88,16 @@ pub struct Engine {
 }
 
 impl Engine {
+    pub fn status(&self) -> GameStatus {
+        self.history.status
+    }
+
+    pub fn outcome(&self) -> Option<GameOutcome> {
+        match self.status() {
+            GameStatus::Finished(outcome) => Some(outcome),
+            _ => None,
+        }
+    }
     pub fn history(&self) -> &History {
         &self.history
     }
@@ -65,18 +118,41 @@ impl Engine {
             .boards
             .values()
             .flat_map(|board| board.pieces().iter().copied())
-            .filter(|piece| piece.color == self.turn && piece.can_move() && piece.is_movable())
+            .filter(|piece| {
+                self.outcome().is_none()
+                    && piece.color == self.turn
+                    && piece.can_move()
+                    && piece.is_movable()
+            })
     }
 
-    /// Publish a command's result only after all its checks have succeeded.
-    pub(super) fn transaction<T>(
+    /// Publish a coherent command result. A validation cycle keeps the previous
+    /// boards and commits only a paradox loss; other errors change nothing.
+    pub(super) fn transaction(
         &mut self,
-        command: impl FnOnce(&mut Self) -> Result<T, EngineErr>,
-    ) -> Result<T, EngineErr> {
+        command: impl FnOnce(&mut Self) -> Result<(), EngineErr>,
+    ) -> Result<(), EngineErr> {
+        if self.outcome().is_some() {
+            return Err(EngineErr::GameOver);
+        }
+        let actor = self.turn;
         let mut candidate = self.clone();
-        let result = command(&mut candidate)?;
-        *self = candidate;
-        Ok(result)
+        match command(&mut candidate).and_then(|()| candidate.finish_command(actor)) {
+            Ok(()) => {
+                *self = candidate;
+                Ok(())
+            }
+            Err(EngineErr::InfLoop) => {
+                // Keep the last coherent timeline, but publish the loss. This is
+                // a completed game command, not a retryable invalid move.
+                self.history.status = GameStatus::Finished(GameOutcome::Victory {
+                    winner: actor.opposite(),
+                    reason: WinReason::Paradox,
+                });
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }
     }
 }
 
@@ -88,6 +164,7 @@ pub(super) enum ValidRes {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EngineErr {
+    GameOver,
     WrongPiece,
     AbsentBoard,
     WrongMove,
@@ -101,6 +178,7 @@ pub enum EngineErr {
 impl fmt::Display for EngineErr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::GameOver => f.write_str("the game has already finished"),
             Self::WrongPiece => f.write_str("piece occurrence is absent or cannot act"),
             Self::AbsentBoard => f.write_str("board is unavailable"),
             Self::WrongMove => f.write_str("move is not legal in this position"),

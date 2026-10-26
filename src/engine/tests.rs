@@ -168,6 +168,7 @@ fn oncoming_tracking_uses_orientation_even_when_inverted_piece_knows_more_future
             moves: BTreeMap::new(),
             targets: BTreeMap::new(),
             horizon: 2,
+            status: GameStatus::Ongoing,
         },
         projection: Projection::default(),
         turn: Color::White,

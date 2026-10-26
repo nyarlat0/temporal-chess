@@ -30,6 +30,7 @@ impl Engine {
                 moves: BTreeMap::new(),
                 targets: BTreeMap::new(),
                 horizon,
+                status: super::GameStatus::Ongoing,
             },
             turn,
         )
@@ -116,6 +117,9 @@ impl Engine {
             turn,
         };
         engine.reconcile()?;
+        if engine.status() == super::GameStatus::Ongoing {
+            engine.finish_command(turn.opposite())?;
+        }
         Ok(engine)
     }
 }

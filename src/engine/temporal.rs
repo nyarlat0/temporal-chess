@@ -91,7 +91,7 @@ impl Engine {
 
     /// Insert one subjective tick or join the continuation whose causality has
     /// just been repaid. Returns the resulting age and whether a tail was joined.
-    fn advance_route(
+    pub(super) fn advance_route(
         &mut self,
         wid: usize,
         age: usize,

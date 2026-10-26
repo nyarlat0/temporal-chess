@@ -15,7 +15,7 @@ impl Engine {
         })
     }
 
-    fn apply_move_inner(&mut self, mv: Move) -> Result<(), EngineErr> {
+    pub(super) fn apply_move_inner(&mut self, mv: Move) -> Result<(), EngineErr> {
         let mut piece = self.get_piv_from_mv(mv).ok_or(EngineErr::WrongPiece)?;
         if piece.color != self.turn || !piece.can_move() {
             return Err(EngineErr::WrongTurn);
