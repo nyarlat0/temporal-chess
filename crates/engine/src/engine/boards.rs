@@ -1,5 +1,5 @@
 use crate::board::{Board, PreBoard};
-use crate::model::ShortPieceId;
+use crate::model::{MoveId, ShortPieceId};
 use crate::pieces::{Color, PieceView};
 
 use super::{BoardConflict, BoardErr, Engine, EngineErr, PieceAt, PieceId, Projection, ValidRes};
@@ -43,7 +43,8 @@ impl Engine {
 
     /// Discover optional reactions. Only newly available targets grant a reaction;
     /// losing information alone does not grant a new move. Targets and blockers
-    /// are observed exclusively on the piece's current board.
+    /// are observed exclusively on the piece's current board. An occurrence
+    /// with its own recorded move cannot gain a new-information reaction.
     pub(super) fn update_infos(&mut self) -> Result<(), EngineErr> {
         let mut updates = Vec::new();
         for (&t, board) in &self.projection.boards {
@@ -62,7 +63,17 @@ impl Engine {
         }
         for (id, info) in updates {
             let state = &mut self.history.worldlines[id.wid][id.age];
-            if !state.rights.ordinary && !info.is_subset(&state.informed) {
+            // MoveId identifies a shared slot, so also check the actual mover.
+            // A different piece's move or a different incarnation must not
+            // suppress this occurrence's reaction.
+            let has_own_move = self
+                .history
+                .moves
+                .get(&MoveId::from_state(state))
+                .is_some_and(|mv| mv.pid == PieceId::from_state(state, id.wid));
+            if has_own_move {
+                state.rights.new_information = false;
+            } else if !state.rights.ordinary && !info.is_subset(&state.informed) {
                 state.rights.new_information = true;
             }
             state.informed = info;
