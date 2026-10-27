@@ -3,15 +3,13 @@ use std::collections::BTreeSet;
 use crate::model::{PieceId, ShortPieceId};
 use crate::pieces::Color;
 
-use super::{Board, PreBoard};
+use super::Board;
 
 impl Board {
-    /// Returns informed piece shpid -> info
-    pub fn calc_info(
-        &self,
-        opt_past: Option<&PreBoard>,
-        opt_fut: Option<&PreBoard>,
-    ) -> Vec<(ShortPieceId, BTreeSet<PieceId>)> {
+    /// Capturable enemy identities visible on this board only. Neither temporal
+    /// move legality nor en passant opportunities on neighboring boards may
+    /// change the information stored for an otherwise unchanged position.
+    pub fn calc_info(&self) -> Vec<(ShortPieceId, BTreeSet<PieceId>)> {
         let side = Color::from_board(self.age);
         let mut out = Vec::new();
 
@@ -26,24 +24,6 @@ impl Board {
             for sq in sqs.iter() {
                 if self.is_enemy(side, *sq) {
                     let enemy = self.get_piece(sq.0, sq.1).unwrap();
-                    info.insert(PieceId::from_piv(*enemy));
-                }
-            }
-
-            // Enpass moves to future if past preboard is avalible
-            if let Some(past_pboard) = opt_past {
-                let enpass_mvs = p.en_passant_moves(self, past_pboard);
-                for (_sq, eaten) in enpass_mvs {
-                    let enemy = self.get_piece(eaten.0, eaten.1).unwrap();
-                    info.insert(PieceId::from_piv(*enemy));
-                }
-            }
-
-            // Enpass moves to past if future preboard is availible
-            if let Some(fut_pboard) = opt_fut {
-                let enpass_mvs = p.en_passant_moves(self, fut_pboard);
-                for (_sq, eaten) in enpass_mvs {
-                    let enemy = self.get_piece(eaten.0, eaten.1).unwrap();
                     info.insert(PieceId::from_piv(*enemy));
                 }
             }

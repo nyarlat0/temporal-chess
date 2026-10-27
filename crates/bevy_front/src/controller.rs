@@ -72,10 +72,17 @@ pub struct GameUi {
     pub import_open: bool,
     pub import_text: String,
     pub import_error: Option<String>,
-    pub import_job: Option<ImportJob>,
+    pub replay_job: Option<ReplayJob>,
 }
 
-pub struct ImportJob {
+#[derive(Clone, Copy)]
+enum ReplayKind {
+    Import,
+    Undo { source_t: usize },
+}
+
+pub struct ReplayJob {
+    kind: ReplayKind,
     receiver: Mutex<mpsc::Receiver<Result<(Engine, GameRecord), RecordError>>>,
 }
 
@@ -126,7 +133,7 @@ impl Default for GameUi {
             import_open: false,
             import_text: String::new(),
             import_error: None,
-            import_job: None,
+            replay_job: None,
         }
     }
 }
@@ -220,6 +227,7 @@ impl GameUi {
             || self.confirm_restart
             || !self.overlapping.is_empty()
             || self.import_open
+            || self.replay_job.is_some()
         {
             return;
         }
@@ -259,6 +267,9 @@ impl GameUi {
     }
 
     pub fn play(&mut self, mv: Move) {
+        if self.replay_job.is_some() {
+            return;
+        }
         let text = format!(
             "{}: t={} → {} · {}{}",
             side_name(self.engine.turn()),
@@ -305,6 +316,9 @@ impl GameUi {
     }
 
     pub fn continue_calculation(&mut self) {
+        if self.replay_job.is_some() {
+            return;
+        }
         match self.record.apply(&mut self.engine, Command::Continue) {
             Ok(()) => {
                 let status = self.engine.calculation_status();
@@ -322,13 +336,50 @@ impl GameUi {
     }
 
     pub fn begin_import(&mut self) {
-        if self.import_job.is_some() {
+        if self.replay_job.is_some() {
             return;
         }
-        let text = self.import_text.clone();
-        let (sender, receiver) = mpsc::channel();
         self.import_error = None;
-        self.import_job = Some(ImportJob {
+        self.begin_replay(self.import_text.clone(), ReplayKind::Import);
+    }
+
+    pub fn can_undo(&self) -> bool {
+        self.replay_job.is_none()
+            && !self.import_open
+            && !self.confirm_restart
+            && self
+                .record
+                .commands()
+                .iter()
+                .any(|command| matches!(command, Command::Move { .. }))
+    }
+
+    pub fn undo_last_move(&mut self) {
+        if !self.can_undo() {
+            return;
+        }
+        let Some((prefix, removed)) = self.record.without_last_move() else {
+            return;
+        };
+        self.clear_selection();
+        self.begin_replay(
+            prefix.to_text(),
+            ReplayKind::Undo {
+                source_t: removed.t,
+            },
+        );
+    }
+
+    pub fn undo_in_progress(&self) -> bool {
+        self.replay_job
+            .as_ref()
+            .is_some_and(|job| matches!(job.kind, ReplayKind::Undo { .. }))
+    }
+
+    fn begin_replay(&mut self, text: String, kind: ReplayKind) {
+        let (sender, receiver) = mpsc::channel();
+        self.replay_job = Some(ReplayJob {
+            kind,
             receiver: Mutex::new(receiver),
         });
         std::thread::spawn(move || {
@@ -336,11 +387,20 @@ impl GameUi {
         });
     }
 
-    pub fn poll_import(&mut self) {
-        let Some(job) = &self.import_job else {
+    fn replay_failed(&mut self, kind: ReplayKind, error: String) {
+        self.replay_job = None;
+        match kind {
+            ReplayKind::Import => self.import_error = Some(error),
+            ReplayKind::Undo { .. } => self.message(format!("Отмена не выполнена: {error}"), true),
+        }
+    }
+
+    pub fn poll_replay(&mut self) {
+        let Some(job) = &self.replay_job else {
             return;
         };
-        let result = job.receiver.lock().expect("import receiver").try_recv();
+        let kind = job.kind;
+        let result = job.receiver.lock().expect("replay receiver").try_recv();
         match result {
             Ok(Ok((engine, record))) => {
                 self.clear_selection();
@@ -352,23 +412,30 @@ impl GameUi {
                     .iter()
                     .map(ToString::to_string)
                     .collect();
-                self.jump_to = Some(match self.engine.calculation_status() {
-                    CalculationStatus::Paused { t, .. } => t,
-                    CalculationStatus::Complete => self.engine.history().horizon(),
+                self.jump_to = Some(match kind {
+                    ReplayKind::Undo { source_t } => source_t.min(self.engine.history().horizon()),
+                    ReplayKind::Import => match self.engine.calculation_status() {
+                        CalculationStatus::Paused { t, .. } => t,
+                        CalculationStatus::Complete => self.engine.history().horizon(),
+                    },
                 });
                 self.viewport = TimelineViewport::default();
-                self.import_job = None;
+                self.replay_job = None;
                 self.import_open = false;
                 self.inspect_mode = false;
-                self.message("Партия загружена. Можно продолжать игру.", false);
+                self.message(
+                    match kind {
+                        ReplayKind::Import => "Партия загружена. Можно продолжать игру.",
+                        ReplayKind::Undo { .. } => "Последний ход отменён. История восстановлена.",
+                    },
+                    false,
+                );
             }
             Ok(Err(error)) => {
-                self.import_job = None;
-                self.import_error = Some(error.to_string());
+                self.replay_failed(kind, error.to_string());
             }
             Err(mpsc::TryRecvError::Disconnected) => {
-                self.import_job = None;
-                self.import_error = Some("Не удалось завершить загрузку партии".into());
+                self.replay_failed(kind, "Не удалось завершить восстановление партии".into());
             }
             Err(mpsc::TryRecvError::Empty) => {}
         }
@@ -494,8 +561,8 @@ mod tests {
     }
     fn finish_import(game: &mut GameUi) {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while game.import_job.is_some() {
-            game.poll_import();
+        while game.replay_job.is_some() {
+            game.poll_replay();
             assert!(std::time::Instant::now() < deadline, "import timed out");
             std::thread::sleep(std::time::Duration::from_millis(1));
         }

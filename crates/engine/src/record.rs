@@ -44,6 +44,29 @@ impl GameRecord {
         &self.commands
     }
 
+    /// The chronological prefix immediately before the last spatial move.
+    /// Later free advances and calculation acknowledgements belong to the
+    /// discarded continuation too; replaying them could reference erased states.
+    /// The original journal stays intact until its replacement is replayed.
+    pub fn without_last_move(&self) -> Option<(Self, Move)> {
+        self.commands
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(index, command)| {
+                if let Command::Move { mv, .. } = command {
+                    Some((
+                        Self {
+                            commands: self.commands[..index].to_vec(),
+                        },
+                        *mv,
+                    ))
+                } else {
+                    None
+                }
+            })
+    }
+
     /// A failed command leaves both the game and its replay record unchanged.
     pub fn apply(&mut self, engine: &mut Engine, command: Command) -> Result<(), EngineErr> {
         match command {

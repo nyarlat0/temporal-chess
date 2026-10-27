@@ -22,8 +22,8 @@ const TEXT: Color32 = Color32::from_rgb(226, 223, 215);
 const PANEL: Color32 = Color32::from_rgb(43, 41, 38);
 
 pub fn draw(ctx: &egui::Context, game: &mut GameUi) {
-    game.poll_import();
-    if game.import_job.is_some() {
+    game.poll_replay();
+    if game.replay_job.is_some() {
         ctx.request_repaint_after(std::time::Duration::from_millis(80));
     }
     if !game.fonts_ready {
@@ -85,7 +85,10 @@ pub fn draw(ctx: &egui::Context, game: &mut GameUi) {
     if toggle {
         game.toggle_direction();
     }
-    let shortcuts = !ctx.egui_wants_keyboard_input() && !game.import_open && !game.confirm_restart;
+    let shortcuts = !ctx.egui_wants_keyboard_input()
+        && !game.import_open
+        && !game.confirm_restart
+        && game.replay_job.is_none();
     if inspect && shortcuts {
         game.clear_selection();
         game.inspect_mode = !game.inspect_mode;
@@ -117,7 +120,10 @@ pub fn draw(ctx: &egui::Context, game: &mut GameUi) {
                 ui.label(egui::RichText::new("Temporal Chess").size(23.0).strong());
                 ui.colored_label(MUTED, "шахматы во времени");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Новая партия").clicked() {
+                    if ui
+                        .add_enabled(game.replay_job.is_none(), egui::Button::new("Новая партия"))
+                        .clicked()
+                    {
                         game.confirm_restart = true;
                     }
                     if ui
@@ -263,13 +269,23 @@ fn sidebar(ui: &mut egui::Ui, game: &mut GameUi) {
             ui.ctx().copy_text(game.record.to_text());
             game.message("Партия скопирована в буфер обмена.", false);
         }
-        if ui.button("Загрузить").clicked() {
+        if ui
+            .add_enabled(game.replay_job.is_none(), egui::Button::new("Загрузить"))
+            .clicked()
+        {
             game.clear_selection();
             game.import_open = true;
             game.import_error = None;
         }
     });
-    if game.notice.starts_with("Партия скопирована") {
+    if ui.add_enabled(game.can_undo(), egui::Button::new("Отменить ход"))
+        .on_hover_text("Вернуться к позиции перед последним ходом, заново проиграв историю. Последующие протаскивания и продолжения просчёта тоже отменяются.")
+        .clicked() {
+        game.undo_last_move();
+    }
+    if game.notice.starts_with("Партия скопирована")
+        || game.notice.starts_with("Последний ход отменён")
+    {
         ui.small(&game.notice);
     }
     if game.log.is_empty() {
@@ -353,13 +369,22 @@ fn inspector(ui: &mut egui::Ui, game: &GameUi) {
 }
 
 fn dialogs(ctx: &egui::Context, game: &mut GameUi) {
+    if game.undo_in_progress() {
+        egui::Modal::new("undo_in_progress".into()).show(ctx, |ui| {
+            ui.heading("Отмена хода");
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label("Восстанавливаем партию из начальной позиции…");
+            });
+        });
+    }
     if game.import_open {
         egui::Modal::new("import_game".into()).show(ctx, |ui| {
             ui.set_width(560.0_f32.min(ctx.viewport_rect().width() - 60.0));
             ui.heading("Продолжить партию из записи");
             ui.label("Вставьте текст, полученный кнопкой «Копировать» (Ctrl+V).");
             ui.small("Текущая партия заменится только после успешной проверки всех команд.");
-            let loading = game.import_job.is_some();
+            let loading = game.replay_job.is_some();
             ui.add_enabled_ui(!loading, |ui| {
                 egui::ScrollArea::vertical()
                     .max_height(340.0)

@@ -179,6 +179,16 @@ impl PieceView {
     }
 
     pub fn castling_moves(&self, board: &Board) -> Vec<(Sq, Castling)> {
+        self.castling_moves_with_safety(board, board)
+    }
+
+    /// Occupancy and rook availability belong to the destination board;
+    /// attacks along the king's path belong to the position the player sees.
+    pub(crate) fn castling_moves_with_safety(
+        &self,
+        board: &Board,
+        safety: &Board,
+    ) -> Vec<(Sq, Castling)> {
         let mut v = Vec::new();
 
         // must be an unmoved king on home rank
@@ -196,7 +206,7 @@ impl PieceView {
 
         // helper closures
         let empty = |x: usize| board.is_empty(Sq(x, home_y));
-        let attacked = |x: usize| board.is_attacked(self.color.opposite(), Sq(x, home_y));
+        let attacked = |x: usize| safety.is_attacked(self.color.opposite(), Sq(x, home_y));
 
         // king must not be in check now
         if attacked(e) {

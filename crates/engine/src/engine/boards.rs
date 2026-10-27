@@ -1,12 +1,8 @@
-use std::collections::BTreeSet;
-
 use crate::board::{Board, PreBoard};
+use crate::model::ShortPieceId;
 use crate::pieces::{Color, PieceView};
 
-use super::{
-    BoardConflict, BoardErr, Engine, EngineErr, PieceAt, PieceId, Projection, ShortPieceId,
-    ValidRes,
-};
+use super::{BoardConflict, BoardErr, Engine, EngineErr, PieceAt, PieceId, Projection, ValidRes};
 
 impl Engine {
     pub fn make_board(&self, t: usize) -> Result<Board, BoardErr> {
@@ -46,38 +42,23 @@ impl Engine {
     }
 
     /// Discover optional reactions. Only newly available targets grant a reaction;
-    /// losing information alone does not grant a new move.
+    /// losing information alone does not grant a new move. Targets and blockers
+    /// are observed exclusively on the piece's current board.
     pub(super) fn update_infos(&mut self) -> Result<(), EngineErr> {
         let mut updates = Vec::new();
         for (&t, board) in &self.projection.boards {
             if Color::from_board(t) != self.turn {
                 continue;
             }
-            for &piece in board.pieces() {
-                if piece.color != self.turn
-                    || self.history.worldlines[piece.origin].is_borrowed(piece.age)
-                {
-                    continue;
-                }
-                let mut info = BTreeSet::new();
-                let moves = self.candidate_moves(piece.origin, piece.age)?;
-                for direction in [super::TimeDirection::Future, super::TimeDirection::Past] {
-                    if !moves.iter().any(|mv| mv.direction == direction) {
-                        continue;
-                    }
-                    let target = self.move_board(piece, direction)?;
-                    for mv in moves.iter().filter(|mv| mv.direction == direction) {
-                        let sq = mv.en_passant().unwrap_or(mv.sq);
-                        if let Some(victim) = target
-                            .get_piece(sq.0, sq.1)
-                            .filter(|p| p.color != piece.color)
-                        {
-                            info.insert(PieceId::from_piv(*victim));
-                        }
-                    }
-                }
-                updates.push((ShortPieceId::from_piv(&piece), info));
-            }
+            // Knowledge belongs to this occurrence's own board. Legal temporal
+            // moves may use adjacent boards, but must never feed future or past
+            // targets back into this state's informed set.
+            updates.extend(
+                board
+                    .calc_info()
+                    .into_iter()
+                    .filter(|(id, _)| !self.history.worldlines[id.wid].is_borrowed(id.age)),
+            );
         }
         for (id, info) in updates {
             let state = &mut self.history.worldlines[id.wid][id.age];

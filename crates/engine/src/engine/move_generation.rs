@@ -127,9 +127,7 @@ impl Engine {
     /// command to recorded moves; future edits may have changed their threats.
     pub(super) fn candidate_moves(&self, wid: usize, age: usize) -> Result<Vec<Move>, EngineErr> {
         let piece = self.get_piv(wid, age).ok_or(EngineErr::WrongPiece)?;
-        if self.board(piece.t).is_none() {
-            return Err(EngineErr::AbsentBoard);
-        }
+        let source = self.board(piece.t).ok_or(EngineErr::AbsentBoard)?;
         let candidate = |sq, direction, effect| Move {
             pid: PieceId::from_piv(piece),
             t: piece.t,
@@ -153,7 +151,7 @@ impl Engine {
             }
             // Preserve the prototype's forward-only castling rule.
             if direction == TimeDirection::Future {
-                for (square, castling) in piece.castling_moves(&board) {
+                for (square, castling) in piece.castling_moves_with_safety(&board, source) {
                     directed.push(candidate(square, direction, MoveEffect::Castle(castling)));
                 }
             }
@@ -197,8 +195,18 @@ impl Engine {
                 }) {
                     return true;
                 }
-                let mut pretend = board.clone();
-                // Source-square occupants of a different time are not the mover.
+                // Geometry and occupancy use the actual destination board, but
+                // forward king safety must not import future-only attackers.
+                // Simulate the spatial move in the source position, both when
+                // offering a new move and when revalidating a recorded one.
+                // A backward move still checks the existing past destination.
+                let mut pretend = if direction == TimeDirection::Future {
+                    let mut known = source.clone();
+                    known.remove_piece(piece.sq);
+                    known
+                } else {
+                    board.clone()
+                };
                 pretend.remove_piece(mv.sq);
                 if let Some(square) = mv.en_passant() {
                     pretend.remove_piece(square);

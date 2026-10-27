@@ -471,8 +471,8 @@ fn replacing_a_deeper_backward_move_removes_only_its_excursion() {
 }
 
 #[test]
-fn a_new_capture_on_an_adjacent_board_grants_a_reaction() {
-    for target_time in [1, 3] {
+fn only_a_new_capture_on_the_current_board_grants_information() {
+    for target_time in [1, 2, 3] {
         let mut white = line(4);
         white[2].rights.ordinary = false;
         let black: Vec<_> = line(4)
@@ -491,12 +491,15 @@ fn a_new_capture_on_an_adjacent_board_grants_a_reaction() {
         engine.history.worldlines[1][target_time].y = 2;
         engine.reconcile().unwrap();
         let source = &engine.history.worldlines[0][2];
-        assert!(source.rights.new_information);
+        assert_eq!(source.rights.new_information, target_time == 2);
         assert!(!source.rights.ordinary);
-        assert!(source.informed.contains(&PieceId::from_state(
-            &engine.history.worldlines[1][target_time],
-            1
-        )));
+        assert_eq!(
+            source.informed.contains(&PieceId::from_state(
+                &engine.history.worldlines[1][target_time],
+                1
+            )),
+            target_time == 2
+        );
     }
 }
 
