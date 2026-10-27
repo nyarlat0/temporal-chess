@@ -11,6 +11,7 @@ pub enum Outline {
     Information,
     Cancelled,
     Check,
+    InvertedCheck,
     Capture,
 }
 
@@ -29,6 +30,7 @@ impl Outline {
             Self::Information => INFORMATION,
             Self::Cancelled => REACTION,
             Self::Check | Self::Capture => CAPTURE,
+            Self::InvertedCheck => Color32::from_rgb(239, 137, 185),
         }
     }
 }
@@ -37,7 +39,18 @@ impl Outline {
 /// directory lookup is needed when running the game.
 pub struct PieceArt {
     sources: [&'static [u8]; 12],
-    textures: Mutex<HashMap<(usize, usize, PieceStyle), TextureHandle>>,
+    textures: Mutex<TextureCache>,
+}
+
+#[derive(Default)]
+struct TextureCache {
+    entries: HashMap<(usize, usize, PieceStyle), CachedTexture>,
+    pruned_frame: Option<u64>,
+}
+
+struct CachedTexture {
+    handle: TextureHandle,
+    last_used: u64,
 }
 
 impl PieceArt {
@@ -58,7 +71,7 @@ impl PieceArt {
         ];
         Self {
             sources,
-            textures: Mutex::new(HashMap::new()),
+            textures: Mutex::new(TextureCache::default()),
         }
     }
 
@@ -97,26 +110,75 @@ impl PieceArt {
         let scale = painter.ctx().pixels_per_point();
         let size = (rect.width() * scale).round().clamp(16.0, 384.0) as usize;
         let rect = pixel_aligned(rect, scale, size);
+        // Both hover states live in one texture. Entering a square changes
+        // only UVs, never a GPU texture allocation or bindless texture slot.
+        let highlighted = style.hovered && style.outline != Outline::None;
+        let style = PieceStyle {
+            hovered: false,
+            ..style
+        };
         let key = (index, size, style);
+        let frame = painter.ctx().cumulative_frame_nr();
         let mut cache = self.textures.lock().expect("piece textures");
-        if cache.len() > 384 {
-            cache.clear();
+        if cache.pruned_frame != Some(frame) {
+            cache.pruned_frame = Some(frame);
+            if cache.entries.len() > 384 {
+                // Never free textures already referenced by this frame, or by
+                // the previous frames still being consumed by the renderer.
+                cache
+                    .entries
+                    .retain(|_, entry| frame.saturating_sub(entry.last_used) <= 2);
+            }
         }
-        let texture = cache.entry(key).or_insert_with(|| {
-            let image = raster(self.sources[index], size, side, style);
-            painter.ctx().load_texture(
+        let texture = cache.entries.entry(key).or_insert_with(|| CachedTexture {
+            handle: painter.ctx().load_texture(
                 format!("piece-{key:?}"),
-                image,
+                hover_atlas(self.sources[index], size, side, style),
                 egui::TextureOptions::NEAREST,
-            )
+            ),
+            last_used: frame,
         });
+        texture.last_used = frame;
+        let uv = if style.outline == Outline::None {
+            Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0))
+        } else {
+            let left = if highlighted { 0.5 } else { 0.0 };
+            Rect::from_min_max(Pos2::new(left, 0.0), Pos2::new(left + 0.5, 1.0))
+        };
         painter.image(
-            texture.id(),
+            texture.handle.id(),
             rect.expand(padding(size) as f32 / scale),
-            Rect::from_min_size(Pos2::ZERO, Vec2::splat(1.0)),
+            uv,
             Color32::WHITE.gamma_multiply(alpha),
         );
     }
+}
+
+fn hover_atlas(svg: &[u8], size: usize, side: Color, style: PieceStyle) -> egui::ColorImage {
+    let normal = raster(svg, size, side, style);
+    if style.outline == Outline::None {
+        return normal;
+    }
+    let hovered = raster(
+        svg,
+        size,
+        side,
+        PieceStyle {
+            hovered: true,
+            ..style
+        },
+    );
+    let [width, height] = normal.size;
+    let mut pixels = Vec::with_capacity(width * height * 2);
+    for (left, right) in normal
+        .pixels
+        .chunks_exact(width)
+        .zip(hovered.pixels.chunks_exact(width))
+    {
+        pixels.extend_from_slice(left);
+        pixels.extend_from_slice(right);
+    }
+    egui::ColorImage::new([width * 2, height], pixels)
 }
 
 fn pixel_aligned(rect: Rect, scale: f32, size: usize) -> Rect {

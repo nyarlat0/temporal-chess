@@ -25,8 +25,7 @@ impl Engine {
                 .filter(|p| p.color == side && matches!(p.kind, PieceKind::K { .. }))
             {
                 let id = Self::piece_at(*king);
-                let mut ordinary =
-                    t == self.history.horizon && board.is_attacked(side.opposite(), king.sq);
+                let mut ordinary = board.is_attacked(side.opposite(), king.sq);
                 for (source_t, direction) in [
                     (t.checked_sub(1), TimeDirection::Future),
                     (t.checked_add(1), TimeDirection::Past),
@@ -195,7 +194,9 @@ impl Engine {
     }
 
     fn set_blocked(&mut self, player: Color, hand_over: bool) -> Result<(), EngineErr> {
-        let threatened = self.checks(player)?.is_check();
+        // A purely future-origin threat is a warning, not a visible check
+        // that restricts the player's commands or turns stalemate into mate.
+        let threatened = !self.checks(player)?.ordinary.is_empty();
         let debt = self.has_past_debt(player.opposite());
         if self.has_active_pieces(player) && !debt {
             self.history.status = GameStatus::Finished(if threatened {

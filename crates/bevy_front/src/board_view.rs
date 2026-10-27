@@ -5,6 +5,7 @@ use crate::{
 };
 use bevy_egui::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use temporal_chess_engine::{
+    engine::CheckStatus,
     model::{Color, Sq},
     record::Command,
 };
@@ -38,11 +39,15 @@ pub fn ribbon(ui: &mut egui::Ui, game: &mut GameUi) {
             let mut rows = Vec::new();
             let mut hovered = None;
             for index in range {
-                let (row, response) =
-                    ui.allocate_exact_size(Vec2::new(ui.available_width(), height), Sense::click());
+                let (_, row) = ui.allocate_space(Vec2::new(ui.available_width(), height));
                 let Some(&t) = times.get(index) else {
                     continue;
                 };
+                let response = ui.interact(
+                    row,
+                    ui.make_persistent_id(("timeline_board", t)),
+                    Sense::click(),
+                );
                 let board = Rect::from_min_size(
                     Pos2::new(row.center().x - cell * 4.0 + 18.0, row.top() + 46.0),
                     Vec2::splat(cell * 8.0),
@@ -127,11 +132,13 @@ fn paint_board(
         if active { 14.0 } else { 5.0 },
         side_color.gamma_multiply(alpha),
     );
-    let checked: Vec<_> = [Color::White, Color::Black]
-        .into_iter()
-        .filter_map(|side| game.engine.checks(side).ok())
-        .flat_map(|checks| checks.ordinary.into_iter().chain(checks.inverted))
-        .collect();
+    let mut checked = CheckStatus::default();
+    for side in [Color::White, Color::Black] {
+        if let Ok(checks) = game.engine.checks(side) {
+            checked.ordinary.extend(checks.ordinary);
+            checked.inverted.extend(checks.inverted);
+        }
+    }
     painter.text(
         board.left_top() - Vec2::new(0.0, 19.0),
         Align2::LEFT_CENTER,
@@ -344,7 +351,7 @@ fn paint_board(
 fn piece_style(
     game: &GameUi,
     piece: temporal_chess_engine::model::PieceView,
-    checked: &[temporal_chess_engine::model::PieceAt],
+    checked: &CheckStatus,
     hovered: Option<(usize, Sq)>,
 ) -> PieceStyle {
     let mut capture = false;
@@ -367,8 +374,10 @@ fn piece_style(
     }
     let outline = if capture {
         Outline::Capture
-    } else if checked.contains(&identity(piece)) {
+    } else if checked.ordinary.contains(&identity(piece)) {
         Outline::Check
+    } else if checked.inverted.contains(&identity(piece)) {
+        Outline::InvertedCheck
     } else if !piece.can_move() || piece.t == game.engine.history().horizon() {
         Outline::None
     } else if piece.rights.cancelled_move {
@@ -401,15 +410,15 @@ mod tests {
         game.click_square(2, Sq(4, 3));
         let before = game.engine.clone();
         let victim = *game.engine.board(2).unwrap().get_piece(3, 4).unwrap();
-        let quiet = piece_style(&game, victim, &[], None);
+        let quiet = piece_style(&game, victim, &CheckStatus::default(), None);
         assert_eq!(quiet.outline, Outline::Capture);
         assert!(!quiet.hovered);
-        let hovered = piece_style(&game, victim, &[], Some((2, Sq(3, 4))));
+        let hovered = piece_style(&game, victim, &CheckStatus::default(), Some((2, Sq(3, 4))));
         assert_eq!(hovered.outline, Outline::Capture);
         assert!(hovered.hovered);
         game.toggle_direction();
         assert_ne!(
-            piece_style(&game, victim, &[], None).outline,
+            piece_style(&game, victim, &CheckStatus::default(), None).outline,
             Outline::Capture
         );
         assert_eq!(game.engine, before);

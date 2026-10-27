@@ -226,13 +226,18 @@ impl Engine {
     }
 
     pub(super) fn inverse_safe(&self, mv: Move, side: Color) -> bool {
-        if !self
-            .history
-            .worldlines
-            .iter()
-            .flat_map(|line| line.iter())
-            .any(|s| s.alive && s.color == side && matches!(s.kind, PieceKind::K { .. }))
-        {
+        // A future-only threat is information the player does not yet have.
+        // This extra restriction applies only when a king is visibly checked
+        // on the board from which this command is played.
+        let Some(source) = self.board(mv.t) else {
+            return false;
+        };
+        let visible_check = source.pieces().iter().any(|king| {
+            king.color == side
+                && matches!(king.kind, PieceKind::K { .. })
+                && source.is_attacked(side.opposite(), king.sq)
+        });
+        if !visible_check {
             return true;
         }
         let mut probe = self.clone();
@@ -255,9 +260,30 @@ impl Engine {
                 {
                     return true; // Actual royal capture already ends the game.
                 }
-                probe
-                    .checks(side)
-                    .is_ok_and(|checks| checks.inverted.is_empty())
+                // Inspect only the opponent's immediate reply board, not all
+                // threats against unrelated royal occurrences in history.
+                // Replies may capture backward on t or forward on t+2 (with
+                // the usual source-board fallback when t+2 does not yet exist).
+                let Some(reply_board) = mv.t.checked_add(1).and_then(|t| probe.board(t)) else {
+                    return true;
+                };
+                for enemy in reply_board
+                    .pieces()
+                    .iter()
+                    .filter(|piece| piece.color != side && piece.can_move() && piece.is_movable())
+                {
+                    let Ok(replies) = probe.candidate_moves(enemy.origin, enemy.age) else {
+                        return false;
+                    };
+                    if replies.into_iter().any(|reply| {
+                        probe.move_capture_target(reply).is_some_and(|victim| {
+                            victim.color == side && matches!(victim.kind, PieceKind::K { .. })
+                        })
+                    }) {
+                        return false;
+                    }
+                }
+                true
             }
         }
     }

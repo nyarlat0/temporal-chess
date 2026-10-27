@@ -36,7 +36,7 @@ pub enum GameStatus {
     Finished(GameOutcome),
 }
 
-/// Frontier/spatial threats and backward capture candidates are reported separately.
+/// Visible/spatial threats and backward capture candidates are reported separately.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CheckStatus {
     pub ordinary: Vec<PieceAt>,
