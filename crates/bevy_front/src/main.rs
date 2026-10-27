@@ -12,7 +12,7 @@ fn main() {
     let mut app = App::new();
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
         primary_window: Some(Window {
-            title: "Nolan Chess · Шахматы во времени".into(),
+            title: "Temporal Chess · Темпоральные Шахматы".into(),
             resolution: WindowResolution::new(1260, 900),
             ..default()
         }),

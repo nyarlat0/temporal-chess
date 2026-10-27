@@ -3,7 +3,7 @@ use crate::{
     piece_art::PieceArt,
 };
 use bevy_egui::egui::{self, Color32, FontId, Vec2};
-use nolan_chess::{
+use temporal_chess_engine::{
     engine::CalculationStatus,
     model::{Color, PieceKind, TimeDirection},
 };
@@ -114,7 +114,7 @@ pub fn draw(ctx: &egui::Context, game: &mut GameUi) {
         )
         .show(&mut root, |ui| {
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Nolan Chess").size(23.0).strong());
+                ui.label(egui::RichText::new("Temporal Chess").size(23.0).strong());
                 ui.colored_label(MUTED, "шахматы во времени");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.button("Новая партия").clicked() {
@@ -367,7 +367,7 @@ fn dialogs(ctx: &egui::Context, game: &mut GameUi) {
                                 .font(egui::TextStyle::Monospace)
                                 .desired_width(f32::INFINITY)
                                 .desired_rows(13)
-                                .hint_text("NOLAN-CHESS 1\nmove 0 12:0:0 e2 e4 + normal"),
+                                .hint_text("TEMPORAL-CHESS 1\nmove 0 12:0:0 e2 e4 + normal"),
                         );
                     });
             });
@@ -494,7 +494,7 @@ fn piece_name(kind: PieceKind) -> &'static str {
 mod tests {
     use super::*;
     use egui::{Pos2, Rect};
-    use nolan_chess::model::Sq;
+    use temporal_chess_engine::model::Sq;
 
     fn frame(ctx: &egui::Context, game: &mut GameUi, events: Vec<egui::Event>) -> egui::FullOutput {
         let mut output = ctx.run_ui(
@@ -630,7 +630,7 @@ mod tests {
         click(&ctx, &mut game, pos);
         assert!(game.import_open);
         let output = frame(&ctx, &mut game, vec![]);
-        let pos = text_position(&output, "NOLAN-CHESS 1");
+        let pos = text_position(&output, "TEMPORAL-CHESS 1");
         click(&ctx, &mut game, pos);
         frame(
             &ctx,

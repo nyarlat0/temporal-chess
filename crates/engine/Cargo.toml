@@ -1,5 +1,5 @@
 [package]
-name = "nolan_chess"
+name = "temporal-chess-engine"
 version = "0.1.0"
 edition = "2024"
 

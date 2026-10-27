@@ -1,10 +1,10 @@
 use bevy::prelude::Resource;
-use nolan_chess::{
+use std::sync::{Mutex, mpsc};
+use temporal_chess_engine::{
     engine::{CalculationStatus, Engine, GameOutcome, GameStatus, WaitingReason, WinReason},
     model::{Color, Move, PieceAt, PieceId, PieceView, Sq, TimeDirection},
     record::{Command, GameRecord, RecordError},
 };
-use std::sync::{Mutex, mpsc};
 
 pub fn identity(piece: PieceView) -> PieceAt {
     PieceAt {
@@ -275,7 +275,7 @@ impl GameUi {
             Some(from) => self
                 .record
                 .apply(&mut self.engine, Command::Move { mv, from }),
-            None => Err(nolan_chess::engine::EngineErr::WrongPiece),
+            None => Err(temporal_chess_engine::engine::EngineErr::WrongPiece),
         };
         if result.is_ok() {
             self.jump_to = mv.direction.step(mv.t);
@@ -283,7 +283,11 @@ impl GameUi {
         self.after_command(result, text);
     }
 
-    fn after_command(&mut self, result: Result<(), nolan_chess::engine::EngineErr>, text: String) {
+    fn after_command(
+        &mut self,
+        result: Result<(), temporal_chess_engine::engine::EngineErr>,
+        text: String,
+    ) {
         match result {
             Ok(()) => {
                 self.clear_selection();
@@ -469,7 +473,7 @@ mod tests {
 
     #[test]
     fn waiting_on_another_board_still_has_no_turn_cost() {
-        use nolan_chess::model::{PieceKind, State};
+        use temporal_chess_engine::model::{PieceKind, State};
         let mut line = vec![State::new(PieceKind::N, Color::White, Sq(1, 0))];
         for _ in 0..6 {
             line.push(line.last().unwrap().prolongate().unwrap());
@@ -505,7 +509,7 @@ mod tests {
         let before = game.engine.clone();
         let record = game.record.clone();
         game.import_open = true;
-        game.import_text = "NOLAN-CHESS 1\nmove 0 12:0:0 e2 e5 + normal".into();
+        game.import_text = "TEMPORAL-CHESS 1\nmove 0 12:0:0 e2 e5 + normal".into();
         game.begin_import();
         finish_import(&mut game);
         assert_eq!(game.engine, before);

@@ -2690,20 +2690,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2bf50223579dc7cdcfb3bfcacf7069ff68243f8c363f62ffa99cf000a6b9c451"
 
 [[package]]
-name = "nolan-chess-bevy"
-version = "0.1.0"
-dependencies = [
- "bevy",
- "bevy_egui",
- "nolan_chess",
- "resvg",
-]
-
-[[package]]
-name = "nolan_chess"
-version = "0.1.0"
-
-[[package]]
 name = "nom"
 version = "8.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3917,6 +3903,20 @@ dependencies = [
  "quote",
  "unicode-ident",
 ]
+
+[[package]]
+name = "temporal-chess-bevy"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "bevy_egui",
+ "resvg",
+ "temporal-chess-engine",
+]
+
+[[package]]
+name = "temporal-chess-engine"
+version = "0.1.0"
 
 [[package]]
 name = "termcolor"

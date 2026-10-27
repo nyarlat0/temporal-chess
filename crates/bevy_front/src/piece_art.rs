@@ -1,7 +1,7 @@
 use crate::view::{CAPTURE, INFORMATION, ORDINARY, REACTION};
 use bevy_egui::egui::{self, Color32, Pos2, Rect, TextureHandle, Vec2};
-use nolan_chess::model::{Color, PieceKind};
 use std::{collections::HashMap, sync::Mutex};
+use temporal_chess_engine::model::{Color, PieceKind};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Outline {

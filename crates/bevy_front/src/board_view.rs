@@ -4,7 +4,7 @@ use crate::{
     view::{CAPTURE, FUTURE, INVERTED, MUTED, PLAYED_FUTURE, PLAYED_PAST, direction_color},
 };
 use bevy_egui::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
-use nolan_chess::{
+use temporal_chess_engine::{
     model::{Color, Sq},
     record::Command,
 };
@@ -343,8 +343,8 @@ fn paint_board(
 
 fn piece_style(
     game: &GameUi,
-    piece: nolan_chess::model::PieceView,
-    checked: &[nolan_chess::model::PieceAt],
+    piece: temporal_chess_engine::model::PieceView,
+    checked: &[temporal_chess_engine::model::PieceAt],
     hovered: Option<(usize, Sq)>,
 ) -> PieceStyle {
     let mut capture = false;
