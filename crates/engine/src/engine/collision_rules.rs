@@ -29,7 +29,14 @@ pub(super) fn collision_effects(collision: PieceCollision) -> Vec<CollisionEffec
         } else {
             vec![CancelLastMove(collider)]
         }
+    } else if collider.fut_seen > collided.fut_seen {
+        // Knowledge at the collision wins, regardless of movement or temporal
+        // orientation. The winner must not receive a delayed death either.
+        vec![kill(collided)]
+    } else if collided.fut_seen > collider.fut_seen {
+        vec![kill(collider)]
     } else if oncoming {
+        // Equal knowledge retains the existing tie-breaking rules.
         if bf_collider.sq != collider.sq && bf_collider.knows_future() {
             vec![
                 kill(collided),
