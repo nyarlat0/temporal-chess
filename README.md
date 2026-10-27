@@ -6,14 +6,14 @@
 ## Запуск игры
 
 ```sh
-cargo run -p nolan-chess-bevy
+cargo run -p temporal-chess-bevy
 ```
 
 Нужны Rust/Cargo и графическая сессия с поддерживаемым Bevy GPU. На Linux
 включены Wayland и X11. Первая сборка компилирует графические зависимости.
 Шрифт интерфейса и классические SVG-фигуры Cburnett встроены в бинарник; запуск не зависит от рабочей
 директории. Для автоматической проверки запуска окна: `cargo run -p
-nolan-chess-bevy -- --smoke-test` (закрывается через 180 кадров).
+temporal-chess-bevy -- --smoke-test` (закрывается через 180 кадров).
 
 - Новейшая доска находится сверху. Колесо прокручивает ленту; масштаб и переходы
   к началу/концу истории находятся на верхней панели.
@@ -51,12 +51,12 @@ nolan-chess-bevy -- --smoke-test` (закрывается через 180 кад�
 Текст можно сохранить в любом редакторе. Диалог сохранения на диск, сеть
 и компьютерный соперник пока отсутствуют.
 
-Формат `NOLAN-CHESS 1` хранит команды в порядке их выполнения, включая
+Формат `TEMPORAL-CHESS 1` хранит команды в порядке их выполнения, включая
 впоследствии отменённые ходы, инверсии, продвижение фигур и продолжение просчёта.
 Это собственный формат игры, не PGN. Например, начало `e4 e5`:
 
 ```text
-NOLAN-CHESS 1
+TEMPORAL-CHESS 1
 move 0 12:0:0 e2 e4 + normal
 move 1 28:1:0 e7 e5 + normal
 ```
@@ -113,13 +113,13 @@ move 1 28:1:0 e7 e5 + normal
 ## Использование
 
 Workspace разделён на независимый крейт `crates/engine` (библиотека
-`nolan_chess`, без внешних зависимостей) и `crates/bevy_front` (приложение
-`nolan-chess-bevy`, Bevy + egui). Приложение использует только публичный API
+`temporal_chess_engine`, без внешних зависимостей) и `crates/bevy_front` (приложение
+`temporal-chess-bevy`, Bevy + egui). Приложение использует только публичный API
 движка; отображение не меняет мировые линии напрямую.
 
 ```rust
-use nolan_chess::engine::Engine;
-use nolan_chess::model::{Color, Sq, TimeDirection};
+use temporal_chess_engine::engine::Engine;
+use temporal_chess_engine::model::{Color, Sq, TimeDirection};
 
 let mut game = Engine::default(); // Сразу содержит доску и индексы.
 let pawn = game.move_sources()
@@ -136,7 +136,7 @@ assert_eq!(game.board(1).unwrap().get_piece(4, 3).unwrap().origin, pawn.origin);
 
 let restored = Engine::from_history(game.history().clone(), game.turn())?;
 assert_eq!(restored, game);
-# Ok::<(), nolan_chess::engine::EngineErr>(())
+# Ok::<(), temporal_chess_engine::engine::EngineErr>(())
 ```
 
 `move_sources()` перечисляет доступные состояния фигур на всех досках для
@@ -181,7 +181,7 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 # Только движок, без сборки Bevy:
-cargo test -p nolan_chess
+cargo test -p temporal_chess_engine
 ```
 
 Внешних зависимостей у библиотеки нет. Пример выше также запускается как doctest.
