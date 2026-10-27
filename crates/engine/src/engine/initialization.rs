@@ -31,6 +31,7 @@ impl Engine {
                 targets: BTreeMap::new(),
                 horizon,
                 status: super::GameStatus::Ongoing,
+                calculation: Default::default(),
             },
             turn,
         )

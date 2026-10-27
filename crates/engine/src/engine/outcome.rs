@@ -6,6 +6,13 @@ use super::{
 };
 
 impl Engine {
+    fn has_active_pieces(&self, side: Color) -> bool {
+        self.projection
+            .boards
+            .values()
+            .flat_map(|b| b.pieces())
+            .any(|p| p.color == side && p.can_move() && p.is_movable())
+    }
     /// Threats on every extant royal occurrence. An inverted threat comes from
     /// an active enemy on t+1 and uses blockers on t, irrespective of its current
     /// orientation: any piece may choose a backward move.
@@ -90,19 +97,28 @@ impl Engine {
     /// Probe commands without recursively adjudicating their resulting turns.
     /// Geometric candidates rejected during reconciliation do not avert a draw.
     fn can_act(&self, side: Color) -> Result<bool, EngineErr> {
-        if self.has_past_debt(side) {
-            return Ok(true);
-        }
         let mut prepared = self.clone();
+        prepared.history.calculation.interactive = false;
         prepared.turn = side;
         prepared.history.status = GameStatus::Ongoing;
         prepared.reconcile()?;
         let sources: Vec<_> = prepared.move_sources().collect();
         for piece in sources {
-            if piece.rights.ordinary && piece.inverted && piece.t > 0 {
-                return Ok(true);
+            if piece.rights.ordinary {
+                for t in prepared.possible_skips(Self::piece_at(piece)) {
+                    let mut probe = prepared.clone();
+                    let result = probe
+                        .skip_inner(Self::piece_at(piece), t)
+                        .and_then(|()| probe.reconcile());
+                    if result.is_ok() || result == Err(EngineErr::InfLoop) {
+                        return Ok(true);
+                    }
+                }
             }
-            for mv in prepared.possible_moves(piece.origin, piece.age)? {
+            for mv in prepared.candidate_moves(piece.origin, piece.age)? {
+                if !prepared.inverse_safe(mv, side) {
+                    continue;
+                }
                 let mut probe = prepared.clone();
                 let result = probe.apply_move_inner(mv).and_then(|()| {
                     probe.turn = side.opposite();
@@ -124,6 +140,10 @@ impl Engine {
         if self.outcome().is_some() {
             return Ok(());
         }
+        // Neither king loss nor stalemate is final while the future is unresolved.
+        if self.calculation_barrier().is_some() {
+            return Ok(());
+        }
         // If both kings perish in a causal collision, the command's author
         // cannot claim victory by destroying their own royal worldline.
         for loser in [actor, actor.opposite()] {
@@ -139,10 +159,30 @@ impl Engine {
             return Ok(());
         }
 
+        // No reserves is a pass, not stalemate. Adjudicate only a side which
+        // actually has active pieces, and never recurse between empty sides.
+        if !self.has_active_pieces(self.turn) {
+            let absent = self.turn;
+            if !self.has_active_pieces(absent.opposite()) {
+                self.history.status = GameStatus::Waiting {
+                    player: absent,
+                    reason: WaitingReason::NoActivePieces,
+                };
+                return Ok(());
+            }
+            self.turn = absent.opposite();
+            self.history.status = GameStatus::Ongoing;
+            self.reconcile()?;
+            if self.calculation_barrier().is_some() {
+                return Ok(());
+            }
+        }
+
         // A free wait by the opponent can close the last debt. Re-evaluate the
         // waiting player without consuming the opponent's still-current turn.
         if let GameStatus::Waiting { player, .. } = self.status()
             && player != self.turn
+            && self.has_active_pieces(player)
             && !self.can_act(player)?
         {
             return self.set_blocked(player, false);
@@ -157,8 +197,15 @@ impl Engine {
     fn set_blocked(&mut self, player: Color, hand_over: bool) -> Result<(), EngineErr> {
         let threatened = self.checks(player)?.is_check();
         let debt = self.has_past_debt(player.opposite());
-        if !threatened && !debt {
-            self.history.status = GameStatus::Finished(GameOutcome::Stalemate);
+        if self.has_active_pieces(player) && !debt {
+            self.history.status = GameStatus::Finished(if threatened {
+                GameOutcome::Victory {
+                    winner: player.opposite(),
+                    reason: WinReason::Checkmate,
+                }
+            } else {
+                GameOutcome::Stalemate
+            });
             return Ok(());
         }
         self.history.status = GameStatus::Waiting {
@@ -171,15 +218,6 @@ impl Engine {
         };
         if hand_over {
             self.turn = player.opposite();
-            // A checked player with no commands must still allow an actual
-            // royal capture. If the opponent has no turn-board yet, a forced
-            // pass creates exactly one passive board (not a free player skip).
-            if threatened && !debt && Color::from_board(self.history.horizon) == player {
-                let end = self.history.horizon;
-                let next = end.checked_add(1).ok_or(EngineErr::WrongMove)?;
-                self.prolongate_wlines(end, None)?;
-                self.history.horizon = next;
-            }
             self.reconcile()?;
         }
         // No recursive handovers: two blocked sides never busy-loop.

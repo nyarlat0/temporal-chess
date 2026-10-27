@@ -1,6 +1,10 @@
-[package]
-name = "nolan_chess"
-version = "0.1.0"
-edition = "2024"
+[workspace]
+members = ["crates/engine", "crates/bevy_front"]
+default-members = ["crates/bevy_front"]
+resolver = "3"
 
-[dependencies]
+[profile.dev]
+debug = 0
+
+[profile.dev.package."*"]
+opt-level = 2

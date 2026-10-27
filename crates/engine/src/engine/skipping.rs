@@ -1,10 +1,20 @@
 use super::{Engine, EngineErr, MoveId, PieceAt, TimeDirection};
 
 impl Engine {
-    /// Relinquish this occurrence's ordinary right and wait in its existing
-    /// orientation. Does not consume a player's turn or another piece's rights.
-    /// The destination must be within existing history; equal time just declines
-    /// the right (also useful at the t=0 boundary of an inverted line).
+    /// Structurally valid waiting destinations for UI previews. Just like
+    /// possible_moves, final causality checks are performed by the command.
+    pub fn possible_skips(&self, source: PieceAt) -> Vec<usize> {
+        self.timeline_times()
+            .filter(|&t| t != source.t)
+            .filter(|&t| {
+                let mut candidate = self.clone();
+                candidate.skip_inner(source, t).is_ok()
+            })
+            .collect()
+    }
+    /// Advance to another existing time in the piece's current orientation.
+    /// Does not consume a player's turn or another piece's rights. Staying at
+    /// the same time cannot relinquish a right.
     pub fn skip_ordinary(&mut self, source: PieceAt, to_t: usize) -> Result<(), EngineErr> {
         self.transaction(|candidate| {
             candidate.skip_inner(source, to_t)?;
@@ -12,7 +22,7 @@ impl Engine {
         })
     }
 
-    fn skip_inner(&mut self, source: PieceAt, to_t: usize) -> Result<(), EngineErr> {
+    pub(super) fn skip_inner(&mut self, source: PieceAt, to_t: usize) -> Result<(), EngineErr> {
         let location = *self
             .projection
             .pieces
@@ -21,13 +31,17 @@ impl Engine {
         let piece = self
             .get_piv(location.wid, location.age)
             .ok_or(EngineErr::WrongPiece)?;
+        if self.board(piece.t).is_none() {
+            return Err(EngineErr::AbsentBoard);
+        }
         if piece.color != self.turn || !piece.can_move() {
             return Err(EngineErr::WrongTurn);
         }
         if !piece.rights.ordinary {
             return Err(EngineErr::WrongPiece);
         }
-        if to_t > self.history.horizon
+        if to_t == piece.t
+            || to_t > self.history.horizon
             || (piece.inverted && to_t > piece.t)
             || (!piece.inverted && to_t < piece.t)
         {

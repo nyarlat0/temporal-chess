@@ -7,6 +7,7 @@ use crate::pieces::{Color, PieceView};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WinReason {
+    Checkmate,
     KingCaptured,
     Paradox,
 }
@@ -19,6 +20,7 @@ pub enum GameOutcome {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WaitingReason {
+    NoActivePieces,
     OpponentPastMoves,
     KingUnderAttack,
 }
@@ -47,6 +49,19 @@ impl CheckStatus {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CalculationStatus {
+    Complete,
+    Paused { t: usize, side: Color },
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct Calculation {
+    pub interactive: bool,
+    pub acknowledged: Vec<PieceAt>,
+    pub responsible: Option<Color>,
+}
+
 /// Authoritative state. Board projections and lookup tables are never stored here.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct History {
@@ -58,6 +73,7 @@ pub struct History {
     /// The timeline still advances when its newest board contains no pieces.
     pub(super) horizon: usize,
     pub(super) status: GameStatus,
+    pub(super) calculation: Calculation,
 }
 
 impl History {
@@ -137,6 +153,8 @@ impl Engine {
         }
         let actor = self.turn;
         let mut candidate = self.clone();
+        candidate.history.calculation.acknowledged.clear();
+        candidate.history.calculation.responsible = Some(actor);
         match command(&mut candidate).and_then(|()| candidate.finish_command(actor)) {
             Ok(()) => {
                 *self = candidate;

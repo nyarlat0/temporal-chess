@@ -1,6 +1,38 @@
 use super::*;
 use crate::model::{Color, PieceKind, Sq};
 
+#[test]
+fn reported_bishop_opening_is_checkmate_without_an_automatic_pass() {
+    for interactive in [false, true] {
+        let mut engine = Engine::default();
+        if interactive {
+            engine = engine.with_interactive_calculation().unwrap();
+        }
+        for (t, from, to) in [
+            (0, Sq(3, 1), Sq(3, 3)),
+            (1, Sq(3, 6), Sq(3, 4)),
+            (2, Sq(6, 0), Sq(5, 2)),
+            (3, Sq(4, 6), Sq(4, 5)),
+            (4, Sq(6, 1), Sq(6, 2)),
+            (5, Sq(5, 7), Sq(1, 3)),
+        ] {
+            let source = *engine.board(t).unwrap().get_piece(from.0, from.1).unwrap();
+            play(&mut engine, source.origin, t, TimeDirection::Future, to);
+        }
+        assert_eq!(engine.history.horizon(), 6);
+        assert_eq!(engine.turn(), Color::White);
+        assert!(engine.checks(Color::White).unwrap().is_check());
+        assert_eq!(
+            engine.outcome(),
+            Some(GameOutcome::Victory {
+                winner: Color::Black,
+                reason: WinReason::Checkmate
+            })
+        );
+        roundtrip(&engine);
+    }
+}
+
 fn line(kind: PieceKind, color: Color, sq: Sq, end: usize) -> Vec<State> {
     let mut states = vec![State::new(kind, color, sq)];
     for _ in 0..end {
@@ -122,7 +154,7 @@ fn free_wait_can_close_the_last_opponent_debt_without_a_spatial_move() {
     let mut engine = Engine::from_worldlines(lines, Color::White).unwrap();
     let source = Engine::piece_at(engine.get_piv(3, 1).unwrap());
     engine.skip_ordinary(source, 4).unwrap();
-    assert_eq!(engine.turn(), Color::Black);
+    assert_eq!(engine.turn(), Color::White); // Black has no active pieces left.
     assert!(engine.history.moves().is_empty());
     assert_eq!(engine.outcome(), Some(GameOutcome::Stalemate));
     roundtrip(&engine);
@@ -207,8 +239,9 @@ fn ordinary_royal_capture_finishes_and_locks_the_game() {
 }
 
 #[test]
-fn a_noninverted_enemy_can_capture_a_past_king_even_after_it_moved_away() {
+fn king_escape_exposing_its_past_is_rejected_but_existing_inverse_capture_still_wins() {
     let mut king = line(PieceKind::K { moved: true }, Color::White, Sq(0, 0), 2);
+    king[0].rights.ordinary = true; // A real past reserve prevents immediate mate in this fixture.
     king[2].rights.ordinary = true;
     let rook = line(PieceKind::R { moved: true }, Color::Black, Sq(0, 7), 2);
     let mut engine = Engine::from_worldlines(
@@ -220,7 +253,24 @@ fn a_noninverted_enemy_can_capture_a_past_king_even_after_it_moved_away() {
         Color::White,
     )
     .unwrap();
-    play(&mut engine, 0, 2, TimeDirection::Future, Sq(1, 0));
+    // Construct the attempted escape directly: the new command API must refuse
+    // it even though the arrival square is spatially safe.
+    engine.turn = Color::White;
+    let mv = Move {
+        pid: PieceId::from_state(&engine.history.worldlines[0][2], 0),
+        t: 2,
+        sq: Sq(1, 0),
+        direction: TimeDirection::Future,
+        effect: MoveEffect::Normal,
+    };
+    let before = engine.clone();
+    assert!(!engine.possible_moves(0, 2).unwrap().contains(&mv));
+    assert_eq!(engine.apply_new_mv(mv), Err(EngineErr::WrongMove));
+    assert_eq!(engine, before);
+    // A pre-existing unsafe history still permits the actual royal capture.
+    engine.apply_move_inner(mv).unwrap();
+    engine.turn = Color::Black;
+    engine.reconcile().unwrap();
     assert_eq!(engine.turn(), Color::Black);
     assert_eq!(engine.get_piv(0, 3).unwrap().sq, Sq(1, 0));
     assert!(!engine.get_piv(2, 3).unwrap().inverted);
@@ -242,6 +292,73 @@ fn a_noninverted_enemy_can_capture_a_past_king_even_after_it_moved_away() {
         })
     );
     roundtrip(&engine);
+}
+
+#[test]
+fn no_active_pieces_passes_to_the_side_with_reserves_instead_of_drawing() {
+    let mut knight = line(PieceKind::N, Color::Black, Sq(6, 7), 2);
+    knight[1].rights.ordinary = true;
+    let engine = Engine::from_worldlines(
+        vec![
+            line(PieceKind::K { moved: true }, Color::White, Sq(0, 0), 2),
+            line(PieceKind::K { moved: true }, Color::Black, Sq(7, 7), 2),
+            knight,
+        ],
+        Color::White,
+    )
+    .unwrap();
+    assert_eq!(engine.turn(), Color::Black);
+    assert_eq!(engine.status(), GameStatus::Ongoing);
+    roundtrip(&engine);
+}
+
+#[test]
+fn two_sides_without_active_pieces_wait_without_a_false_stalemate_or_loop() {
+    let engine = Engine::from_worldlines(
+        vec![
+            line(PieceKind::K { moved: true }, Color::White, Sq(0, 0), 2),
+            line(PieceKind::K { moved: true }, Color::Black, Sq(7, 7), 2),
+        ],
+        Color::White,
+    )
+    .unwrap();
+    assert_eq!(engine.outcome(), None);
+    assert_eq!(
+        engine.status(),
+        GameStatus::Waiting {
+            player: Color::White,
+            reason: WaitingReason::NoActivePieces
+        }
+    );
+    roundtrip(&engine);
+}
+
+#[test]
+fn interposing_only_on_the_future_board_cannot_leave_a_past_royal_capture() {
+    let mut bishop = line(PieceKind::B, Color::White, Sq(1, 3), 3);
+    bishop[2].rights.ordinary = true;
+    let mut rook = line(PieceKind::R { moved: true }, Color::Black, Sq(0, 7), 3);
+    rook[3].rights.ordinary = true;
+    let mut engine = Engine::from_worldlines(
+        vec![
+            line(PieceKind::K { moved: true }, Color::White, Sq(0, 0), 3),
+            line(PieceKind::K { moved: true }, Color::Black, Sq(7, 7), 3),
+            bishop,
+            rook,
+        ],
+        Color::White,
+    )
+    .unwrap();
+    let mv = engine
+        .candidate_moves(2, 2)
+        .unwrap()
+        .into_iter()
+        .find(|mv| mv.direction == TimeDirection::Future && mv.sq == Sq(0, 4))
+        .unwrap();
+    assert!(!engine.possible_moves(2, 2).unwrap().contains(&mv));
+    let before = engine.clone();
+    assert_eq!(engine.apply_new_mv(mv), Err(EngineErr::WrongMove));
+    assert_eq!(engine, before);
 }
 
 #[test]
@@ -307,31 +424,65 @@ fn paradox_is_a_committed_loss_but_other_failures_roll_back() {
 }
 
 #[test]
-fn no_automatic_mate_a_checked_blocked_king_must_actually_be_captured() {
+fn checked_active_pieces_without_defence_end_in_mate_without_growing_history() {
     let mut lines = stalemate_lines();
     for state in &mut lines[2] {
         state.y = 1;
     }
-    let mut engine = Engine::from_worldlines(lines, Color::White).unwrap();
-    assert_eq!(engine.outcome(), None);
-    assert_eq!(
-        engine.status(),
-        GameStatus::Waiting {
-            player: Color::White,
-            reason: WaitingReason::KingUnderAttack
-        }
-    );
-    assert_eq!(engine.turn(), Color::Black);
-    assert_eq!(engine.history.horizon(), 5); // One forced, passive frontier turn.
+    let engine = Engine::from_worldlines(lines, Color::White).unwrap();
+    assert_eq!(engine.turn(), Color::White);
+    assert_eq!(engine.history.horizon(), 4);
     roundtrip(&engine);
-    play(&mut engine, 2, 5, TimeDirection::Past, Sq(0, 0));
     assert_eq!(
         engine.outcome(),
         Some(GameOutcome::Victory {
             winner: Color::Black,
-            reason: WinReason::KingCaptured
+            reason: WinReason::Checkmate
         })
     );
+}
+
+#[test]
+fn checkmate_waits_for_opponent_causal_debt_then_finishes_when_it_is_closed() {
+    let mut lines = stalemate_lines();
+    for state in &mut lines[2] {
+        state.y = 1;
+    }
+    let mut debt = line(PieceKind::N, Color::Black, Sq(6, 7), 4);
+    debt[1].rights.ordinary = true;
+    lines.push(debt);
+    let mut engine = Engine::from_worldlines(lines, Color::White).unwrap();
+    assert_eq!(
+        engine.status(),
+        GameStatus::Waiting {
+            player: Color::White,
+            reason: WaitingReason::OpponentPastMoves
+        }
+    );
+    assert_eq!(engine.turn(), Color::Black);
+    let source = Engine::piece_at(engine.get_piv(3, 1).unwrap());
+    engine.skip_ordinary(source, 4).unwrap();
+    assert_eq!(
+        engine.outcome(),
+        Some(GameOutcome::Victory {
+            winner: Color::Black,
+            reason: WinReason::Checkmate
+        })
+    );
+    assert_eq!(engine.history.horizon(), 4);
+    roundtrip(&engine);
+}
+
+#[test]
+fn ordinary_right_cannot_be_discarded_at_the_current_time() {
+    let mut engine = Engine::default();
+    let source = Engine::piece_at(engine.move_sources().next().unwrap());
+    let before = engine.clone();
+    assert_eq!(
+        engine.skip_ordinary(source, source.t),
+        Err(EngineErr::WrongMove)
+    );
+    assert_eq!(engine, before);
 }
 
 #[test]
@@ -372,7 +523,7 @@ fn capturing_the_future_attacker_removes_its_inverted_check() {
 }
 
 #[test]
-fn an_inverted_wait_reaches_zero_and_can_relinquish_its_boundary_right() {
+fn an_inverted_wait_reaches_zero_but_cannot_discard_its_boundary_right() {
     let mut first = State::new(PieceKind::P { moved: false }, Color::White, Sq(0, 1));
     first.t = 4;
     first.fut_seen = 4;
@@ -391,8 +542,13 @@ fn an_inverted_wait_reaches_zero_and_can_relinquish_its_boundary_right() {
     assert_eq!(endpoint.kind, PieceKind::P { moved: false });
     assert_eq!(engine.turn(), Color::White);
     assert_eq!(engine.history.horizon(), 4);
-    engine.skip_ordinary(Engine::piece_at(endpoint), 0).unwrap();
-    assert!(!engine.get_piv(0, 4).unwrap().rights.ordinary);
+    let before = engine.clone();
+    assert_eq!(
+        engine.skip_ordinary(Engine::piece_at(endpoint), 0),
+        Err(EngineErr::WrongMove)
+    );
+    assert_eq!(engine, before);
+    assert!(engine.get_piv(0, 4).unwrap().rights.ordinary);
     roundtrip(&engine);
 }
 

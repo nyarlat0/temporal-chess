@@ -1,0 +1,411 @@
+//! Portable, append-only commands starting from the standard initial position.
+//! Recorded moves in History can be replaced or cancelled; they are not a replay log.
+use crate::{
+    engine::{CalculationStatus, Engine, EngineErr},
+    model::{Castling, Move, MoveEffect, PieceAt, PieceId, Promotion, Sq, TimeDirection},
+};
+use std::fmt;
+
+const HEADER: &str = "NOLAN-CHESS 1";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Command {
+    Move {
+        mv: Move,
+        from: Sq,
+    },
+    Advance {
+        source: PieceAt,
+        from: Sq,
+        to_t: usize,
+    },
+    Continue,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GameRecord {
+    commands: Vec<Command>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecordError {
+    pub line: usize,
+    pub message: String,
+}
+impl fmt::Display for RecordError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Строка {}: {}", self.line, self.message)
+    }
+}
+impl std::error::Error for RecordError {}
+
+impl GameRecord {
+    pub fn commands(&self) -> &[Command] {
+        &self.commands
+    }
+
+    /// A failed command leaves both the game and its replay record unchanged.
+    pub fn apply(&mut self, engine: &mut Engine, command: Command) -> Result<(), EngineErr> {
+        match command {
+            Command::Move { mv, from } => {
+                check_source(engine, mv.source(), from)?;
+                engine.apply_new_mv(mv)?;
+            }
+            Command::Advance { source, from, to_t } => {
+                check_source(engine, source, from)?;
+                engine.skip_ordinary(source, to_t)?;
+            }
+            Command::Continue => {
+                if !matches!(
+                    engine.calculation_status(),
+                    CalculationStatus::Paused { .. }
+                ) {
+                    return Err(EngineErr::WrongMove);
+                }
+                engine.continue_calculation()?;
+            }
+        }
+        self.commands.push(command);
+        Ok(())
+    }
+
+    pub fn to_text(&self) -> String {
+        let mut text = format!("{HEADER}\n");
+        for command in &self.commands {
+            text.push_str(&format!("{command}\n"));
+        }
+        text
+    }
+
+    /// Replay into an isolated game. Callers replace their game only on success.
+    /// Blank lines and # comments are allowed; errors report original line numbers.
+    pub fn load(text: &str) -> Result<(Engine, Self), RecordError> {
+        let error = |line, message: String| RecordError { line, message };
+        if text.len() > 2 * 1024 * 1024 {
+            return Err(error(1, "Партия больше 2 МиБ".into()));
+        }
+        let mut lines = text
+            .trim_start_matches('\u{feff}')
+            .lines()
+            .enumerate()
+            .map(|(n, line)| (n + 1, line.split('#').next().unwrap_or("").trim()))
+            .filter(|(_, line)| !line.is_empty());
+        let (line, header) = lines
+            .next()
+            .ok_or_else(|| error(1, "Пустая запись партии".into()))?;
+        if header != HEADER {
+            return Err(error(line, format!("Ожидался заголовок {HEADER}")));
+        }
+        let mut engine = Engine::default()
+            .with_interactive_calculation()
+            .map_err(|e| error(line, e.to_string()))?;
+        let mut record = Self::default();
+        for (line, text) in lines {
+            if record.commands.len() >= 10_000 {
+                return Err(error(line, "Больше 10000 команд".into()));
+            }
+            let command = parse(text).map_err(|message| error(line, message))?;
+            record
+                .apply(&mut engine, command)
+                .map_err(|e| error(line, format!("Команда не принята: {e}")))?;
+        }
+        Ok((engine, record))
+    }
+}
+
+fn check_source(engine: &Engine, source: PieceAt, from: Sq) -> Result<(), EngineErr> {
+    let state = engine.piece_state(source).ok_or(EngineErr::WrongPiece)?;
+    if !state.alive || Sq(state.x, state.y) != from {
+        return Err(EngineErr::WrongPiece);
+    }
+    Ok(())
+}
+
+fn square(sq: Sq) -> String {
+    format!("{}{}", char::from(b'a' + sq.0 as u8), sq.1 + 1)
+}
+fn piece(id: PieceId) -> String {
+    format!("{}:{}:{}", id.wid, id.fut_seen, id.loop_turn)
+}
+impl fmt::Display for Command {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            Command::Move { mv, from } => {
+                let effect = match mv.effect {
+                    MoveEffect::Normal => "normal".into(),
+                    MoveEffect::Castle(Castling::Short) => "O-O".into(),
+                    MoveEffect::Castle(Castling::Long) => "O-O-O".into(),
+                    MoveEffect::EnPassant { captured } => format!("ep:{}", square(captured)),
+                    MoveEffect::Promote(p) => format!(
+                        "={}",
+                        match p {
+                            Promotion::Queen => 'Q',
+                            Promotion::Rook => 'R',
+                            Promotion::Bishop => 'B',
+                            Promotion::Knight => 'N',
+                        }
+                    ),
+                };
+                write!(
+                    f,
+                    "move {} {} {} {} {} {}",
+                    mv.t,
+                    piece(mv.pid),
+                    square(from),
+                    square(mv.sq),
+                    if mv.to_past() { "-" } else { "+" },
+                    effect
+                )
+            }
+            Command::Advance { source, from, to_t } => write!(
+                f,
+                "advance {} {} {} {}",
+                source.t,
+                piece(source.piece),
+                square(from),
+                to_t
+            ),
+            Command::Continue => f.write_str("continue"),
+        }
+    }
+}
+
+fn number(text: &str) -> Result<usize, String> {
+    text.parse()
+        .map_err(|_| format!("Некорректное число: {text}"))
+}
+fn parse_square(text: &str) -> Result<Sq, String> {
+    let b = text.as_bytes();
+    if b.len() == 2 && (b'a'..=b'h').contains(&b[0]) && (b'1'..=b'8').contains(&b[1]) {
+        Ok(Sq((b[0] - b'a') as usize, (b[1] - b'1') as usize))
+    } else {
+        Err(format!("Некорректная клетка: {text}"))
+    }
+}
+fn parse_piece(text: &str) -> Result<PieceId, String> {
+    let fields: Vec<_> = text.split(':').collect();
+    let [wid, future, turn] = fields.as_slice() else {
+        return Err("Версия фигуры должна иметь вид wid:fut_seen:loop_turn".into());
+    };
+    Ok(PieceId {
+        wid: number(wid)?,
+        fut_seen: number(future)?,
+        loop_turn: number(turn)?,
+    })
+}
+fn parse(text: &str) -> Result<Command, String> {
+    let fields: Vec<_> = text.split_whitespace().collect();
+    match fields.as_slice() {
+        ["move", t, pid, from, to, direction, effect] => {
+            let direction = match *direction {
+                "+" => TimeDirection::Future,
+                "-" => TimeDirection::Past,
+                _ => return Err("Направление: + или -".into()),
+            };
+            let effect = match *effect {
+                "normal" => MoveEffect::Normal,
+                "O-O" => MoveEffect::Castle(Castling::Short),
+                "O-O-O" => MoveEffect::Castle(Castling::Long),
+                "=Q" => MoveEffect::Promote(Promotion::Queen),
+                "=R" => MoveEffect::Promote(Promotion::Rook),
+                "=B" => MoveEffect::Promote(Promotion::Bishop),
+                "=N" => MoveEffect::Promote(Promotion::Knight),
+                s if s.starts_with("ep:") => MoveEffect::EnPassant {
+                    captured: parse_square(&s[3..])?,
+                },
+                _ => return Err("Неизвестный вид хода".into()),
+            };
+            Ok(Command::Move {
+                from: parse_square(from)?,
+                mv: Move {
+                    t: number(t)?,
+                    pid: parse_piece(pid)?,
+                    sq: parse_square(to)?,
+                    direction,
+                    effect,
+                },
+            })
+        }
+        ["advance", t, pid, from, to] => Ok(Command::Advance {
+            source: PieceAt {
+                t: number(t)?,
+                piece: parse_piece(pid)?,
+            },
+            from: parse_square(from)?,
+            to_t: number(to)?,
+        }),
+        ["continue"] => Ok(Command::Continue),
+        _ => Err("Неизвестная команда или неверное количество полей".into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn replay_inversion_and_then_continue_playing() {
+        let mut engine = Engine::default().with_interactive_calculation().unwrap();
+        let mut record = GameRecord::default();
+        for (t, from, to, direction) in [
+            (0, Sq(4, 1), Sq(4, 3), TimeDirection::Future),
+            (1, Sq(4, 6), Sq(4, 4), TimeDirection::Future),
+            (2, Sq(6, 0), Sq(7, 2), TimeDirection::Past),
+        ] {
+            let p = *engine.board(t).unwrap().get_piece(from.0, from.1).unwrap();
+            let mv = engine
+                .possible_moves(p.origin, p.age)
+                .unwrap()
+                .into_iter()
+                .find(|mv| mv.sq == to && mv.direction == direction)
+                .unwrap();
+            record
+                .apply(&mut engine, Command::Move { mv, from })
+                .unwrap();
+        }
+        let (mut restored, mut imported) = GameRecord::load(&record.to_text()).unwrap();
+        assert_eq!(restored, engine);
+        assert_eq!(imported, record);
+        let p = *restored.board(3).unwrap().get_piece(1, 7).unwrap();
+        let mv = restored
+            .possible_moves(p.origin, p.age)
+            .unwrap()
+            .into_iter()
+            .find(|mv| mv.sq == Sq(2, 5) && !mv.to_past())
+            .unwrap();
+        imported
+            .apply(&mut restored, Command::Move { mv, from: Sq(1, 7) })
+            .unwrap();
+        assert_eq!(GameRecord::load(&imported.to_text()).unwrap().0, restored);
+    }
+    #[test]
+    fn malformed_or_illegal_commands_report_the_original_line() {
+        for command in [
+            "move 0 12:0:0 e2 e5 + normal",
+            "move 0 12:0:0 e2 z9 + normal",
+            "advance 0 12:0:0 e2 0",
+            "continue",
+            "move 0 12:0:0 e2 e4 ? normal",
+        ] {
+            let error =
+                GameRecord::load(&format!("{HEADER}\n# comment\n\n{command}\n")).unwrap_err();
+            assert_eq!(error.line, 4);
+        }
+        assert!(GameRecord::load("NOLAN-CHESS 2").is_err());
+    }
+    #[test]
+    fn special_moves_and_incarnations_encode_without_loss() {
+        for effect in [
+            MoveEffect::Castle(Castling::Long),
+            MoveEffect::Castle(Castling::Short),
+            MoveEffect::EnPassant { captured: Sq(4, 4) },
+            MoveEffect::Promote(Promotion::Knight),
+            MoveEffect::Promote(Promotion::Queen),
+        ] {
+            let command = Command::Move {
+                from: Sq(1, 6),
+                mv: Move {
+                    pid: PieceId {
+                        wid: 3,
+                        fut_seen: 12,
+                        loop_turn: 2,
+                    },
+                    t: 8,
+                    sq: Sq(1, 7),
+                    direction: TimeDirection::Past,
+                    effect,
+                },
+            };
+            assert_eq!(parse(&command.to_string()).unwrap(), command);
+        }
+    }
+    #[test]
+    fn replay_free_advance_keeps_the_turn_and_temporal_worldlines() {
+        let mut engine = Engine::default().with_interactive_calculation().unwrap();
+        let mut record = GameRecord::default();
+        for (t, from, to, direction) in [
+            (0, Sq(4, 1), Sq(4, 3), TimeDirection::Future),
+            (1, Sq(4, 6), Sq(4, 4), TimeDirection::Future),
+            (2, Sq(6, 0), Sq(5, 2), TimeDirection::Future),
+            (3, Sq(1, 7), Sq(2, 5), TimeDirection::Future),
+            (4, Sq(5, 2), Sq(7, 3), TimeDirection::Past),
+            (5, Sq(6, 7), Sq(5, 5), TimeDirection::Future),
+        ] {
+            let p = *engine.board(t).unwrap().get_piece(from.0, from.1).unwrap();
+            let mv = engine
+                .possible_moves(p.origin, p.age)
+                .unwrap()
+                .into_iter()
+                .find(|mv| mv.sq == to && mv.direction == direction)
+                .unwrap();
+            record
+                .apply(&mut engine, Command::Move { mv, from })
+                .unwrap();
+        }
+        let p = engine
+            .move_sources()
+            .find(|p| p.inverted && p.t == 2)
+            .unwrap();
+        let source = PieceAt {
+            piece: PieceId::from_piv(p),
+            t: p.t,
+        };
+        assert!(engine.possible_skips(source).contains(&0));
+        let turn = engine.turn();
+        record
+            .apply(
+                &mut engine,
+                Command::Advance {
+                    source,
+                    from: p.sq,
+                    to_t: 0,
+                },
+            )
+            .unwrap();
+        assert_eq!(engine.turn(), turn);
+        let (restored, imported) = GameRecord::load(&record.to_text()).unwrap();
+        assert_eq!(restored, engine);
+        assert_eq!(imported, record);
+    }
+
+    #[test]
+    fn failed_commands_do_not_change_the_game_or_record() {
+        let mut engine = Engine::default().with_interactive_calculation().unwrap();
+        let original = engine.clone();
+        let mut record = GameRecord::default();
+        let command = parse("move 0 12:0:0 e2 e5 + normal").unwrap();
+        assert!(record.apply(&mut engine, command).is_err());
+        assert_eq!(engine, original);
+        assert!(record.commands().is_empty());
+    }
+
+    #[test]
+    fn calculation_acknowledgements_are_recorded_without_spending_a_turn() {
+        use crate::model::{Color, PieceKind, State};
+        let mut line = vec![State::new(PieceKind::N, Color::White, Sq(1, 0))];
+        for _ in 0..6 {
+            line.push(line.last().unwrap().prolongate().unwrap());
+        }
+        line[2].rights.cancelled_move = true;
+        line[4].rights.cancelled_move = true;
+        let mut engine = Engine::from_worldlines(vec![line], Color::White)
+            .unwrap()
+            .with_interactive_calculation()
+            .unwrap();
+        let mut record = GameRecord::default();
+        record.apply(&mut engine, Command::Continue).unwrap();
+        assert_eq!(
+            engine.calculation_status(),
+            CalculationStatus::Paused {
+                t: 4,
+                side: Color::White
+            }
+        );
+        record.apply(&mut engine, Command::Continue).unwrap();
+        assert_eq!(engine.calculation_status(), CalculationStatus::Complete);
+        assert_eq!(engine.turn(), Color::White);
+        assert_eq!(record.commands(), [Command::Continue, Command::Continue]);
+        assert_eq!(parse("continue").unwrap(), Command::Continue);
+        assert!(record.apply(&mut engine, Command::Continue).is_err());
+        assert_eq!(record.commands().len(), 2);
+    }
+}

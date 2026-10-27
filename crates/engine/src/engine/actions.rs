@@ -5,6 +5,13 @@ impl Engine {
     /// Commit the move, temporal edits, reconciliation and turn change atomically.
     pub fn apply_new_mv(&mut self, mv: Move) -> Result<(), EngineErr> {
         self.transaction(|candidate| {
+            let piece = candidate.get_piv_from_mv(mv).ok_or(EngineErr::WrongPiece)?;
+            if piece.color != candidate.turn {
+                return Err(EngineErr::WrongTurn);
+            }
+            if !candidate.inverse_safe(mv, piece.color) {
+                return Err(EngineErr::WrongMove);
+            }
             candidate.apply_move_inner(mv)?;
             candidate.turn = candidate.turn.opposite();
             candidate.reconcile()?;
@@ -17,13 +24,16 @@ impl Engine {
 
     pub(super) fn apply_move_inner(&mut self, mv: Move) -> Result<(), EngineErr> {
         let mut piece = self.get_piv_from_mv(mv).ok_or(EngineErr::WrongPiece)?;
+        if self.board(piece.t).is_none() {
+            return Err(EngineErr::AbsentBoard);
+        }
         if piece.color != self.turn || !piece.can_move() {
             return Err(EngineErr::WrongTurn);
         }
         if !piece.is_movable() {
             return Err(EngineErr::WrongPiece);
         }
-        if !self.possible_moves(piece.origin, piece.age)?.contains(&mv) {
+        if !self.candidate_moves(piece.origin, piece.age)?.contains(&mv) {
             return Err(EngineErr::WrongMove);
         }
         let checking = self.move_board(piece, mv.direction)?;

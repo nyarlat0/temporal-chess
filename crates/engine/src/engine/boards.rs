@@ -23,10 +23,14 @@ impl Engine {
 
     /// Resolve at most one intersection. The caller rebuilds every derived view
     /// before continuing, so no conflict is resolved against stale projections.
-    pub(super) fn build_boards(&mut self) -> Result<ValidRes, EngineErr> {
+    pub(super) fn build_boards(&mut self, through: usize) -> Result<ValidRes, EngineErr> {
         self.projection.boards.clear();
         let times: Vec<_> = self.projection.preboards.keys().copied().collect();
+        let limit = self.calculation_barrier().unwrap_or(through).min(through);
         for t in times {
+            if t > limit {
+                break;
+            }
             match self.make_board(t) {
                 Ok(board) => {
                     self.projection.boards.insert(t, board);
@@ -56,7 +60,7 @@ impl Engine {
                     continue;
                 }
                 let mut info = BTreeSet::new();
-                let moves = self.possible_moves(piece.origin, piece.age)?;
+                let moves = self.candidate_moves(piece.origin, piece.age)?;
                 for direction in [super::TimeDirection::Future, super::TimeDirection::Past] {
                     if !moves.iter().any(|mv| mv.direction == direction) {
                         continue;

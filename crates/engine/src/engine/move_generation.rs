@@ -13,7 +13,17 @@ impl Engine {
         direction: TimeDirection,
     ) -> Result<Board, EngineErr> {
         let target_time = direction.step(piece.t);
-        let target = target_time.and_then(|t| self.projection.boards.get(&t));
+        // A conflict-free preboard is usable as a tentative destination even
+        // when reconciliation is paused before it. Never publish it as a Board.
+        let tentative = target_time
+            .and_then(|t| self.projection.preboards.get(&t))
+            .and_then(|preboard| preboard.try_into_board());
+        let target = target_time
+            .and_then(|t| self.projection.boards.get(&t))
+            .or(tentative.as_ref());
+        if target.is_none() && target_time.is_some_and(|t| self.preboard(t).is_some()) {
+            return Err(EngineErr::AbsentBoard);
+        }
         let target_exists = target.is_some();
         let selected = match target {
             Some(board) => board,
@@ -79,7 +89,47 @@ impl Engine {
     /// Candidate movement is evaluated on t+1 (or t when absent) / t-1.
     /// Turn ownership and the reason a piece may act are checked by the command.
     pub fn possible_moves(&self, wid: usize, age: usize) -> Result<Vec<Move>, EngineErr> {
+        let mut moves = self.candidate_moves(wid, age)?;
         let piece = self.get_piv(wid, age).ok_or(EngineErr::WrongPiece)?;
+        if piece.can_move()
+            && piece.is_movable()
+            && self
+                .history
+                .worldlines
+                .iter()
+                .flat_map(|line| line.iter())
+                .any(|s| s.alive && s.color == piece.color && matches!(s.kind, PieceKind::K { .. }))
+        {
+            moves.retain(|mv| self.inverse_safe(*mv, piece.color));
+        }
+        Ok(moves)
+    }
+
+    /// Capture marker for a candidate, using exactly the same temporal target
+    /// (including restored recorded targets) as the movement rules.
+    pub fn move_captures(&self, mv: Move) -> bool {
+        self.move_capture_target(mv).is_some()
+    }
+
+    /// Victim on the effective target board, including en passant and restored
+    /// targets of a replaced move. The caller supplies a legal candidate move.
+    pub fn move_capture_target(&self, mv: Move) -> Option<PieceView> {
+        let piece = self.get_piv_from_mv(mv)?;
+        let board = self.move_board(piece, mv.direction).ok()?;
+        let sq = mv.en_passant().unwrap_or(mv.sq);
+        board
+            .get_piece(sq.0, sq.1)
+            .filter(|p| p.color != piece.color)
+            .copied()
+    }
+
+    /// Historical validation must not recursively apply the rules for a new
+    /// command to recorded moves; future edits may have changed their threats.
+    pub(super) fn candidate_moves(&self, wid: usize, age: usize) -> Result<Vec<Move>, EngineErr> {
+        let piece = self.get_piv(wid, age).ok_or(EngineErr::WrongPiece)?;
+        if self.board(piece.t).is_none() {
+            return Err(EngineErr::AbsentBoard);
+        }
         let candidate = |sq, direction, effect| Move {
             pid: PieceId::from_piv(piece),
             t: piece.t,
@@ -94,7 +144,7 @@ impl Engine {
             }
             let board = match self.move_board(piece, direction) {
                 Ok(board) => board,
-                Err(EngineErr::AbsentBoard) if direction == TimeDirection::Past => continue,
+                Err(EngineErr::AbsentBoard) => continue,
                 Err(error) => return Err(error),
             };
             let mut directed = Vec::new();
@@ -173,5 +223,42 @@ impl Engine {
             moves.extend(directed);
         }
         Ok(moves)
+    }
+
+    pub(super) fn inverse_safe(&self, mv: Move, side: Color) -> bool {
+        if !self
+            .history
+            .worldlines
+            .iter()
+            .flat_map(|line| line.iter())
+            .any(|s| s.alive && s.color == side && matches!(s.kind, PieceKind::K { .. }))
+        {
+            return true;
+        }
+        let mut probe = self.clone();
+        probe.turn = side;
+        probe.history.calculation.interactive = false;
+        let result = probe.apply_move_inner(mv).and_then(|()| {
+            probe.turn = side.opposite();
+            probe.reconcile()
+        });
+        match result {
+            Err(EngineErr::InfLoop) => true, // The existing paradox loss still applies.
+            Err(_) => false,
+            Ok(()) => {
+                if probe
+                    .history
+                    .worldlines
+                    .iter()
+                    .flat_map(|line| line.iter())
+                    .any(|s| !s.alive && s.color != side && matches!(s.kind, PieceKind::K { .. }))
+                {
+                    return true; // Actual royal capture already ends the game.
+                }
+                probe
+                    .checks(side)
+                    .is_ok_and(|checks| checks.inverted.is_empty())
+            }
+        }
     }
 }

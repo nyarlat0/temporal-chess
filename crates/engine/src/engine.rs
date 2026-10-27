@@ -1,5 +1,6 @@
 mod actions;
 mod boards;
+mod calculation;
 mod collision_rules;
 mod collisions;
 mod history;
@@ -17,11 +18,13 @@ pub use crate::model::{
     State, TimeDirection,
 };
 pub use types::{
-    BoardConflict, BoardErr, CheckStatus, Engine, EngineErr, GameOutcome, GameStatus, History,
-    WaitingReason, WinReason,
+    BoardConflict, BoardErr, CalculationStatus, CheckStatus, Engine, EngineErr, GameOutcome,
+    GameStatus, History, WaitingReason, WinReason,
 };
 use types::{PieceCollision, Projection, ValidRes};
 
+#[cfg(test)]
+mod calculation_tests;
 #[cfg(test)]
 mod outcome_tests;
 #[cfg(test)]
