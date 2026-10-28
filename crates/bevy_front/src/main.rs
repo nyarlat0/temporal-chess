@@ -1,3 +1,4 @@
+mod animation;
 mod board_view;
 mod controller;
 mod piece_art;

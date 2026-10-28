@@ -1,7 +1,7 @@
 //! Portable, append-only commands starting from the standard initial position.
 //! Recorded moves in History can be replaced or cancelled; they are not a replay log.
 use crate::{
-    engine::{CalculationStatus, Engine, EngineErr},
+    engine::{Engine, EngineErr},
     model::{Castling, Move, MoveEffect, PieceAt, PieceId, Promotion, Sq, TimeDirection},
 };
 use std::fmt;
@@ -79,12 +79,9 @@ impl GameRecord {
                 engine.skip_ordinary(source, to_t)?;
             }
             Command::Continue => {
-                if !matches!(
-                    engine.calculation_status(),
-                    CalculationStatus::Paused { .. }
-                ) {
-                    return Err(EngineErr::WrongMove);
-                }
+                // Older records can acknowledge a cancellation that is now
+                // harmless and no longer pauses calculation. Keep replaying it
+                // as a no-op, exactly like Engine::continue_calculation does.
                 engine.continue_calculation()?;
             }
         }
@@ -265,6 +262,7 @@ fn parse(text: &str) -> Result<Command, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::CalculationStatus;
     #[test]
     fn replay_inversion_and_then_continue_playing() {
         let mut engine = Engine::default().with_interactive_calculation().unwrap();

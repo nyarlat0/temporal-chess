@@ -1,7 +1,10 @@
+use crate::animation::{BoardTransition, SmoothScroll};
 use bevy::prelude::Resource;
 use std::sync::{Mutex, mpsc};
 use temporal_chess_engine::{
-    engine::{CalculationStatus, Engine, GameOutcome, GameStatus, WaitingReason, WinReason},
+    engine::{
+        CalculationStatus, CheckStatus, Engine, GameOutcome, GameStatus, WaitingReason, WinReason,
+    },
     model::{Color, Move, PieceAt, PieceId, PieceView, Sq, TimeDirection},
     record::{Command, GameRecord, RecordError},
 };
@@ -54,6 +57,7 @@ impl Selection {
 #[derive(Resource)]
 pub struct GameUi {
     pub engine: Engine,
+    pub checks: CheckStatus,
     pub selected: Option<Selection>,
     pub inspect_mode: bool,
     pub inspected: Option<PieceAt>,
@@ -68,6 +72,7 @@ pub struct GameUi {
     pub fonts_ready: bool,
     pub art: Option<crate::piece_art::PieceArt>,
     pub viewport: TimelineViewport,
+    pub transition: Option<BoardTransition>,
     pub record: GameRecord,
     pub import_open: bool,
     pub import_text: String,
@@ -92,6 +97,7 @@ pub struct TimelineViewport {
     pub times: Vec<usize>,
     pub offset: f32,
     pub stride: f32,
+    pub scroll: Option<SmoothScroll>,
 }
 
 impl TimelineViewport {
@@ -115,6 +121,7 @@ impl Default for GameUi {
             engine: Engine::default()
                 .with_interactive_calculation()
                 .expect("valid initial game"),
+            checks: CheckStatus::default(),
             selected: None,
             inspect_mode: false,
             inspected: None,
@@ -129,6 +136,7 @@ impl Default for GameUi {
             fonts_ready: false,
             art: None,
             viewport: TimelineViewport::default(),
+            transition: None,
             record: GameRecord::default(),
             import_open: false,
             import_text: String::new(),
@@ -157,6 +165,67 @@ impl GameUi {
 
     pub fn times(&self) -> Vec<usize> {
         self.engine.timeline_times().rev().collect()
+    }
+
+    fn refresh_checks(&mut self) {
+        let mut combined = CheckStatus::default();
+        for side in [Color::White, Color::Black] {
+            if let Ok(checks) = self.engine.checks(side) {
+                combined.ordinary.extend(checks.ordinary);
+                combined.inverted.extend(checks.inverted);
+            }
+        }
+        self.checks = combined;
+    }
+
+    pub fn active_times(&self) -> Vec<usize> {
+        let times: std::collections::BTreeSet<_> =
+            self.engine.move_sources().map(|p| p.t).collect();
+        times.into_iter().rev().collect()
+    }
+
+    pub fn navigate_active(&mut self, next: bool) {
+        if self.transition.is_some() {
+            return;
+        }
+        let active = self.active_times();
+        if active.is_empty() {
+            return;
+        }
+        let current = self
+            .jump_to
+            .or_else(|| self.viewport.scroll.as_ref().map(|scroll| scroll.target))
+            .or_else(|| {
+                let row = if self.viewport.stride > 0.0 {
+                    (self.viewport.offset / self.viewport.stride).round() as usize
+                } else {
+                    0
+                };
+                self.viewport
+                    .times
+                    .get(row.min(self.viewport.times.len().saturating_sub(1)))
+                    .copied()
+            });
+        let index =
+            if let Some(index) = current.and_then(|t| active.iter().position(|&time| time == t)) {
+                if next {
+                    (index + 1) % active.len()
+                } else {
+                    (index + active.len() - 1) % active.len()
+                }
+            } else if let Some(current) = current {
+                if next {
+                    active.iter().position(|&t| t < current).unwrap_or(0)
+                } else {
+                    active
+                        .iter()
+                        .rposition(|&t| t > current)
+                        .unwrap_or(active.len() - 1)
+                }
+            } else {
+                0
+            };
+        self.jump_to = Some(active[index]);
     }
 
     pub fn pieces(&self, t: usize) -> Vec<PieceView> {
@@ -228,6 +297,7 @@ impl GameUi {
             || !self.overlapping.is_empty()
             || self.import_open
             || self.replay_job.is_some()
+            || self.transition.is_some()
         {
             return;
         }
@@ -267,7 +337,7 @@ impl GameUi {
     }
 
     pub fn play(&mut self, mv: Move) {
-        if self.replay_job.is_some() {
+        if self.replay_job.is_some() || self.transition.is_some() {
             return;
         }
         let text = format!(
@@ -278,6 +348,7 @@ impl GameUi {
             char::from(b'a' + mv.sq.0 as u8),
             mv.sq.1 + 1
         );
+        let before = self.engine.clone();
         let result = match self
             .engine
             .piece_state(mv.source())
@@ -289,7 +360,13 @@ impl GameUi {
             None => Err(temporal_chess_engine::engine::EngineErr::WrongPiece),
         };
         if result.is_ok() {
-            self.jump_to = mv.direction.step(mv.t);
+            self.transition = BoardTransition::new(&before, &self.engine, mv);
+            self.viewport.scroll = None;
+            self.jump_to = if self.transition.is_none() {
+                self.active_times().first().copied()
+            } else {
+                None
+            };
         }
         self.after_command(result, text);
     }
@@ -301,6 +378,7 @@ impl GameUi {
     ) {
         match result {
             Ok(()) => {
+                self.refresh_checks();
                 self.clear_selection();
                 self.log.push(text.clone());
                 if self.log.len() > 200 {
@@ -316,17 +394,18 @@ impl GameUi {
     }
 
     pub fn continue_calculation(&mut self) {
-        if self.replay_job.is_some() {
+        if self.replay_job.is_some() || self.transition.is_some() {
             return;
         }
         match self.record.apply(&mut self.engine, Command::Continue) {
             Ok(()) => {
+                self.refresh_checks();
                 let status = self.engine.calculation_status();
                 self.clear_selection();
                 let text = match status {
                     CalculationStatus::Complete => "История просчитана полностью.".to_owned(),
                     CalculationStatus::Paused { t, .. } => {
-                        format!("Просчёт остановлен у следующего отменённого хода: t={t}.")
+                        format!("Просчёт остановлен: отменённый ход на t={t} ведёт к конфликту.")
                     }
                 };
                 self.message(text, false);
@@ -336,7 +415,7 @@ impl GameUi {
     }
 
     pub fn begin_import(&mut self) {
-        if self.replay_job.is_some() {
+        if self.replay_job.is_some() || self.transition.is_some() {
             return;
         }
         self.import_error = None;
@@ -345,6 +424,7 @@ impl GameUi {
 
     pub fn can_undo(&self) -> bool {
         self.replay_job.is_none()
+            && self.transition.is_none()
             && !self.import_open
             && !self.confirm_restart
             && self
@@ -377,6 +457,8 @@ impl GameUi {
     }
 
     fn begin_replay(&mut self, text: String, kind: ReplayKind) {
+        self.transition = None;
+        self.viewport.scroll = None;
         let (sender, receiver) = mpsc::channel();
         self.replay_job = Some(ReplayJob {
             kind,
@@ -406,6 +488,7 @@ impl GameUi {
                 self.clear_selection();
                 self.engine = engine;
                 self.record = record;
+                self.refresh_checks();
                 self.log = self
                     .record
                     .commands()

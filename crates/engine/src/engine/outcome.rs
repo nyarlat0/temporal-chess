@@ -25,7 +25,7 @@ impl Engine {
                 .filter(|p| p.color == side && matches!(p.kind, PieceKind::K { .. }))
             {
                 let id = Self::piece_at(*king);
-                let mut ordinary = board.is_attacked(side.opposite(), king.sq);
+                let mut ordinary = self.spatially_attacked(board, side.opposite(), king.sq);
                 for (source_t, direction) in [
                     (t.checked_sub(1), TimeDirection::Future),
                     (t.checked_add(1), TimeDirection::Past),

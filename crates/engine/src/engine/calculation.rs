@@ -23,29 +23,45 @@ impl Engine {
         if !self.history.calculation.interactive || self.outcome().is_some() {
             return None;
         }
-        self.history
-            .worldlines
-            .iter()
-            .enumerate()
-            .flat_map(|(wid, line)| {
-                line.iter()
-                    .filter(move |s| {
-                        s.alive
-                            && s.color == self.turn
-                            && Color::from_board(s.t) == self.turn
-                            && s.rights.cancelled_move
-                    })
-                    .map(move |s| PieceAt {
-                        piece: PieceId::from_state(s, wid),
-                        t: s.t,
-                    })
-            })
-            .filter(|id| !self.history.calculation.acknowledged.contains(id))
-            .map(|id| id.t)
-            .min()
+        let mut barrier: Option<usize> = None;
+        for (wid, line) in self.history.worldlines.iter().enumerate() {
+            for (age, state) in line.iter().enumerate() {
+                if !state.alive
+                    || state.color != self.turn
+                    || Color::from_board(state.t) != self.turn
+                    || !state.rights.cancelled_move
+                {
+                    continue;
+                }
+                let id = PieceAt {
+                    piece: PieceId::from_state(state, wid),
+                    t: state.t,
+                };
+                if self.history.calculation.acknowledged.contains(&id) {
+                    continue;
+                }
+                // A cancelled move is only a checkpoint when its affected
+                // causal continuation overlaps another live occurrence later
+                // in the board ribbon. Do not inspect the borrowed future on
+                // the far side of a causal gap: cancellation cannot change it.
+                let conflicts = line[age + 1..line.segment_end(age)].iter().any(|next| {
+                    next.alive
+                        && next.t > state.t
+                        && self
+                            .projection
+                            .preboards
+                            .get(&next.t)
+                            .is_some_and(|board| board.space[next.x][next.y].len() > 1)
+                });
+                if conflicts {
+                    barrier = Some(barrier.map_or(state.t, |t| t.min(state.t)));
+                }
+            }
+        }
+        barrier
     }
 
-    /// Accept the current cancelled-move checkpoint, stopping at the next one.
+    /// Accept the current conflicting continuation, stopping at the next one.
     /// Does not consume rights or a player's turn. Any deferred paradox is
     /// charged to the author of the history-changing command, not the inspector.
     pub fn continue_calculation(&mut self) -> Result<CalculationStatus, EngineErr> {

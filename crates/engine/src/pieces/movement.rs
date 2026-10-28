@@ -189,6 +189,14 @@ impl PieceView {
         board: &Board,
         safety: &Board,
     ) -> Vec<(Sq, Castling)> {
+        self.castling_moves_with_attacks(board, |sq| safety.is_attacked(self.color.opposite(), sq))
+    }
+
+    pub(crate) fn castling_moves_with_attacks(
+        &self,
+        board: &Board,
+        threatened: impl Fn(Sq) -> bool,
+    ) -> Vec<(Sq, Castling)> {
         let mut v = Vec::new();
 
         // must be an unmoved king on home rank
@@ -206,7 +214,7 @@ impl PieceView {
 
         // helper closures
         let empty = |x: usize| board.is_empty(Sq(x, home_y));
-        let attacked = |x: usize| safety.is_attacked(self.color.opposite(), Sq(x, home_y));
+        let attacked = |x: usize| threatened(Sq(x, home_y));
 
         // king must not be in check now
         if attacked(e) {

@@ -1,4 +1,5 @@
 use crate::{
+    animation::{BoardTransition, SmoothScroll, ease},
     controller::{GameUi, identity, side_name},
     piece_art::{Outline, PieceStyle},
     view::{CAPTURE, FUTURE, INVERTED, MUTED, PLAYED_FUTURE, PLAYED_PAST, direction_color},
@@ -14,32 +15,89 @@ const LIGHT: Color32 = Color32::from_rgb(240, 217, 181);
 const DARK: Color32 = Color32::from_rgb(181, 136, 99);
 
 pub fn ribbon(ui: &mut egui::Ui, game: &mut GameUi) {
+    if game
+        .transition
+        .as_ref()
+        .is_some_and(|motion| motion.progress() >= 1.0)
+    {
+        let arrival = game.transition.take().map(|motion| motion.to_t);
+        game.jump_to = game.active_times().first().copied().or(arrival);
+    }
     let times = game.times();
     let cell = game
         .cell_size
         .min(((ui.available_width() - 116.0) / 8.0).max(18.0));
     let height = 8.0 * cell + 86.0;
-    let offset = game
-        .jump_to
-        .take()
-        .and_then(|target| times.iter().position(|&t| t == target))
-        .map_or_else(
-            || game.viewport.anchored_offset(&times, height),
-            |index| index as f32 * height,
-        );
+    let mut offset = game.viewport.anchored_offset(&times, height);
+    let moving = game.transition.is_some();
+    if moving {
+        game.viewport.scroll = None;
+        if let Some(motion) = &mut game.transition {
+            motion.start(offset / height);
+            if let Some(row) = times.iter().position(|&t| t == motion.to_t) {
+                // Let the board lead the camera slightly, so the temporal
+                // direction remains visible while both endpoints stay in view.
+                let progress = ease((motion.progress() - 0.12) / 0.88);
+                offset = (motion.camera_from_rows
+                    + (row as f32 - motion.camera_from_rows) * progress)
+                    * height;
+            }
+        }
+        ui.ctx().request_repaint();
+    } else {
+        // Wheel input or grabbing the scrollbar takes control from auto-scroll.
+        let ribbon_rect = ui.available_rect_before_wrap();
+        if ui.ctx().input(|i| {
+            i.pointer
+                .hover_pos()
+                .is_some_and(|pos| ribbon_rect.contains(pos))
+                && (i.smooth_scroll_delta.y != 0.0 || i.pointer.any_pressed())
+        }) {
+            game.viewport.scroll = None;
+        }
+        if let Some(target) = game.jump_to.take()
+            && let Some(row) = times.iter().position(|&t| t == target)
+        {
+            if game.viewport.times.is_empty() || (offset / height - row as f32).abs() < 0.002 {
+                game.viewport.scroll = None;
+                offset = row as f32 * height;
+            } else {
+                game.viewport.scroll = Some(SmoothScroll::new(target, offset / height, row));
+            }
+        }
+        if let Some(scroll) = &game.viewport.scroll {
+            if let Some(row) = times.iter().position(|&t| t == scroll.target) {
+                let progress = scroll.progress();
+                offset =
+                    (scroll.from_rows + (row as f32 - scroll.from_rows) * ease(progress)) * height;
+                if progress >= 1.0 {
+                    game.viewport.scroll = None;
+                } else {
+                    ui.ctx().request_repaint();
+                }
+            } else {
+                game.viewport.scroll = None;
+            }
+        }
+    }
     ui.spacing_mut().item_spacing.y = 0.0;
-    // Empty space below the ribbon allows its bottom board to retain its screen
-    // position even in a tall window when a new board is inserted at the top.
     let padding = (ui.available_height() / height).ceil() as usize;
     let output = egui::ScrollArea::vertical()
         .id_salt("timeline")
         .auto_shrink([false, false])
+        .scroll_source(if moving {
+            egui::scroll_area::ScrollSource::NONE
+        } else {
+            egui::scroll_area::ScrollSource::default()
+        })
         .vertical_scroll_offset(offset)
         .show_rows(ui, height, times.len() + padding, |ui, range| {
             let mut rows = Vec::new();
             let mut hovered = None;
+            let mut anchor = None;
             for index in range {
                 let (_, row) = ui.allocate_space(Vec2::new(ui.available_width(), height));
+                anchor.get_or_insert((index, row));
                 let Some(&t) = times.get(index) else {
                     continue;
                 };
@@ -48,33 +106,227 @@ pub fn ribbon(ui: &mut egui::Ui, game: &mut GameUi) {
                     ui.make_persistent_id(("timeline_board", t)),
                     Sense::click(),
                 );
-                let board = Rect::from_min_size(
-                    Pos2::new(row.center().x - cell * 4.0 + 18.0, row.top() + 46.0),
-                    Vec2::splat(cell * 8.0),
-                );
-                if let Some(pos) = response.hover_pos().filter(|pos| board.contains(*pos)) {
+                let board = board_rect(row, cell);
+                if !moving
+                    && let Some(pos) = response.hover_pos().filter(|pos| board.contains(*pos))
+                {
                     hovered = Some((t, square_at(board, cell, pos)));
                 }
                 rows.push((t, board, response));
             }
             for (t, board, response) in rows {
                 paint_board(ui.painter(), game, t, board, cell, hovered);
-                if hovered.is_some_and(|(time, _)| time == t) {
+                if !moving && hovered.is_some_and(|(time, _)| time == t) {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                 }
-                if response.clicked()
+                if !moving
+                    && game.viewport.scroll.is_none()
+                    && response.clicked()
                     && let Some(pos) = response.interact_pointer_pos()
                     && board.contains(pos)
                 {
-                    let x = (((pos.x - board.left()) / cell) as usize).min(7);
-                    let y = 7 - (((pos.y - board.top()) / cell) as usize).min(7);
-                    game.click_square(t, Sq(x, y));
+                    game.click_square(t, square_at(board, cell, pos));
                 }
+            }
+            if let Some(motion) = &game.transition
+                && let Some((anchor_index, anchor_row)) = anchor
+                && let Some(from_index) = times.iter().position(|&t| t == motion.from_t)
+                && let Some(to_index) = times.iter().position(|&t| t == motion.to_t)
+            {
+                let from = board_rect(
+                    anchor_row.translate(Vec2::new(
+                        0.0,
+                        (from_index as f32 - anchor_index as f32) * height,
+                    )),
+                    cell,
+                );
+                let to = board_rect(
+                    anchor_row.translate(Vec2::new(
+                        0.0,
+                        (to_index as f32 - anchor_index as f32) * height,
+                    )),
+                    cell,
+                );
+                paint_transition(ui.painter(), game, motion, from, to);
             }
         });
     game.viewport.times = times;
     game.viewport.stride = height;
     game.viewport.offset = output.state.offset.y;
+}
+
+fn board_rect(row: Rect, cell: f32) -> Rect {
+    Rect::from_min_size(
+        Pos2::new(row.center().x - cell * 4.0 + 18.0, row.top() + 46.0),
+        Vec2::splat(cell * 8.0),
+    )
+}
+
+fn mix_color(from: Color32, to: Color32, progress: f32) -> Color32 {
+    let mix = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * progress).round() as u8;
+    Color32::from_rgb(
+        mix(from.r(), to.r()),
+        mix(from.g(), to.g()),
+        mix(from.b(), to.b()),
+    )
+}
+
+fn paint_transition(
+    painter: &egui::Painter,
+    game: &GameUi,
+    motion: &BoardTransition,
+    from: Rect,
+    to: Rect,
+) {
+    let raw = motion.progress();
+    let progress = ease(raw);
+    let center = from.center() + (to.center() - from.center()) * progress;
+    let lift = (raw * std::f32::consts::PI).sin();
+    let board = Rect::from_center_size(center, from.size());
+    let cell = board.width() / 8.0;
+    // Settle into the normal static renderer, including all final overlays.
+    let opacity = 1.0 - ease((raw - 0.88) / 0.12);
+    let frame_color = |t| {
+        if Color::from_board(t) == Color::White {
+            Color32::from_rgb(230, 227, 220)
+        } else {
+            Color32::from_rgb(12, 12, 12)
+        }
+    };
+    let rim = mix_color(
+        frame_color(motion.from_t),
+        frame_color(motion.to_t),
+        progress,
+    );
+    painter.rect_filled(
+        board
+            .expand(16.0)
+            .translate(Vec2::new(0.0, 6.0 + lift * 9.0)),
+        15.0,
+        Color32::BLACK.gamma_multiply(opacity * 0.32),
+    );
+    painter.rect_filled(board.expand(13.0), 14.0, rim.gamma_multiply(opacity));
+    for x in 0..8 {
+        for y in 0..8 {
+            let rect = Rect::from_min_size(
+                board.min + Vec2::new(x as f32 * cell, (7 - y) as f32 * cell),
+                Vec2::splat(cell),
+            );
+            painter.rect_filled(
+                rect,
+                0.0,
+                (if (x + y) % 2 == 0 { DARK } else { LIGHT }).gamma_multiply(opacity),
+            );
+            if motion.played.sq == Sq(x, y) {
+                painter.rect_filled(
+                    rect,
+                    0.0,
+                    (if motion.played.to_past() {
+                        PLAYED_PAST
+                    } else {
+                        PLAYED_FUTURE
+                    })
+                    .gamma_multiply(0.4 * opacity),
+                );
+            }
+        }
+    }
+    let square_center =
+        |sq: Sq| board.min + Vec2::new((sq.0 as f32 + 0.5) * cell, (7.5 - sq.1 as f32) * cell);
+    if let Some(art) = &game.art {
+        // Moving pieces draw last, above stationary pieces and fading victims.
+        for moving in [false, true] {
+            for track in motion
+                .tracks
+                .iter()
+                .filter(|track| (track.from.sq != track.to.sq) == moving)
+            {
+                let a = square_center(track.from.sq);
+                let b = square_center(track.to.sq);
+                let center = a + (b - a) * progress;
+                let visibility = match (track.visible_from, track.visible_to) {
+                    (true, true) => 1.0,
+                    (true, false) => 1.0 - ease((raw - 0.65) / 0.35),
+                    (false, true) => ease(raw / 0.35),
+                    (false, false) => 0.0,
+                };
+                if track.reversed_move && moving {
+                    painter.line_segment(
+                        [a, center],
+                        Stroke::new(cell * 0.035, INVERTED.gamma_multiply(0.3 * lift * opacity)),
+                    );
+                }
+                let rect = Rect::from_center_size(center, Vec2::splat(cell * 0.98));
+                let alpha = opacity * visibility;
+                let style = |piece: temporal_chess_engine::model::PieceView| PieceStyle {
+                    inverted: piece.inverted,
+                    ..Default::default()
+                };
+                if track.from.kind == track.to.kind && track.from.inverted == track.to.inverted {
+                    art.paint_styled(
+                        painter,
+                        track.to.kind,
+                        track.to.color,
+                        rect,
+                        alpha,
+                        style(track.to),
+                    );
+                } else {
+                    let change = ease((raw - 0.5) / 0.35);
+                    art.paint_styled(
+                        painter,
+                        track.from.kind,
+                        track.from.color,
+                        rect,
+                        alpha * (1.0 - change),
+                        style(track.from),
+                    );
+                    art.paint_styled(
+                        painter,
+                        track.to.kind,
+                        track.to.color,
+                        rect,
+                        alpha * change,
+                        style(track.to),
+                    );
+                }
+            }
+        }
+    }
+    for index in 0..8 {
+        let file_color = if index % 2 == 0 { LIGHT } else { DARK };
+        painter.text(
+            board.min + Vec2::new((index + 1) as f32 * cell - 3.0, board.height() - 1.0),
+            Align2::RIGHT_BOTTOM,
+            char::from(b'a' + index as u8),
+            FontId::proportional((cell * 0.20).max(9.0)),
+            file_color.gamma_multiply(opacity),
+        );
+        let rank_color = if (7 - index) % 2 == 0 { LIGHT } else { DARK };
+        painter.text(
+            board.min + Vec2::new(3.0, index as f32 * cell + 3.0),
+            Align2::LEFT_TOP,
+            8 - index,
+            FontId::proportional((cell * 0.20).max(9.0)),
+            rank_color.gamma_multiply(opacity),
+        );
+    }
+    let header = Rect::from_min_size(
+        board.left_top() - Vec2::new(13.0, 35.0),
+        Vec2::new(board.width() + 26.0, 27.0),
+    );
+    painter.rect_filled(
+        header,
+        5.0,
+        Color32::from_rgb(32, 31, 29).gamma_multiply(opacity),
+    );
+    painter.text(
+        board.left_top() - Vec2::new(0.0, 19.0),
+        Align2::LEFT_CENTER,
+        format!("t = {} → {}", motion.from_t, motion.to_t),
+        FontId::proportional(15.0),
+        Color32::WHITE.gamma_multiply(opacity),
+    );
 }
 
 fn square_at(board: Rect, cell: f32, pos: Pos2) -> Sq {
@@ -132,13 +384,7 @@ fn paint_board(
         if active { 14.0 } else { 5.0 },
         side_color.gamma_multiply(alpha),
     );
-    let mut checked = CheckStatus::default();
-    for side in [Color::White, Color::Black] {
-        if let Ok(checks) = game.engine.checks(side) {
-            checked.ordinary.extend(checks.ordinary);
-            checked.inverted.extend(checks.inverted);
-        }
-    }
+    let checked = &game.checks;
     painter.text(
         board.left_top() - Vec2::new(0.0, 19.0),
         Align2::LEFT_CENTER,
@@ -333,7 +579,7 @@ fn paint_board(
                 piece.color,
                 rect,
                 alpha,
-                piece_style(game, piece, &checked, hovered),
+                piece_style(game, piece, checked, hovered),
             );
         }
     }

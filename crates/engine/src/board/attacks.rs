@@ -1,4 +1,6 @@
-use crate::pieces::{BISHOP_DIRS, Color, KING_DELTAS, KNIGHT_DELTAS, PieceKind, ROOK_DIRS, Sq};
+use crate::pieces::{
+    BISHOP_DIRS, Color, KING_DELTAS, KNIGHT_DELTAS, PieceKind, PieceView, ROOK_DIRS, Sq,
+};
 
 use super::Board;
 
@@ -83,6 +85,17 @@ impl Board {
     }
 
     pub fn is_attacked(&self, by: Color, sq: Sq) -> bool {
+        self.is_attacked_by(by, sq, |_| true)
+    }
+
+    /// Filter attackers without removing them as ray blockers. The engine uses
+    /// this to exclude occurrences whose next opportunity to act is unavailable.
+    pub(crate) fn is_attacked_by(
+        &self,
+        by: Color,
+        sq: Sq,
+        can_attack: impl Fn(&PieceView) -> bool,
+    ) -> bool {
         let board = self;
 
         // pawns
@@ -91,6 +104,7 @@ impl Board {
             if let Some(Sq(x, y)) = sq.shift(dx, -dir)
                 && let Some(p) = board.get_piece(x, y)
                 && p.color == by
+                && can_attack(p)
                 && matches!(p.kind, PieceKind::P { .. })
             {
                 return true;
@@ -102,6 +116,7 @@ impl Board {
             if let Some(Sq(x, y)) = sq.shift(dx, dy)
                 && let Some(p) = board.get_piece(x, y)
                 && p.color == by
+                && can_attack(p)
                 && matches!(p.kind, PieceKind::N)
             {
                 return true;
@@ -113,6 +128,7 @@ impl Board {
             if let Some(Sq(x, y)) = sq.shift(dx, dy)
                 && let Some(p) = board.get_piece(x, y)
                 && p.color == by
+                && can_attack(p)
                 && matches!(p.kind, PieceKind::K { .. })
             {
                 return true;
@@ -124,7 +140,10 @@ impl Board {
             let mut cur = sq;
             while let Some(nsq @ Sq(x, y)) = cur.shift(dx, dy) {
                 if let Some(p) = board.get_piece(x, y) {
-                    if p.color == by && matches!(p.kind, PieceKind::B | PieceKind::Q) {
+                    if p.color == by
+                        && matches!(p.kind, PieceKind::B | PieceKind::Q)
+                        && can_attack(p)
+                    {
                         return true;
                     }
                     break; // blocked
@@ -138,7 +157,10 @@ impl Board {
             let mut cur = sq;
             while let Some(nsq @ Sq(x, y)) = cur.shift(dx, dy) {
                 if let Some(p) = board.get_piece(x, y) {
-                    if p.color == by && matches!(p.kind, PieceKind::R { .. } | PieceKind::Q) {
+                    if p.color == by
+                        && matches!(p.kind, PieceKind::R { .. } | PieceKind::Q)
+                        && can_attack(p)
+                    {
                         return true;
                     }
                     break;

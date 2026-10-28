@@ -88,7 +88,8 @@ pub fn draw(ctx: &egui::Context, game: &mut GameUi) {
     let shortcuts = !ctx.egui_wants_keyboard_input()
         && !game.import_open
         && !game.confirm_restart
-        && game.replay_job.is_none();
+        && game.replay_job.is_none()
+        && game.transition.is_none();
     if inspect && shortcuts {
         game.clear_selection();
         game.inspect_mode = !game.inspect_mode;
@@ -121,7 +122,10 @@ pub fn draw(ctx: &egui::Context, game: &mut GameUi) {
                 ui.colored_label(MUTED, "шахматы во времени");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
-                        .add_enabled(game.replay_job.is_none(), egui::Button::new("Новая партия"))
+                        .add_enabled(
+                            game.replay_job.is_none() && game.transition.is_none(),
+                            egui::Button::new("Новая партия"),
+                        )
                         .clicked()
                     {
                         game.confirm_restart = true;
@@ -154,23 +158,42 @@ pub fn draw(ctx: &egui::Context, game: &mut GameUi) {
                 .inner_margin(12),
         )
         .show(&mut root, |ui| {
-            ui.horizontal(|ui| {
-                ui.colored_label(MUTED, "ИСТОРИЯ");
-                if ui.small_button("↑ Настоящее").clicked() {
-                    game.jump_to = game.times().first().copied();
-                }
-                if ui.small_button("↓ Начало").clicked() {
-                    game.jump_to = Some(0);
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.add(egui::Slider::new(&mut game.cell_size, 30.0..=90.0).show_value(false))
-                        .on_hover_text("Масштаб досок");
-                    ui.small("Масштаб");
+            ui.add_enabled_ui(game.transition.is_none(), |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.colored_label(MUTED, "ИСТОРИЯ");
+                    if ui.small_button("↑ Настоящее").clicked() {
+                        game.jump_to = game.times().first().copied();
+                    }
+                    if ui.small_button("↓ Начало").clicked() {
+                        game.jump_to = Some(0);
+                    }
+                    ui.label("Масштаб");
+                    ui.add(egui::Slider::new(&mut game.cell_size, 30.0..=90.0).show_value(false));
+                });
+                ui.horizontal_wrapped(|ui| {
+                    let enabled = !game.active_times().is_empty();
+                    if ui
+                        .add_enabled(enabled, egui::Button::new("↑ Предыдущая активная"))
+                        .clicked()
+                    {
+                        game.navigate_active(false);
+                    }
+                    if ui
+                        .add_enabled(enabled, egui::Button::new("↓ Следующая активная"))
+                        .clicked()
+                    {
+                        game.navigate_active(true);
+                    }
                 });
             });
             crate::board_view::ribbon(ui, game);
         });
     dialogs(ctx, game);
+    // A move may start in a promotion dialog after the ribbon was painted.
+    // Schedule its first frame even when the window otherwise renders on demand.
+    if game.transition.is_some() || game.viewport.scroll.is_some() || game.jump_to.is_some() {
+        ctx.request_repaint();
+    }
 }
 
 fn sidebar(ui: &mut egui::Ui, game: &mut GameUi) {
@@ -208,13 +231,17 @@ fn sidebar(ui: &mut egui::Ui, game: &mut GameUi) {
     }
     ui.separator();
     if let CalculationStatus::Paused { t, .. } = game.engine.calculation_status() {
-        ui.colored_label(REACTION, format!("Отменённый ход на t = {t}"));
+        ui.colored_label(
+            REACTION,
+            format!("Отменённый ход на t = {t} ведёт к конфликту"),
+        );
         if ui
-            .add_sized(
-                [ui.available_width(), 36.0],
-                egui::Button::new("Продолжить просчёт"),
+            .add_enabled(
+                game.transition.is_none(),
+                egui::Button::new("Продолжить просчёт")
+                    .min_size(Vec2::new(ui.available_width(), 36.0)),
             )
-            .on_hover_text("C · без расходования хода")
+            .on_hover_text("C · разрешить дальнейшее согласование конфликтов без расходования хода")
             .clicked()
         {
             game.continue_calculation();
@@ -248,6 +275,8 @@ fn sidebar(ui: &mut egui::Ui, game: &mut GameUi) {
                 game.toggle_direction();
             }
         });
+    } else if game.transition.is_some() {
+        ui.label("Ход…");
     } else {
         ui.label("Выберите фигуру");
         ui.colored_label(MUTED, "Возможные ходы появятся на её доске.");
@@ -270,7 +299,10 @@ fn sidebar(ui: &mut egui::Ui, game: &mut GameUi) {
             game.message("Партия скопирована в буфер обмена.", false);
         }
         if ui
-            .add_enabled(game.replay_job.is_none(), egui::Button::new("Загрузить"))
+            .add_enabled(
+                game.replay_job.is_none() && game.transition.is_none(),
+                egui::Button::new("Загрузить"),
+            )
             .clicked()
         {
             game.clear_selection();

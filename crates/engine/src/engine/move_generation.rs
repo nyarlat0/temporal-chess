@@ -2,7 +2,7 @@ use super::{
     Castling, Engine, EngineErr, Move, MoveEffect, MoveId, PieceId, Promotion, TimeDirection,
 };
 use crate::board::Board;
-use crate::pieces::{Color, PieceKind, PieceView};
+use crate::pieces::{Color, PieceKind, PieceView, Sq};
 
 impl Engine {
     /// Board on which movement is tested, with this move's own old effects undone.
@@ -151,7 +151,9 @@ impl Engine {
             }
             // Preserve the prototype's forward-only castling rule.
             if direction == TimeDirection::Future {
-                for (square, castling) in piece.castling_moves_with_safety(&board, source) {
+                for (square, castling) in piece.castling_moves_with_attacks(&board, |sq| {
+                    self.spatially_attacked(source, piece.color.opposite(), sq)
+                }) {
                     directed.push(candidate(square, direction, MoveEffect::Castle(castling)));
                 }
             }
@@ -226,11 +228,44 @@ impl Engine {
                     .pieces
                     .iter()
                     .filter(|p| p.color == piece.color && matches!(p.kind, PieceKind::K { .. }))
-                    .all(|king| !pretend.is_attacked(piece.color.opposite(), king.sq))
+                    .all(|king| !self.spatially_attacked(&pretend, piece.color.opposite(), king.sq))
             });
             moves.extend(directed);
         }
         Ok(moves)
+    }
+
+    /// A visible geometric attack is a threat only if this incarnation can
+    /// actually act. Passive pieces must survive to their next own-color board
+    /// in their temporal orientation and still have a move there.
+    pub(super) fn spatially_attacked(&self, board: &Board, by: Color, sq: Sq) -> bool {
+        board.is_attacked_by(by, sq, |piece| {
+            if piece.can_move() {
+                return piece.is_movable();
+            }
+            let Some(state) = self.piece_state(Self::piece_at(*piece)) else {
+                return false;
+            };
+            let Some(next) = state.prolongate() else {
+                return false;
+            };
+            let next_id = super::PieceAt {
+                piece: PieceId::from_state(&next, piece.origin),
+                t: next.t,
+            };
+            if let Some(actual) = self.piece_state(next_id) {
+                return actual.alive
+                    && actual.is_movable()
+                    && actual.x == piece.sq.0
+                    && actual.y == piece.sq.1
+                    && actual.kind == piece.kind
+                    && actual.inverted == piece.inverted;
+            }
+            // A new future board has not been created yet: its ordinary enemy
+            // replies still count. Absence/death inside existing history does
+            // not invent a new opportunity to move.
+            !piece.inverted && next.t > self.history.horizon() && next.alive && next.is_movable()
+        })
     }
 
     pub(super) fn inverse_safe(&self, mv: Move, side: Color) -> bool {
@@ -243,7 +278,7 @@ impl Engine {
         let visible_check = source.pieces().iter().any(|king| {
             king.color == side
                 && matches!(king.kind, PieceKind::K { .. })
-                && source.is_attacked(side.opposite(), king.sq)
+                && self.spatially_attacked(source, side.opposite(), king.sq)
         });
         if !visible_check {
             return true;
