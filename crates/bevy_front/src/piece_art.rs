@@ -105,6 +105,9 @@ impl PieceArt {
             PieceKind::P { .. } => 5,
         };
         let index = kind + if side == Color::Black { 6 } else { 0 };
+        // The approved Python preview uses the white cburnett SVG for both
+        // inverted sides and applies a side-specific amethyst palette.
+        let source_index = if style.inverted { kind } else { index };
         // Native vector edge coverage, then one texel per physical pixel. Avoid
         // a second low-pass filter from downsampling and fractional placement.
         let scale = painter.ctx().pixels_per_point();
@@ -133,7 +136,7 @@ impl PieceArt {
         let texture = cache.entries.entry(key).or_insert_with(|| CachedTexture {
             handle: painter.ctx().load_texture(
                 format!("piece-{key:?}"),
-                hover_atlas(self.sources[index], size, side, style),
+                hover_atlas(self.sources[source_index], size, side, style),
                 egui::TextureOptions::NEAREST,
             ),
             last_used: frame,
@@ -211,15 +214,35 @@ fn raster(svg: &[u8], size: usize, side: Color, style: PieceStyle) -> egui::Colo
     );
     let source = pixmap.pixels();
     let alpha: Vec<_> = source.iter().map(|p| p.alpha()).collect();
-    // Inversion changes only the exterior glow, never the original piece.
-    // Keep the white/black SVG fills and their original stroke thicknesses.
+    // RGB values and compositing order from render_amethyst.py (styled_piece).
+    // Both inverted sides use the white source SVG: white areas are the body,
+    // dark engravings are the ink, independently of the original piece color.
+    let palette = style.inverted.then(|| match side {
+        Color::White => (
+            [251_u32, 247, 255], // clean near-white body
+            [103_u32, 48, 158],  // purple ink
+            [160_u32, 73, 255],  // soft amethyst light
+            [133_u32, 59, 225],  // thin highlight
+        ),
+        Color::Black => (
+            [33_u32, 17, 54],    // deep plum body
+            [231_u32, 187, 255], // lavender ink
+            [163_u32, 64, 255],  // soft amethyst light
+            [169_u32, 83, 251],  // thin highlight
+        ),
+    });
+    // Python: dilation by MaxFilter 9/13 at 2x, GaussianBlur sigma=4.5%
+    // of the piece size, and a narrow rim from MaxFilter 7. Work at native
+    // pixel resolution, approximating the Gaussian with three box filters.
     let inverted_glow = style.inverted.then(|| {
-        let blur = ((size as f32 * 0.045).round() as usize).max(2);
-        let mut soft = alpha.clone();
+        let spread = if size >= 120 { 3 } else { 2 };
+        let rim_radius = if size >= 64 { 2 } else { 1 };
+        let blur = ((size as f32 * 0.045).round() as usize).max(1);
+        let mut soft = dilate_mask(&alpha, n, spread);
         for _ in 0..3 {
             soft = blur_mask(&soft, n, blur);
         }
-        (soft, exterior_transparency(&alpha, n))
+        (soft, dilate_mask(&alpha, n, rim_radius), exterior_transparency(&alpha, n))
     });
     let outer = (style.outline != Outline::None).then(|| {
         let radius =
@@ -247,20 +270,35 @@ fn raster(svg: &[u8], size: usize, side: Color, style: PieceStyle) -> egui::Colo
             let p = source[i];
             let a = p.alpha() as u32;
             let mut rgb = [p.red() as u32, p.green() as u32, p.blue() as u32];
-            // A soft amethyst halo lives only outside the SVG silhouette.
-            // No dilation or hard rim is applied to the figure's contours.
+            if let Some((body, ink, _, _)) = palette {
+                // tiny-skia gives premultiplied RGB: tone <= a. Retain
+                // antialiased coverage while recoloring the white fill and
+                // the black engravings separately, like the Python reference.
+                let tone = (rgb[0] + rgb[1] + rgb[2]) / 3;
+                for channel in 0..3 {
+                    rgb[channel] = (body[channel] * tone + ink[channel] * (a - tone)) / 255;
+                }
+            }
+            // Glow first, bright exterior rim second, source silhouette last.
             let mut light_rgb = [0_u32; 3];
             let mut light_alpha = 0_u32;
-            if let Some((soft, exterior)) = &inverted_glow {
+            if let (Some((_, _, glow, stroke)), Some((soft, rim, exterior))) =
+                (palette, &inverted_glow)
+            {
                 if exterior[i] {
-                    let glow = match side {
-                        Color::White => [166_u32, 80, 245],
-                        Color::Black => [174_u32, 89, 255],
-                    };
-                    light_alpha = (soft[i] as u32 * 220) / 255;
+                    // Pillow uses 0.55 opacity on the soft glow, 0.83 on
+                    // the thin outside rim. Keep both behind the artwork.
+                    light_alpha = (soft[i] as u32 * 140) / 255;
                     for channel in 0..3 {
                         light_rgb[channel] = glow[channel] * light_alpha / 255;
                     }
+                    let rim_alpha = (rim[i].saturating_sub(alpha[i]) as u32 * 212) / 255;
+                    for channel in 0..3 {
+                        light_rgb[channel] =
+                            (stroke[channel] * rim_alpha
+                                + light_rgb[channel] * (255 - rim_alpha)) / 255;
+                    }
+                    light_alpha += rim_alpha * (255 - light_alpha) / 255;
                 }
             }
             // Move highlights (including red checks and captures) override the halo.
@@ -382,43 +420,46 @@ mod tests {
     }
 
     #[test]
-    fn inverted_amethyst_glow_preserves_original_white_and_black_pieces() {
-        for (svg, side, solid_fill) in [
+    fn inverted_palette_matches_approved_python_preview() {
+        // The reference recolors the same white SVG for both sides.
+        let svg = include_bytes!("../assets/pieces/cburnett/wP.svg");
+        let normal = raster(svg, 92, Color::White, PieceStyle::default());
+        for (side, body, ink) in [
             (
-                include_bytes!("../assets/pieces/cburnett/wP.svg").as_slice(),
                 Color::White,
-                Color32::WHITE,
+                Color32::from_rgb(251, 247, 255),
+                Color32::from_rgb(103, 48, 158),
             ),
             (
-                include_bytes!("../assets/pieces/cburnett/bP.svg").as_slice(),
                 Color::Black,
-                Color32::BLACK,
+                Color32::from_rgb(33, 17, 54),
+                Color32::from_rgb(231, 187, 255),
             ),
         ] {
-            let plain = raster(svg, 63, side, PieceStyle::default());
-            let inverse = raster(
+            let inverted = raster(
                 svg,
-                63,
+                92,
                 side,
                 PieceStyle {
                     inverted: true,
                     ..Default::default()
                 },
             );
-            assert!(plain.pixels.contains(&solid_fill));
-            // Every visible SVG pixel, including its antialiased outline,
-            // remains exactly unchanged; glow is purely outside the piece.
-            assert!(plain
+            assert!(inverted.pixels.contains(&body));
+            assert!(inverted.pixels.contains(&ink));
+            // The source silhouette stays opaque, without any glow inside.
+            assert!(normal
                 .pixels
                 .iter()
-                .zip(&inverse.pixels)
-                .all(|(p, inv)| p.a() == 0 || p == inv));
-            assert!(plain
+                .zip(&inverted.pixels)
+                .all(|(src, result)| src.a() != 255 || result.a() == 255));
+            // The halo is visible *outside* the original silhouette.
+            assert!(normal
                 .pixels
                 .iter()
-                .zip(&inverse.pixels)
-                .any(|(p, inv)| p.a() == 0 && inv.a() > 0));
-            assert!(inverse
+                .zip(&inverted.pixels)
+                .any(|(src, result)| src.a() == 0 && result.a() > 0));
+            assert!(inverted
                 .pixels
                 .iter()
                 .all(|p| p.r() <= p.a() && p.g() <= p.a() && p.b() <= p.a()));
