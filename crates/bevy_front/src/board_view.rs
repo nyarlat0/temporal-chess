@@ -184,7 +184,7 @@ fn active_board_colors(side: Color) -> (Color32, Color32) {
     }
 }
 
-// Wide rounded double frame with a hard offset shadow, like 5D Chess.
+// Wide, rounded double frame like 5D Chess, without a drop shadow.
 // Dimensions scale with the squares rather than fixed UI pixels.
 fn paint_active_frame(
     painter: &egui::Painter,
@@ -193,17 +193,11 @@ fn paint_active_frame(
     outer: Color32,
     inner: Color32,
     opacity: f32,
-    lift: f32,
 ) {
     let padding = cell * 0.62;
     let corner = cell * 0.60;
     let border = cell * 0.14;
     let frame = board.expand(padding);
-    painter.rect_filled(
-        frame.translate(Vec2::new(-cell * 0.95, cell * 0.80 + lift)),
-        corner,
-        Color32::from_rgb(53, 53, 53).gamma_multiply(opacity * 0.95),
-    );
     painter.rect_filled(frame, corner, outer.gamma_multiply(opacity));
     painter.rect_filled(
         frame.shrink(border),
@@ -236,7 +230,6 @@ fn paint_transition(
         mix_color(from_outer, to_outer, progress),
         mix_color(from_inner, to_inner, progress),
         opacity,
-        lift * 9.0,
     );
     for x in 0..8 {
         for y in 0..8 {
@@ -408,16 +401,17 @@ fn paint_board(
     );
     if active {
         let (outer, inner) = active_board_colors(side);
-        paint_active_frame(painter, board, cell, outer, inner, alpha, 0.0);
+        paint_active_frame(painter, board, cell, outer, inner, alpha);
     } else {
+        let rim = (cell * 0.12).max(6.0);
         painter.rect_filled(
-            board.expand(6.0).translate(Vec2::new(0.0, 5.0)),
-            3.0,
+            board.expand(rim + 3.0).translate(Vec2::new(0.0, 5.0)),
+            cell * 0.10,
             Color32::BLACK.gamma_multiply(0.26),
         );
         painter.rect_filled(
-            board.expand(3.0),
-            5.0,
+            board.expand(rim),
+            cell * 0.10,
             side_color.gamma_multiply(alpha),
         );
     }

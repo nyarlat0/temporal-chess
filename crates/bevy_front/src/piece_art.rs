@@ -211,23 +211,15 @@ fn raster(svg: &[u8], size: usize, side: Color, style: PieceStyle) -> egui::Colo
     );
     let source = pixmap.pixels();
     let alpha: Vec<_> = source.iter().map(|p| p.alpha()).collect();
-    // Inverted pieces use the opposite side's fill, not a uniform tint.
-    // Preserve the embedded SVG details without staining the light bodies.
-    let palette = style.inverted.then(|| match side {
-        Color::White => ([231_u32, 187, 255], [33_u32, 17, 54]),
-        Color::Black => ([251_u32, 247, 255], [103_u32, 48, 158]),
-    });
-    // Render light *behind* the artwork. Restrict it to the transparent
-    // background connected to the canvas edge, never enclosed SVG holes.
+    // Inversion changes only the exterior glow, never the original piece.
+    // Keep the white/black SVG fills and their original stroke thicknesses.
     let inverted_glow = style.inverted.then(|| {
-        let spread = ((size as f32 * 0.050).round() as usize).max(2);
-        let blur = ((size as f32 * 0.032).round() as usize).max(1);
-        let rim = ((size as f32 * 0.028).round() as usize).max(1);
-        let mut soft = dilate_mask(&alpha, n, spread);
+        let blur = ((size as f32 * 0.045).round() as usize).max(2);
+        let mut soft = alpha.clone();
         for _ in 0..3 {
             soft = blur_mask(&soft, n, blur);
         }
-        (soft, dilate_mask(&alpha, n, rim), exterior_transparency(&alpha, n))
+        (soft, exterior_transparency(&alpha, n))
     });
     let outer = (style.outline != Outline::None).then(|| {
         let radius =
@@ -255,38 +247,23 @@ fn raster(svg: &[u8], size: usize, side: Color, style: PieceStyle) -> egui::Colo
             let p = source[i];
             let a = p.alpha() as u32;
             let mut rgb = [p.red() as u32, p.green() as u32, p.blue() as u32];
-            if let Some((dark, light)) = palette {
-                // Recolor the original grayscale artwork without changing its
-                // strokes or coverage. Keep edge pixels premultiplied by alpha.
-                let tone = rgb[0];
-                for channel in 0..3 {
-                    rgb[channel] = (dark[channel] * (a - tone) + light[channel] * tone) / 255;
-                }
-            }
-            // Layer the soft amethyst light, its sharp rim, then any move
-            // highlight; finally draw the original (recolored) SVG over them.
+            // A soft amethyst halo lives only outside the SVG silhouette.
+            // No dilation or hard rim is applied to the figure's contours.
             let mut light_rgb = [0_u32; 3];
             let mut light_alpha = 0_u32;
-            if let Some((soft, rim, exterior)) = &inverted_glow {
+            if let Some((soft, exterior)) = &inverted_glow {
                 if exterior[i] {
-                    let (glow, edge) = match side {
-                        Color::White => ([163_u32, 64, 255], [188_u32, 123, 255]),
-                        Color::Black => ([160_u32, 73, 255], [133_u32, 59, 225]),
+                    let glow = match side {
+                        Color::White => [166_u32, 80, 245],
+                        Color::Black => [174_u32, 89, 255],
                     };
-                    light_alpha = (soft[i] as u32 * 180) / 255;
+                    light_alpha = (soft[i] as u32 * 220) / 255;
                     for channel in 0..3 {
                         light_rgb[channel] = glow[channel] * light_alpha / 255;
                     }
-                    let rim_alpha = (rim[i] as u32 * 236) / 255;
-                    for channel in 0..3 {
-                        light_rgb[channel] =
-                            (edge[channel] * rim_alpha + light_rgb[channel] * (255 - rim_alpha))
-                                / 255;
-                    }
-                    light_alpha += rim_alpha * (255 - light_alpha) / 255;
                 }
             }
-            // Red checks and captures still override the amethyst edge.
+            // Move highlights (including red checks and captures) override the halo.
             let outline_alpha = outer.as_ref().map_or(0, |mask| mask[i] as u32);
             for (channel, tint) in [color.r(), color.g(), color.b()].into_iter().enumerate() {
                 light_rgb[channel] =
@@ -405,17 +382,17 @@ mod tests {
     }
 
     #[test]
-    fn inverted_amethyst_glow_keeps_piece_interiors_clean() {
-        for (svg, side, body) in [
+    fn inverted_amethyst_glow_preserves_original_white_and_black_pieces() {
+        for (svg, side, solid_fill) in [
             (
                 include_bytes!("../assets/pieces/cburnett/wP.svg").as_slice(),
                 Color::White,
-                Color32::from_rgb(33, 17, 54),
+                Color32::WHITE,
             ),
             (
                 include_bytes!("../assets/pieces/cburnett/bP.svg").as_slice(),
                 Color::Black,
-                Color32::from_rgb(251, 247, 255),
+                Color32::BLACK,
             ),
         ] {
             let plain = raster(svg, 63, side, PieceStyle::default());
@@ -428,14 +405,14 @@ mod tests {
                     ..Default::default()
                 },
             );
-            let n = inverse.size[0];
-            let center = (n / 2 + 12) * n + n / 2;
-            assert_eq!(inverse.pixels[center], body);
+            assert!(plain.pixels.contains(&solid_fill));
+            // Every visible SVG pixel, including its antialiased outline,
+            // remains exactly unchanged; glow is purely outside the piece.
             assert!(plain
                 .pixels
                 .iter()
                 .zip(&inverse.pixels)
-                .all(|(p, inv)| p.a() != 255 || inv.a() == 255));
+                .all(|(p, inv)| p.a() == 0 || p == inv));
             assert!(plain
                 .pixels
                 .iter()
