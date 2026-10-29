@@ -211,18 +211,14 @@ fn raster(svg: &[u8], size: usize, side: Color, style: PieceStyle) -> egui::Colo
     );
     let source = pixmap.pixels();
     let alpha: Vec<_> = source.iter().map(|p| p.alpha()).collect();
-    let inner = style.inverted.then(|| {
-        mask_filter(
-            &alpha,
-            n,
-            ((size as f32 * 0.055).round() as usize).max(2),
-            false,
-        )
+    let palette = style.inverted.then(|| match side {
+        Color::White => ([35_u32, 88, 166], [198_u32, 226, 250]),
+        Color::Black => ([100_u32, 18, 42], [234_u32, 183, 195]),
     });
     let outer = (style.outline != Outline::None).then(|| {
         let radius =
             ((size as f32 * if style.hovered { 0.047 } else { 0.032 }).round() as usize).max(2);
-        let mask = mask_filter(&alpha, n, radius, true);
+        let mask = dilate_mask(&alpha, n, radius);
         if style.outline == Outline::Capture {
             // Blur only the exterior mask, never the chess artwork. Repeated
             // box filters approximate a Gaussian with a smooth opacity falloff.
@@ -245,11 +241,12 @@ fn raster(svg: &[u8], size: usize, side: Color, style: PieceStyle) -> egui::Colo
             let p = source[i];
             let a = p.alpha() as u32;
             let mut rgb = [p.red() as u32, p.green() as u32, p.blue() as u32];
-            if let Some(inner) = &inner {
-                let edge = a - inner[i] as u32;
-                let contour = if side == Color::White { 255 } else { 0 };
-                for c in &mut rgb {
-                    *c = ((a - *c) * (a - edge)) / a.max(1) + contour * edge / 255;
+            if let Some((dark, light)) = palette {
+                // Recolor the original grayscale artwork without changing its
+                // strokes or coverage. Keep edge pixels premultiplied by alpha.
+                let tone = rgb[0];
+                for channel in 0..3 {
+                    rgb[channel] = (dark[channel] * (a - tone) + light[channel] * tone) / 255;
                 }
             }
             let halo = outer
@@ -289,27 +286,20 @@ fn blur_mask(alpha: &[u8], n: usize, radius: usize) -> Vec<u8> {
     out
 }
 
-// Separable alpha erosion/dilation. Erosion thickens the inverted outline only
-// inward; dilation creates the king's red check silhouette outside the piece.
-fn mask_filter(alpha: &[u8], n: usize, radius: usize, dilate: bool) -> Vec<u8> {
+// Separable alpha dilation for activity, check and capture outlines.
+fn dilate_mask(alpha: &[u8], n: usize, radius: usize) -> Vec<u8> {
     let mut temp = vec![0; alpha.len()];
     let mut out = vec![0; alpha.len()];
     for y in 0..n {
         for x in 0..n {
             let range = x.saturating_sub(radius)..=(x + radius).min(n - 1);
-            temp[y * n + x] = range
-                .map(|xx| alpha[y * n + xx])
-                .reduce(|a, b| if dilate { a.max(b) } else { a.min(b) })
-                .unwrap();
+            temp[y * n + x] = range.map(|xx| alpha[y * n + xx]).max().unwrap();
         }
     }
     for y in 0..n {
         for x in 0..n {
             let range = y.saturating_sub(radius)..=(y + radius).min(n - 1);
-            out[y * n + x] = range
-                .map(|yy| temp[yy * n + x])
-                .reduce(|a, b| if dilate { a.max(b) } else { a.min(b) })
-                .unwrap();
+            out[y * n + x] = range.map(|yy| temp[yy * n + x]).max().unwrap();
         }
     }
     out
@@ -337,7 +327,7 @@ mod tests {
     }
 
     #[test]
-    fn inverted_outline_stays_inside_and_check_outline_is_red_and_antialiased() {
+    fn inverted_palette_preserves_coverage_and_check_outline_is_red_and_antialiased() {
         let svg = include_bytes!("../assets/pieces/cburnett/wK.svg");
         let plain = raster(svg, 63, Color::White, PieceStyle::default());
         let inverse = raster(
@@ -377,7 +367,7 @@ mod tests {
                 .pixels
                 .iter()
                 .zip(&inverse.pixels)
-                .any(|(a, b)| a.r() > 230 && b.r() < 25)
+                .any(|(a, b)| a.r() == 255 && *b == Color32::from_rgb(198, 226, 250))
         );
         assert!(
             plain
