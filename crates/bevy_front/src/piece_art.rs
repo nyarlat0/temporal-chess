@@ -353,7 +353,29 @@ fn exterior_transparency(alpha: &[u8], n: usize) -> Vec<bool> {
             }
         }
     }
-    exterior
+
+    // The flood fill above intentionally walks *only* transparent pixels.
+    // However, the SVG edge is antialiased: the adjacent partially covered
+    // texels also belong to the outside of the piece. Without including them,
+    // a thin board-colored seam appears between the purple ink and its rim.
+    // Extend the mask by one antialiased texel without allowing the flood
+    // fill to pass through the SVG stroke into enclosed holes.
+    let mut with_antialiasing = exterior.clone();
+    for i in 0..alpha.len() {
+        if alpha[i] == 0 || alpha[i] == 255 {
+            continue;
+        }
+        let x = i % n;
+        let y = i / n;
+        if (x > 0 && exterior[i - 1])
+            || (x + 1 < n && exterior[i + 1])
+            || (y > 0 && exterior[i - n])
+            || (y + 1 < n && exterior[i + n])
+        {
+            with_antialiasing[i] = true;
+        }
+    }
+    with_antialiasing
 }
 
 fn blur_mask(alpha: &[u8], n: usize, radius: usize) -> Vec<u8> {
@@ -484,6 +506,54 @@ mod tests {
         assert!(outside[0]);
         assert!(!outside[12 * n + 12]);
         assert!(!outside[7 * n + 7]);
+    }
+
+    #[test]
+    fn inverted_glow_covers_antialiased_outer_edge_but_not_internal_holes() {
+        let n = 25;
+        let mut alpha = vec![0; n * n];
+        // Opaque ring with a one-pixel antialiased outer boundary.
+        for y in 5..20 {
+            for x in 5..20 {
+                alpha[y * n + x] = 255;
+            }
+        }
+        for y in 10..15 {
+            for x in 10..15 {
+                alpha[y * n + x] = 0;
+            }
+        }
+        for p in 5..20 {
+            alpha[5 * n + p] = 128;
+            alpha[19 * n + p] = 128;
+            alpha[p * n + 5] = 128;
+            alpha[p * n + 19] = 128;
+        }
+        let outside = exterior_transparency(&alpha, n);
+        assert!(outside[5 * n + 12], "exterior antialias pixels need glow");
+        assert!(outside[12 * n + 5], "side antialias pixels need glow");
+        assert!(!outside[12 * n + 12], "enclosed holes must remain dark");
+        assert!(!outside[9 * n + 12], "opaque SVG edges must not be affected");
+    }
+
+    #[test]
+    fn inverted_piece_has_no_unlit_gap_at_partial_coverage() {
+        let svg = include_bytes!("../assets/pieces/cburnett/wN.svg");
+        let regular = raster(svg, 92, Color::White, PieceStyle::default());
+        let inverted = raster(
+            svg,
+            92,
+            Color::White,
+            PieceStyle {
+                inverted: true,
+                ..Default::default()
+            },
+        );
+        // Some antialiased edge texels must gain halo coverage, rather than
+        // letting the board background show through between two purple bands.
+        assert!(regular.pixels.iter().zip(&inverted.pixels).any(|(src, lit)| {
+            (1..255).contains(&src.a()) && lit.a() > src.a()
+        }));
     }
 
     #[test]
