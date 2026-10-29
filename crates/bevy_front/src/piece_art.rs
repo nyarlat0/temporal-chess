@@ -211,9 +211,23 @@ fn raster(svg: &[u8], size: usize, side: Color, style: PieceStyle) -> egui::Colo
     );
     let source = pixmap.pixels();
     let alpha: Vec<_> = source.iter().map(|p| p.alpha()).collect();
+    // Inverted pieces use the opposite side's fill, not a uniform tint.
+    // Preserve the embedded SVG details without staining the light bodies.
     let palette = style.inverted.then(|| match side {
-        Color::White => ([35_u32, 88, 166], [198_u32, 226, 250]),
-        Color::Black => ([100_u32, 18, 42], [234_u32, 183, 195]),
+        Color::White => ([231_u32, 187, 255], [33_u32, 17, 54]),
+        Color::Black => ([251_u32, 247, 255], [103_u32, 48, 158]),
+    });
+    // Render light *behind* the artwork. Restrict it to the transparent
+    // background connected to the canvas edge, never enclosed SVG holes.
+    let inverted_glow = style.inverted.then(|| {
+        let spread = ((size as f32 * 0.050).round() as usize).max(2);
+        let blur = ((size as f32 * 0.032).round() as usize).max(1);
+        let rim = ((size as f32 * 0.028).round() as usize).max(1);
+        let mut soft = dilate_mask(&alpha, n, spread);
+        for _ in 0..3 {
+            soft = blur_mask(&soft, n, blur);
+        }
+        (soft, dilate_mask(&alpha, n, rim), exterior_transparency(&alpha, n))
     });
     let outer = (style.outline != Outline::None).then(|| {
         let radius =
@@ -249,18 +263,82 @@ fn raster(svg: &[u8], size: usize, side: Color, style: PieceStyle) -> egui::Colo
                     rgb[channel] = (dark[channel] * (a - tone) + light[channel] * tone) / 255;
                 }
             }
-            let halo = outer
-                .as_ref()
-                .map_or(0, |mask| (mask[i] as u32 * (255 - a)) / 255);
+            // Layer the soft amethyst light, its sharp rim, then any move
+            // highlight; finally draw the original (recolored) SVG over them.
+            let mut light_rgb = [0_u32; 3];
+            let mut light_alpha = 0_u32;
+            if let Some((soft, rim, exterior)) = &inverted_glow {
+                if exterior[i] {
+                    let (glow, edge) = match side {
+                        Color::White => ([163_u32, 64, 255], [188_u32, 123, 255]),
+                        Color::Black => ([160_u32, 73, 255], [133_u32, 59, 225]),
+                    };
+                    light_alpha = (soft[i] as u32 * 180) / 255;
+                    for channel in 0..3 {
+                        light_rgb[channel] = glow[channel] * light_alpha / 255;
+                    }
+                    let rim_alpha = (rim[i] as u32 * 236) / 255;
+                    for channel in 0..3 {
+                        light_rgb[channel] =
+                            (edge[channel] * rim_alpha + light_rgb[channel] * (255 - rim_alpha))
+                                / 255;
+                    }
+                    light_alpha += rim_alpha * (255 - light_alpha) / 255;
+                }
+            }
+            // Red checks and captures still override the amethyst edge.
+            let outline_alpha = outer.as_ref().map_or(0, |mask| mask[i] as u32);
+            for (channel, tint) in [color.r(), color.g(), color.b()].into_iter().enumerate() {
+                light_rgb[channel] =
+                    (tint as u32 * outline_alpha + light_rgb[channel] * (255 - outline_alpha))
+                        / 255;
+            }
+            light_alpha += outline_alpha * (255 - light_alpha) / 255;
+            for channel in 0..3 {
+                rgb[channel] += light_rgb[channel] * (255 - a) / 255;
+            }
             pixels[y * n + x] = Color32::from_rgba_premultiplied(
-                (rgb[0] + color.r() as u32 * halo / 255) as u8,
-                (rgb[1] + color.g() as u32 * halo / 255) as u8,
-                (rgb[2] + color.b() as u32 * halo / 255) as u8,
-                (a + halo) as u8,
+                rgb[0] as u8,
+                rgb[1] as u8,
+                rgb[2] as u8,
+                (a + light_alpha * (255 - a) / 255) as u8,
             );
         }
     }
     egui::ColorImage::new([n, n], pixels)
+}
+
+// Prevent neon lighting inside closed gaps in the source SVG.
+fn exterior_transparency(alpha: &[u8], n: usize) -> Vec<bool> {
+    let mut exterior = vec![false; n * n];
+    let mut pending = std::collections::VecDeque::new();
+    for x in 0..n {
+        for i in [x, (n - 1) * n + x, x * n, x * n + n - 1] {
+            if alpha[i] == 0 && !exterior[i] {
+                exterior[i] = true;
+                pending.push_back(i);
+            }
+        }
+    }
+    while let Some(i) = pending.pop_front() {
+        let x = i % n;
+        let y = i / n;
+        for neighbor in [
+            (x > 0).then(|| i - 1),
+            (x + 1 < n).then_some(i + 1),
+            (y > 0).then(|| i - n),
+            (y + 1 < n).then_some(i + n),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if alpha[neighbor] == 0 && !exterior[neighbor] {
+                exterior[neighbor] = true;
+                pending.push_back(neighbor);
+            }
+        }
+    }
+    exterior
 }
 
 fn blur_mask(alpha: &[u8], n: usize, radius: usize) -> Vec<u8> {
@@ -327,18 +405,73 @@ mod tests {
     }
 
     #[test]
-    fn inverted_palette_preserves_coverage_and_check_outline_is_red_and_antialiased() {
+    fn inverted_amethyst_glow_keeps_piece_interiors_clean() {
+        for (svg, side, body) in [
+            (
+                include_bytes!("../assets/pieces/cburnett/wP.svg").as_slice(),
+                Color::White,
+                Color32::from_rgb(33, 17, 54),
+            ),
+            (
+                include_bytes!("../assets/pieces/cburnett/bP.svg").as_slice(),
+                Color::Black,
+                Color32::from_rgb(251, 247, 255),
+            ),
+        ] {
+            let plain = raster(svg, 63, side, PieceStyle::default());
+            let inverse = raster(
+                svg,
+                63,
+                side,
+                PieceStyle {
+                    inverted: true,
+                    ..Default::default()
+                },
+            );
+            let n = inverse.size[0];
+            let center = (n / 2 + 12) * n + n / 2;
+            assert_eq!(inverse.pixels[center], body);
+            assert!(plain
+                .pixels
+                .iter()
+                .zip(&inverse.pixels)
+                .all(|(p, inv)| p.a() != 255 || inv.a() == 255));
+            assert!(plain
+                .pixels
+                .iter()
+                .zip(&inverse.pixels)
+                .any(|(p, inv)| p.a() == 0 && inv.a() > 0));
+            assert!(inverse
+                .pixels
+                .iter()
+                .all(|p| p.r() <= p.a() && p.g() <= p.a() && p.b() <= p.a()));
+        }
+    }
+
+    #[test]
+    fn inverted_glow_does_not_enter_enclosed_svg_holes() {
+        let n = 25;
+        let mut alpha = vec![0; n * n];
+        for y in 5..20 {
+            for x in 5..20 {
+                alpha[y * n + x] = 255;
+            }
+        }
+        for y in 10..15 {
+            for x in 10..15 {
+                alpha[y * n + x] = 0;
+            }
+        }
+        let outside = exterior_transparency(&alpha, n);
+        assert!(outside[0]);
+        assert!(!outside[12 * n + 12]);
+        assert!(!outside[7 * n + 7]);
+    }
+
+    #[test]
+    fn check_outline_stays_red() {
         let svg = include_bytes!("../assets/pieces/cburnett/wK.svg");
         let plain = raster(svg, 63, Color::White, PieceStyle::default());
-        let inverse = raster(
-            svg,
-            63,
-            Color::White,
-            PieceStyle {
-                inverted: true,
-                ..Default::default()
-            },
-        );
         let check = raster(
             svg,
             63,
@@ -348,35 +481,13 @@ mod tests {
                 ..Default::default()
             },
         );
-        assert!(plain.pixels.iter().any(|p| p.a() > 0 && p.a() < 255));
-        assert!(
-            plain
-                .pixels
-                .iter()
-                .zip(&inverse.pixels)
-                .all(|(a, b)| a.a() == b.a())
-        );
-        assert!(
-            inverse
-                .pixels
-                .iter()
-                .all(|p| p.r() <= p.a() && p.g() <= p.a() && p.b() <= p.a())
-        );
-        assert!(
-            plain
-                .pixels
-                .iter()
-                .zip(&inverse.pixels)
-                .any(|(a, b)| a.r() == 255 && *b == Color32::from_rgb(198, 226, 250))
-        );
-        assert!(
-            plain
-                .pixels
-                .iter()
-                .zip(&check.pixels)
-                .any(|(a, b)| a.a() == 0 && b.a() > 0 && b.r() > b.g() * 2)
-        );
+        assert!(plain
+            .pixels
+            .iter()
+            .zip(&check.pixels)
+            .any(|(a, b)| a.a() == 0 && b.a() > 0 && b.r() > b.g() * 2));
     }
+
     #[test]
     fn capture_glow_has_an_opacity_gradient_without_blurring_the_piece() {
         let svg = include_bytes!("../assets/pieces/cburnett/bN.svg");

@@ -171,6 +171,47 @@ fn mix_color(from: Color32, to: Color32, progress: f32) -> Color32 {
     )
 }
 
+fn active_board_colors(side: Color) -> (Color32, Color32) {
+    match side {
+        Color::White => (
+            Color32::from_rgb(248, 248, 240),
+            Color32::from_rgb(225, 227, 220),
+        ),
+        Color::Black => (
+            Color32::from_rgb(37, 37, 37),
+            Color32::from_rgb(66, 65, 76),
+        ),
+    }
+}
+
+// Wide rounded double frame with a hard offset shadow, like 5D Chess.
+// Dimensions scale with the squares rather than fixed UI pixels.
+fn paint_active_frame(
+    painter: &egui::Painter,
+    board: Rect,
+    cell: f32,
+    outer: Color32,
+    inner: Color32,
+    opacity: f32,
+    lift: f32,
+) {
+    let padding = cell * 0.62;
+    let corner = cell * 0.60;
+    let border = cell * 0.14;
+    let frame = board.expand(padding);
+    painter.rect_filled(
+        frame.translate(Vec2::new(-cell * 0.95, cell * 0.80 + lift)),
+        corner,
+        Color32::from_rgb(53, 53, 53).gamma_multiply(opacity * 0.95),
+    );
+    painter.rect_filled(frame, corner, outer.gamma_multiply(opacity));
+    painter.rect_filled(
+        frame.shrink(border),
+        (corner - border).max(0.0),
+        inner.gamma_multiply(opacity),
+    );
+}
+
 fn paint_transition(
     painter: &egui::Painter,
     game: &GameUi,
@@ -186,26 +227,17 @@ fn paint_transition(
     let cell = board.width() / 8.0;
     // Settle into the normal static renderer, including all final overlays.
     let opacity = 1.0 - ease((raw - 0.88) / 0.12);
-    let frame_color = |t| {
-        if Color::from_board(t) == Color::White {
-            Color32::from_rgb(230, 227, 220)
-        } else {
-            Color32::from_rgb(12, 12, 12)
-        }
-    };
-    let rim = mix_color(
-        frame_color(motion.from_t),
-        frame_color(motion.to_t),
-        progress,
+    let (from_outer, from_inner) = active_board_colors(Color::from_board(motion.from_t));
+    let (to_outer, to_inner) = active_board_colors(Color::from_board(motion.to_t));
+    paint_active_frame(
+        painter,
+        board,
+        cell,
+        mix_color(from_outer, to_outer, progress),
+        mix_color(from_inner, to_inner, progress),
+        opacity,
+        lift * 9.0,
     );
-    painter.rect_filled(
-        board
-            .expand(16.0)
-            .translate(Vec2::new(0.0, 6.0 + lift * 9.0)),
-        15.0,
-        Color32::BLACK.gamma_multiply(opacity * 0.32),
-    );
-    painter.rect_filled(board.expand(13.0), 14.0, rim.gamma_multiply(opacity));
     for x in 0..8 {
         for y in 0..8 {
             let rect = Rect::from_min_size(
@@ -357,7 +389,7 @@ fn paint_board(
     } else {
         Color32::from_rgb(12, 12, 12)
     };
-    let rail_x = board.left() - 39.0;
+    let rail_x = board.left() - (cell * 0.62 + 24.0).max(39.0);
     painter.line_segment(
         [
             Pos2::new(rail_x, board.top() - 46.0),
@@ -374,16 +406,21 @@ fn paint_board(
             MUTED.gamma_multiply(0.4)
         },
     );
-    painter.rect_filled(
-        board.expand(6.0).translate(Vec2::new(0.0, 5.0)),
-        3.0,
-        Color32::BLACK.gamma_multiply(0.26),
-    );
-    painter.rect_filled(
-        board.expand(if active { 13.0 } else { 3.0 }),
-        if active { 14.0 } else { 5.0 },
-        side_color.gamma_multiply(alpha),
-    );
+    if active {
+        let (outer, inner) = active_board_colors(side);
+        paint_active_frame(painter, board, cell, outer, inner, alpha, 0.0);
+    } else {
+        painter.rect_filled(
+            board.expand(6.0).translate(Vec2::new(0.0, 5.0)),
+            3.0,
+            Color32::BLACK.gamma_multiply(0.26),
+        );
+        painter.rect_filled(
+            board.expand(3.0),
+            5.0,
+            side_color.gamma_multiply(alpha),
+        );
+    }
     let checked = &game.checks;
     painter.text(
         board.left_top() - Vec2::new(0.0, 19.0),
