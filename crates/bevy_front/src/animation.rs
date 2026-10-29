@@ -1,10 +1,11 @@
 //! Presentation-only transitions. Worldline edges, not worldline IDs alone,
 //! connect occurrences across a board boundary (including reversed moves).
-use std::{collections::HashSet, time::Instant};
+use std::collections::HashSet;
 use temporal_chess_engine::{
     engine::Engine,
     model::{Castling, Move, MoveId, PieceAt, PieceId, PieceKind, PieceView},
 };
+use web_time::Instant;
 
 pub fn ease(progress: f32) -> f32 {
     let t = progress.clamp(0.0, 1.0);

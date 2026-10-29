@@ -228,6 +228,13 @@ impl fmt::Display for Command {
     }
 }
 
+impl std::str::FromStr for Command {
+    type Err = String;
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        parse(text)
+    }
+}
+
 fn number(text: &str) -> Result<usize, String> {
     text.parse()
         .map_err(|_| format!("Некорректное число: {text}"))

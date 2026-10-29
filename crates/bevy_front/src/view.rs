@@ -124,6 +124,7 @@ fn sidebar(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, art: &P
                 });
             });
         });
+    crate::multiplayer::panel(ui, game);
     ui.horizontal(|ui| {
         if icon_button(
             ui,
@@ -151,13 +152,28 @@ fn sidebar(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, art: &P
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_secs(2));
         }
-        if icon_button(ui, Icon::Import, "Загрузить партию из записи", false, idle).clicked()
+        if icon_button(
+            ui,
+            Icon::Import,
+            "Загрузить партию из записи",
+            false,
+            idle && !game.online.enabled,
+        )
+        .clicked()
         {
             game.clear_selection();
             game.import_open = true;
             game.import_error = None;
         }
-        if icon_button(ui, Icon::New, "Новая партия", false, idle).clicked() {
+        if icon_button(
+            ui,
+            Icon::New,
+            "Новая партия",
+            false,
+            idle && !game.online.enabled,
+        )
+        .clicked()
+        {
             game.confirm_restart = true;
         }
     });
@@ -191,7 +207,14 @@ fn sidebar(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, art: &P
     ui.colored_label(SUBTLE, egui::RichText::new("Масштаб: ПКМ + колесо").small());
     if let CalculationStatus::Paused { t, .. } = game.engine.calculation_status() {
         ui.horizontal(|ui| {
-            if icon_button(ui, Icon::Continue, "Продолжить просчёт · C", false, idle).clicked()
+            if icon_button(
+                ui,
+                Icon::Continue,
+                "Продолжить просчёт · C",
+                false,
+                idle && game.can_submit(),
+            )
+            .clicked()
             {
                 game.continue_calculation();
             }

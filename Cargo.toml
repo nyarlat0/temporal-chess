@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/engine", "crates/bevy_front"]
+members = ["crates/engine", "crates/bevy_front", "crates/protocol", "crates/server"]
 default-members = ["crates/bevy_front"]
 resolver = "3"
 
@@ -8,3 +8,14 @@ debug = 0
 
 [profile.dev.package."*"]
 opt-level = 2
+
+[profile.release]
+opt-level = 3
+strip = true
+
+[profile.web-release]
+inherits = "release"
+opt-level = "s"
+lto = "thin"
+codegen-units = 1
+panic = "abort"

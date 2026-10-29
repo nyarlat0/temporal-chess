@@ -1,0 +1,19 @@
+{$NOLAN_SITE:localhost:8081} {
+    header X-Content-Type-Options nosniff
+    @entrypoint path / /index.html
+    header @entrypoint Cache-Control "no-cache"
+    @versioned path_regexp versioned ^/releases/[0-9a-f]{16}/
+    header @versioned Cache-Control "public, max-age=31536000, immutable"
+    handle /ws {
+        reverse_proxy {$NOLAN_BACKEND:127.0.0.1:8080}
+    }
+    handle /health {
+        reverse_proxy {$NOLAN_BACKEND:127.0.0.1:8080}
+    }
+    handle {
+        root * {$NOLAN_WEB_ROOT:./dist/web}
+        file_server {
+            precompressed br gzip
+        }
+    }
+}

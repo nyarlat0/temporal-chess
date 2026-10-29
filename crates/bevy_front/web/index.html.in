@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#16181d">
+  <title>Temporal Chess</title>
+  <style>
+    html, body { width:100%; height:100%; margin:0; overflow:hidden; background:#16181d; color:#e7eaf1; font:16px system-ui,sans-serif; }
+    canvas { display:block; width:100%; height:100%; outline:none; touch-action:none; }
+    #loading { position:fixed; inset:0; display:grid; place-content:center; text-align:center; gap:12px; background:#16181d; z-index:2; padding:24px; }
+    #loading small { color:#9ba3b4; max-width:480px; }
+    #loading[hidden] { display:none; }
+  </style>
+</head>
+<body>
+  <canvas id="game" tabindex="0" aria-label="Темпоральные шахматы"></canvas>
+  <div id="loading"><strong>Temporal Chess</strong><small id="status">Загрузка игры…</small></div>
+  <noscript>Для игры нужен JavaScript и браузер с поддержкой WebGL2.</noscript>
+  <script type="module">
+    const canvas = document.getElementById('game');
+    const loading = document.getElementById('loading');
+    const status = document.getElementById('status');
+    canvas.addEventListener('contextmenu', event => event.preventDefault());
+    canvas.addEventListener('wheel', event => event.preventDefault(), { passive: false });
+    canvas.addEventListener('webglcontextlost', () => {
+      loading.hidden = false;
+      status.textContent = 'Графический контекст потерян. Перезагрузите страницу; к сетевой партии можно подключиться снова по коду.';
+    });
+    try {
+      if (!document.createElement('canvas').getContext('webgl2')) throw new Error('Браузер не поддерживает WebGL2.');
+      const { default: init } = await import('./releases/__NOLAN_RELEASE__/nolan.js');
+      await init();
+    } catch (error) {
+      // winit transfers control to the browser event loop using this exception.
+      if (!String(error).includes("Using exceptions for control flow")) {
+        console.error(error);
+        loading.hidden = false;
+        status.textContent = `Не удалось запустить игру: ${error.message || error}`;
+      }
+    }
+  </script>
+</body>
+</html>

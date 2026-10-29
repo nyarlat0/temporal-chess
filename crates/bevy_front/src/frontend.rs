@@ -24,7 +24,8 @@ impl Plugin for ChessFrontendPlugin {
                 setup_camera.before(EguiStartupSet::InitContexts),
             )
             .add_systems(Startup, configure_ui)
-            .add_systems(Update, update_game)
+            .init_non_send::<crate::multiplayer::MultiplayerClient>()
+            .add_systems(Update, (update_game, crate::multiplayer::poll).chain())
             .add_systems(EguiPrimaryContextPass, draw);
     }
 }
@@ -52,7 +53,17 @@ fn draw(
     mut game: ResMut<GameUi>,
     mut shell: ResMut<ShellState>,
     art: Res<PieceArt>,
+    #[cfg(target_arch = "wasm32")] mut web_loaded: Local<bool>,
 ) -> Result {
     view::draw(contexts.ctx_mut()?, &mut game, &mut shell, &art);
+    #[cfg(target_arch = "wasm32")]
+    if !*web_loaded
+        && let Some(loading) = web_sys::window()
+            .and_then(|w| w.document())
+            .and_then(|document| document.get_element_by_id("loading"))
+    {
+        let _ = loading.set_attribute("hidden", "");
+        *web_loaded = true;
+    }
     Ok(())
 }

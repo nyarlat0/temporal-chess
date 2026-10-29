@@ -59,6 +59,7 @@ impl Selection {
 
 #[derive(Resource)]
 pub struct GameUi {
+    pub online: crate::multiplayer::OnlineState,
     pub engine: Engine,
     pub checks: CheckStatus,
     pub selected: Option<Selection>,
@@ -85,6 +86,7 @@ pub struct GameUi {
 #[derive(Clone, Copy)]
 enum ReplayKind {
     Import,
+    Network,
     Undo { source_t: usize },
 }
 
@@ -123,6 +125,7 @@ impl TimelineViewport {
 impl Default for GameUi {
     fn default() -> Self {
         Self {
+            online: Default::default(),
             engine: Engine::default()
                 .with_interactive_calculation()
                 .expect("valid initial game"),
@@ -246,7 +249,8 @@ impl GameUi {
     }
 
     pub fn selectable(&self, piece: PieceView) -> bool {
-        self.engine.board(piece.t).is_some()
+        self.can_submit()
+            && self.engine.board(piece.t).is_some()
             && piece.color == self.engine.turn()
             && self
                 .engine
@@ -345,8 +349,7 @@ impl GameUi {
                     from: selection.piece.sq,
                     to_t: t,
                 };
-                let result = self.record.apply(&mut self.engine, command);
-                self.after_command(result, format!("Ожидание: t={} → {t}", source.t));
+                self.submit(command);
                 return;
             }
         }
@@ -365,30 +368,43 @@ impl GameUi {
         }
     }
 
-    pub fn play(&mut self, mv: Move) {
-        if self.replay_job.is_some() || self.transition.is_some() {
+    pub fn can_submit(&self) -> bool {
+        !self.online.enabled
+            || (self.online.ready
+                && !self.online.waiting
+                && !self.online.synchronizing
+                && self.online.side == Some(self.engine.turn()))
+    }
+
+    fn submit(&mut self, command: Command) {
+        if !self.can_submit() || self.replay_job.is_some() || self.transition.is_some() {
             return;
         }
-        let text = format!(
-            "{}: t={} → {} · {}{}",
-            side_name(self.engine.turn()),
-            mv.t,
-            mv.direction.step(mv.t).unwrap_or(mv.t),
-            char::from(b'a' + mv.sq.0 as u8),
-            mv.sq.1 + 1
-        );
-        let before = self.engine.clone();
-        let result = match self
-            .engine
-            .piece_state(mv.source())
-            .map(|state| Sq(state.x, state.y))
-        {
-            Some(from) => self
-                .record
-                .apply(&mut self.engine, Command::Move { mv, from }),
-            None => Err(temporal_chess_engine::engine::EngineErr::WrongPiece),
-        };
-        if result.is_ok() {
+        if self.online.enabled {
+            self.online.outgoing = Some(command);
+            self.online.waiting = true;
+            self.clear_selection();
+        } else {
+            let _ = self.apply_confirmed(command);
+        }
+    }
+
+    pub fn play(&mut self, mv: Move) {
+        if let Some(state) = self.engine.piece_state(mv.source()) {
+            self.submit(Command::Move {
+                mv,
+                from: Sq(state.x, state.y),
+            });
+        }
+    }
+
+    /// Shared local/server-confirmed application path. Network requests never
+    /// mutate the game optimistically: only acknowledged commands reach here.
+    pub fn apply_confirmed(&mut self, command: Command) -> Result<(), String> {
+        let before = matches!(command, Command::Move { .. }).then(|| self.engine.clone());
+        let result = self.record.apply(&mut self.engine, command);
+        let error = result.as_ref().err().map(ToString::to_string);
+        if let (Ok(()), Command::Move { mv, .. }, Some(before)) = (&result, command, before) {
             self.transition = if matches!(
                 self.engine.outcome(),
                 Some(GameOutcome::Victory {
@@ -407,7 +423,8 @@ impl GameUi {
                 None
             };
         }
-        self.after_command(result, text);
+        self.after_command(result, command.to_string());
+        error.map_or(Ok(()), Err)
     }
 
     fn after_command(
@@ -429,28 +446,23 @@ impl GameUi {
     }
 
     pub fn continue_calculation(&mut self) {
-        if self.replay_job.is_some() || self.transition.is_some() {
-            return;
-        }
-        match self.record.apply(&mut self.engine, Command::Continue) {
-            Ok(()) => {
-                self.refresh_checks();
-                let status = self.engine.calculation_status();
-                self.clear_selection();
-                let text = match status {
-                    CalculationStatus::Complete => "История просчитана полностью.".to_owned(),
-                    CalculationStatus::Paused { t, .. } => {
-                        format!("Просчёт остановлен: отменённый ход на t={t} ведёт к конфликту.")
-                    }
-                };
-                self.message(text, false);
-            }
-            Err(error) => self.message(format!("Ошибка просчёта: {error}"), true),
-        }
+        self.submit(Command::Continue);
+    }
+
+    pub fn begin_network_replay(&mut self, history: &[String]) {
+        self.clear_selection();
+        self.pending_square = None;
+        self.pending_move = None;
+        self.import_open = false;
+        self.confirm_restart = false;
+        self.begin_replay(
+            format!("NOLAN-CHESS 1\n{}\n", history.join("\n")),
+            ReplayKind::Network,
+        );
     }
 
     pub fn begin_import(&mut self) {
-        if self.replay_job.is_some() || self.transition.is_some() {
+        if self.online.enabled || self.replay_job.is_some() || self.transition.is_some() {
             return;
         }
         self.import_error = None;
@@ -458,7 +470,8 @@ impl GameUi {
     }
 
     pub fn can_undo(&self) -> bool {
-        self.replay_job.is_none()
+        !self.online.enabled
+            && self.replay_job.is_none()
             && self.transition.is_none()
             && !self.import_open
             && !self.confirm_restart
@@ -507,6 +520,11 @@ impl GameUi {
     fn replay_failed(&mut self, kind: ReplayKind, error: String) {
         self.replay_job = None;
         match kind {
+            ReplayKind::Network => {
+                self.online.ready = false;
+                self.online.fatal = true;
+                self.online.status = format!("Не удалось восстановить сетевую партию: {error}");
+            }
             ReplayKind::Import => self.import_error = Some(error),
             ReplayKind::Undo { .. } => self.message(format!("Отмена не выполнена: {error}"), true),
         }
@@ -526,17 +544,23 @@ impl GameUi {
                 self.refresh_checks();
                 self.jump_to = Some(match kind {
                     ReplayKind::Undo { source_t } => source_t.min(self.engine.history().horizon()),
-                    ReplayKind::Import => match self.engine.calculation_status() {
-                        CalculationStatus::Paused { t, .. } => t,
-                        CalculationStatus::Complete => self.engine.history().horizon(),
-                    },
+                    ReplayKind::Import | ReplayKind::Network => {
+                        match self.engine.calculation_status() {
+                            CalculationStatus::Paused { t, .. } => t,
+                            CalculationStatus::Complete => self.engine.history().horizon(),
+                        }
+                    }
                 });
                 self.viewport = TimelineViewport::default();
                 self.replay_job = None;
+                if matches!(kind, ReplayKind::Network) {
+                    self.online.synchronizing = false;
+                }
                 self.import_open = false;
                 self.inspect_mode = false;
                 self.message(
                     match kind {
+                        ReplayKind::Network => "Сетевая партия синхронизирована.",
                         ReplayKind::Import => "Партия загружена. Можно продолжать игру.",
                         ReplayKind::Undo { .. } => "Последний ход отменён. История восстановлена.",
                     },
