@@ -11,6 +11,18 @@ pub fn ease(progress: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
+/// Quintic ease-in-out: zero velocity and acceleration at both ends.
+/// The board settles before its final appearance blends into the static scene.
+pub fn travel_curve(progress: f32) -> f32 {
+    let t = progress.clamp(0.0, 1.0);
+    t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
+}
+
+/// Sine ease-in-out for camera navigation, with no overshoot.
+pub fn scroll_curve(progress: f32) -> f32 {
+    (1.0 - (progress.clamp(0.0, 1.0) * std::f32::consts::PI).cos()) * 0.5
+}
+
 fn identity(piece: PieceView) -> PieceAt {
     PieceAt {
         piece: PieceId::from_piv(piece),
@@ -64,8 +76,9 @@ pub struct PieceMotion {
 pub struct BoardTransition {
     pub from_t: usize,
     pub to_t: usize,
-    pub played: Move,
     pub tracks: Vec<PieceMotion>,
+    pub source: Vec<PieceView>,
+    pub target: Vec<PieceView>,
     pub started: Option<Instant>,
     pub camera_from_rows: f32,
 }
@@ -152,7 +165,8 @@ impl BoardTransition {
         // Unmatched incarnations genuinely appear/disappear after history edits.
         // Do not connect two different incarnations merely because they share wid.
         for from in source
-            .into_iter()
+            .iter()
+            .copied()
             .filter(|p| !used_source.contains(&identity(*p)))
         {
             tracks.push(PieceMotion {
@@ -164,7 +178,8 @@ impl BoardTransition {
             });
         }
         for to in target
-            .into_iter()
+            .iter()
+            .copied()
             .filter(|p| !used_target.contains(&identity(*p)))
         {
             tracks.push(PieceMotion {
@@ -178,8 +193,9 @@ impl BoardTransition {
         Some(Self {
             from_t,
             to_t,
-            played,
             tracks,
+            source,
+            target,
             started: None,
             camera_from_rows: 0.0,
         })

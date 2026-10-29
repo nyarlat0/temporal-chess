@@ -1,108 +1,41 @@
+//! Application chrome. Board and piece rendering stay in their own modules.
 use crate::{
-    controller::{GameUi, direction_name, side_name},
+    controller::GameUi,
+    icons::{Icon, icon_button},
     piece_art::PieceArt,
+    theme::*,
 };
-use bevy_egui::egui::{self, Color32, FontId, Vec2};
-use temporal_chess_engine::{
-    engine::CalculationStatus,
-    model::{Color, PieceKind, TimeDirection},
-};
+use bevy::prelude::Resource;
+use bevy_egui::egui::{self, Vec2};
+use temporal_chess_engine::{engine::CalculationStatus, model::PieceKind};
 
-pub const FUTURE: Color32 = Color32::from_rgb(241, 108, 169);
-pub const PAST: Color32 = Color32::from_rgb(128, 21, 52);
-pub const REACTION: Color32 = Color32::from_rgb(240, 125, 32);
-pub const INFORMATION: Color32 = Color32::from_rgb(245, 205, 46);
-pub const ORDINARY: Color32 = Color32::from_rgb(77, 185, 92);
-pub const CAPTURE: Color32 = Color32::from_rgb(235, 48, 61);
-pub const PLAYED_FUTURE: Color32 = Color32::from_rgb(65, 137, 235);
-pub const PLAYED_PAST: Color32 = Color32::from_rgb(151, 85, 216);
-pub const INVERTED: Color32 = Color32::from_rgb(150, 134, 190);
-pub const MUTED: Color32 = Color32::from_rgb(158, 154, 146);
-const TEXT: Color32 = Color32::from_rgb(226, 223, 215);
-const PANEL: Color32 = Color32::from_rgb(43, 41, 38);
+#[derive(Resource, Clone)]
+pub struct ShellState {
+    pub history_open: bool,
+    pub help_open: bool,
+    pub input_frame: Option<u64>,
+    pub zoom_gesture: bool,
+    pub suppress_wheel: bool,
+    pub ribbon_rect: egui::Rect,
+    copied_until: f64,
+}
 
-pub fn draw(ctx: &egui::Context, game: &mut GameUi) {
-    game.poll_replay();
-    if game.replay_job.is_some() {
-        ctx.request_repaint_after(std::time::Duration::from_millis(80));
+impl Default for ShellState {
+    fn default() -> Self {
+        Self {
+            history_open: true,
+            help_open: false,
+            input_frame: None,
+            zoom_gesture: false,
+            suppress_wheel: false,
+            ribbon_rect: egui::Rect::NOTHING,
+            copied_until: 0.0,
+        }
     }
-    if !game.fonts_ready {
-        let mut fonts = egui::FontDefinitions::default();
-        fonts.font_data.insert(
-            "text".into(),
-            egui::FontData::from_static(include_bytes!("../assets/fonts/DejaVuSans.ttf")).into(),
-        );
-        fonts
-            .families
-            .entry(egui::FontFamily::Proportional)
-            .or_default()
-            .insert(0, "text".into());
-        ctx.set_fonts(fonts);
-        ctx.tessellation_options_mut(|options| {
-            options.feathering = true;
-            options.feathering_size_in_pixels = 1.0;
-        });
-        ctx.set_theme(egui::Theme::Dark);
-        let mut style = (*ctx.style_of(egui::Theme::Dark)).clone();
-        style.visuals = egui::Visuals::dark();
-        style.visuals.panel_fill = PANEL;
-        style.visuals.window_fill = PANEL;
-        style.visuals.override_text_color = Some(TEXT);
-        style.visuals.selection.bg_fill = Color32::from_rgb(77, 72, 88);
-        style.visuals.widgets.inactive.bg_fill = Color32::from_rgb(57, 54, 50);
-        style.visuals.widgets.hovered.bg_fill = Color32::from_rgb(71, 67, 61);
-        style.visuals.widgets.active.bg_fill = Color32::from_rgb(82, 77, 69);
-        style.spacing.item_spacing = Vec2::new(10.0, 12.0);
-        style.spacing.button_padding = Vec2::new(12.0, 8.0);
-        style.spacing.interact_size.y = 34.0;
-        style
-            .text_styles
-            .insert(egui::TextStyle::Body, FontId::proportional(14.0));
-        style
-            .text_styles
-            .insert(egui::TextStyle::Button, FontId::proportional(13.0));
-        style
-            .text_styles
-            .insert(egui::TextStyle::Heading, FontId::proportional(20.0));
-        ctx.set_style_of(egui::Theme::Dark, style);
-        game.fonts_ready = true;
-    }
-    if game.art.is_none() {
-        game.art = Some(PieceArt::new(ctx));
-    }
-    let (cancel, toggle, inspect, advance) = ctx.input(|i| {
-        (
-            i.pointer.button_clicked(egui::PointerButton::Secondary)
-                || i.key_pressed(egui::Key::Escape),
-            i.pointer.button_clicked(egui::PointerButton::Middle),
-            i.key_pressed(egui::Key::I) && !i.modifiers.command && !i.modifiers.ctrl,
-            i.key_pressed(egui::Key::C) && !i.modifiers.command && !i.modifiers.ctrl,
-        )
-    });
-    if cancel {
-        game.clear_selection();
-    }
-    if toggle {
-        game.toggle_direction();
-    }
-    let shortcuts = !ctx.egui_wants_keyboard_input()
-        && !game.import_open
-        && !game.confirm_restart
-        && game.replay_job.is_none()
-        && game.transition.is_none();
-    if inspect && shortcuts {
-        game.clear_selection();
-        game.inspect_mode = !game.inspect_mode;
-    }
-    if advance
-        && shortcuts
-        && matches!(
-            game.engine.calculation_status(),
-            CalculationStatus::Paused { .. }
-        )
-    {
-        game.continue_calculation();
-    }
+}
+
+pub fn draw(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState, art: &PieceArt) {
+    crate::input::handle(ctx, game, shell);
     let mut root = egui::Ui::new(
         ctx.clone(),
         "viewport".into(),
@@ -110,435 +43,381 @@ pub fn draw(ctx: &egui::Context, game: &mut GameUi) {
             .layer_id(egui::LayerId::background())
             .max_rect(ctx.viewport_rect()),
     );
-    egui::Panel::top("header")
-        .frame(
-            egui::Frame::new()
-                .fill(PANEL)
-                .inner_margin(egui::Margin::symmetric(20, 12)),
-        )
-        .show(&mut root, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Temporal Chess").size(23.0).strong());
-                ui.colored_label(MUTED, "шахматы во времени");
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
-                        .add_enabled(
-                            game.replay_job.is_none() && game.transition.is_none(),
-                            egui::Button::new("Новая партия"),
-                        )
-                        .clicked()
-                    {
-                        game.confirm_restart = true;
-                    }
-                    if ui
-                        .selectable_label(game.inspect_mode, "Инспекция")
-                        .on_hover_text("I — инспекция фигуры")
-                        .clicked()
-                    {
-                        game.clear_selection();
-                        game.inspect_mode = !game.inspect_mode;
-                    }
-                });
-            });
-        });
-    egui::Panel::right("details")
-        .default_size(292.0)
-        .min_size(260.0)
-        .max_size(380.0)
+    let modal = game.import_open
+        || game.confirm_restart
+        || game.replay_job.is_some()
+        || !game.promotion.is_empty()
+        || !game.overlapping.is_empty()
+        || shell.help_open;
+    if modal {
+        root.disable();
+    }
+    egui::Panel::right("game_sidebar")
+        .default_size(340.0)
+        .min_size(300.0)
+        .max_size(400.0)
         .frame(egui::Frame::new().fill(PANEL).inner_margin(18))
         .show(&mut root, |ui| {
             egui::ScrollArea::vertical()
-                .id_salt("details_scroll")
-                .show(ui, |ui| sidebar(ui, game));
+                .id_salt("sidebar_scroll")
+                .show(ui, |ui| sidebar(ui, game, shell, art));
         });
     egui::CentralPanel::default()
-        .frame(
-            egui::Frame::new()
-                .fill(Color32::from_rgb(32, 31, 29))
-                .inner_margin(12),
-        )
+        .frame(egui::Frame::new().fill(BACKGROUND).inner_margin(12))
         .show(&mut root, |ui| {
-            ui.add_enabled_ui(game.transition.is_none(), |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    ui.colored_label(MUTED, "ИСТОРИЯ");
-                    if ui.small_button("↑ Настоящее").clicked() {
-                        game.jump_to = game.times().first().copied();
-                    }
-                    if ui.small_button("↓ Начало").clicked() {
-                        game.jump_to = Some(0);
-                    }
-                    ui.label("Масштаб");
-                    ui.add(egui::Slider::new(&mut game.cell_size, 30.0..=90.0).show_value(false));
-                });
-                ui.horizontal_wrapped(|ui| {
-                    let enabled = !game.active_times().is_empty();
-                    if ui
-                        .add_enabled(enabled, egui::Button::new("↑ Предыдущая активная"))
-                        .clicked()
-                    {
-                        game.navigate_active(false);
-                    }
-                    if ui
-                        .add_enabled(enabled, egui::Button::new("↓ Следующая активная"))
-                        .clicked()
-                    {
-                        game.navigate_active(true);
-                    }
-                });
-            });
-            crate::board_view::ribbon(ui, game);
+            shell.ribbon_rect = ui.available_rect_before_wrap();
+            crate::board_view::ribbon(ui, game, art);
         });
-    dialogs(ctx, game);
-    // A move may start in a promotion dialog after the ribbon was painted.
-    // Schedule its first frame even when the window otherwise renders on demand.
-    if game.transition.is_some() || game.viewport.scroll.is_some() || game.jump_to.is_some() {
+    crate::dialogs::draw(ctx, game, shell, art);
+    if game.replay_job.is_some() {
+        ctx.request_repaint_after(std::time::Duration::from_millis(80));
+    }
+    if game.transition.is_some()
+        || game.viewport.scroll.is_some()
+        || game.jump_to.is_some()
+        || game.pending_square.is_some()
+        || game.pending_move.is_some()
+    {
         ctx.request_repaint();
     }
 }
 
-fn sidebar(ui: &mut egui::Ui, game: &mut GameUi) {
-    ui.add_space(4.0);
-    ui.small("ЛОКАЛЬНАЯ ПАРТИЯ");
-    ui.heading(game.status_text());
-    ui.colored_label(MUTED, "Два игрока за одним компьютером");
-    for side in [Color::Black, Color::White] {
-        let active = game.engine.turn() == side && game.engine.outcome().is_none();
-        egui::Frame::new()
-            .fill(if active {
-                Color32::from_rgb(61, 57, 50)
-            } else {
-                Color32::from_rgb(37, 35, 33)
-            })
-            .corner_radius(5)
-            .inner_margin(12)
-            .show(ui, |ui| {
-                ui.set_min_width(ui.available_width());
-                ui.horizontal(|ui| {
-                    let (rect, _) = ui.allocate_exact_size(Vec2::splat(34.0), egui::Sense::hover());
-                    if let Some(art) = &game.art {
-                        art.paint(ui.painter(), PieceKind::K { moved: false }, side, rect, 1.0);
-                    }
-                    ui.vertical(|ui| {
-                        ui.strong(side_name(side));
-                        ui.small(if active {
-                            "Сейчас ходят"
-                        } else {
-                            "Второй игрок"
-                        });
-                    });
-                });
-            });
-    }
-    ui.separator();
-    if let CalculationStatus::Paused { t, .. } = game.engine.calculation_status() {
-        ui.colored_label(
-            REACTION,
-            format!("Отменённый ход на t = {t} ведёт к конфликту"),
-        );
-        if ui
-            .add_enabled(
-                game.transition.is_none(),
-                egui::Button::new("Продолжить просчёт")
-                    .min_size(Vec2::new(ui.available_width(), 36.0)),
+fn sidebar(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, art: &PieceArt) {
+    let idle = game.replay_job.is_none() && game.transition.is_none();
+    ui.horizontal(|ui| {
+        ui.heading("Temporal Chess");
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if icon_button(
+                ui,
+                Icon::Help,
+                "Управление и обозначения",
+                shell.help_open,
+                true,
             )
-            .on_hover_text("C · разрешить дальнейшее согласование конфликтов без расходования хода")
             .clicked()
-        {
-            game.continue_calculation();
-        }
-    }
-    if game.inspect_mode {
-        ui.colored_label(INVERTED, "Инспекция");
-        ui.small("Выберите фигуру на любой доске.");
-    } else if let Some(selection) = &game.selected {
-        ui.strong(format!(
-            "{} · t = {}",
-            piece_name(selection.piece.kind),
-            selection.piece.t
-        ));
-        ui.small("Выберите клетку на этой же доске.");
-        let direction = selection.direction;
-        ui.horizontal(|ui| {
-            ui.colored_label(
-                if direction == TimeDirection::Future {
-                    FUTURE
-                } else {
-                    PAST
-                },
-                direction_name(direction),
-            );
-            if ui
-                .small_button("⇅")
-                .on_hover_text("Средняя кнопка мыши — сменить направление")
-                .clicked()
             {
-                game.toggle_direction();
+                shell.help_open = true;
             }
         });
-    } else if game.transition.is_some() {
-        ui.label("Ход…");
-    } else {
-        ui.label("Выберите фигуру");
-        ui.colored_label(MUTED, "Возможные ходы появятся на её доске.");
-    }
-    if game.is_error {
-        ui.colored_label(CAPTURE, &game.notice);
-    }
-    ui.separator();
-    if game.inspect_mode {
-        inspector(ui, game);
-    }
-    ui.strong("Ходы партии");
+    });
+    egui::Frame::new()
+        .fill(SURFACE)
+        .corner_radius(10)
+        .inner_margin(12)
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.horizontal(|ui| {
+                let (rect, _) = ui.allocate_exact_size(Vec2::splat(32.0), egui::Sense::hover());
+                art.paint(
+                    ui.painter(),
+                    PieceKind::K { moved: false },
+                    game.engine.turn(),
+                    rect,
+                    1.0,
+                );
+                ui.vertical(|ui| {
+                    ui.strong(game.status_text());
+                    ui.colored_label(
+                        SUBTLE,
+                        format!("Активных досок: {}", game.active_times().len()),
+                    );
+                });
+            });
+        });
     ui.horizontal(|ui| {
-        if ui
-            .button("Копировать")
-            .on_hover_text("Скопировать полную запись партии в буфер обмена")
-            .clicked()
+        if icon_button(
+            ui,
+            Icon::Undo,
+            "Отменить последний ход · Ctrl+Z",
+            false,
+            game.can_undo(),
+        )
+        .clicked()
+        {
+            game.undo_last_move();
+        }
+        let copied = ui.input(|i| i.time) < shell.copied_until;
+        if icon_button(
+            ui,
+            if copied { Icon::Check } else { Icon::Copy },
+            "Копировать партию",
+            copied,
+            true,
+        )
+        .clicked()
         {
             ui.ctx().copy_text(game.record.to_text());
-            game.message("Партия скопирована в буфер обмена.", false);
+            shell.copied_until = ui.input(|i| i.time) + 2.0;
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_secs(2));
         }
-        if ui
-            .add_enabled(
-                game.replay_job.is_none() && game.transition.is_none(),
-                egui::Button::new("Загрузить"),
-            )
-            .clicked()
+        if icon_button(ui, Icon::Import, "Загрузить партию из записи", false, idle).clicked()
         {
             game.clear_selection();
             game.import_open = true;
             game.import_error = None;
         }
+        if icon_button(ui, Icon::New, "Новая партия", false, idle).clicked() {
+            game.confirm_restart = true;
+        }
     });
-    if ui.add_enabled(game.can_undo(), egui::Button::new("Отменить ход"))
-        .on_hover_text("Вернуться к позиции перед последним ходом, заново проиграв историю. Последующие протаскивания и продолжения просчёта тоже отменяются.")
-        .clicked() {
-        game.undo_last_move();
-    }
-    if game.notice.starts_with("Партия скопирована")
-        || game.notice.starts_with("Последний ход отменён")
-    {
-        ui.small(&game.notice);
-    }
-    if game.log.is_empty() {
-        ui.colored_label(MUTED, "Пока нет ходов");
-    }
-    for (index, entry) in game.log.iter().enumerate().rev().take(10) {
+    if game.is_error {
         ui.horizontal_wrapped(|ui| {
-            ui.colored_label(MUTED, format!("{}.", index + 1));
-            ui.label(entry);
-        });
-    }
-    ui.add_space(8.0);
-    egui::CollapsingHeader::new("Управление и обозначения").show(ui, |ui| {
-        ui.label("ЛКМ — выбрать и ходить на той же доске.\nСКМ — направление.\nПКМ / Esc — снять выделение.\nКолесо — история.");
-        ui.colored_label(FUTURE, "● Розовый — в будущее");
-        ui.colored_label(Color32::from_rgb(186, 66, 99), "● Карминовый — в прошлое");
-        ui.colored_label(ORDINARY, "Контур: ordinary");
-        ui.colored_label(INFORMATION, "Контур: новая информация");
-        ui.colored_label(REACTION, "Контур: отменённый ход");
-        ui.colored_label(CAPTURE, "Красное свечение: доступное взятие");
-        ui.colored_label(CAPTURE, "Красный контур короля: видимый шах");
-        ui.colored_label(Color32::from_rgb(239, 137, 185), "Розовый контур короля: угроза только из будущего");
-        ui.small("Сыгранный ход: синий в будущее, фиолетовый в прошлое.");
-        ui.colored_label(INVERTED, "Инверсия — обратные цвета и толстый контур");
-        ui.small("Для бесплатного ожидания нажмите ту же клетку на другой доске по направлению фигуры. Кольцо с точкой отмечает доступные доски.");
-        ui.small("Фигуры: Cburnett / Lichess · GPL-2.0+");
-    });
-}
-
-fn inspector(ui: &mut egui::Ui, game: &GameUi) {
-    let Some(id) = game.inspected else {
-        return;
-    };
-    let Some(state) = game.engine.piece_state(id) else {
-        ui.label("Состояния больше нет в истории.");
-        return;
-    };
-    let line = &game.engine.history().worldlines()[id.piece.wid];
-    ui.label(format!(
-        "Фигура #{} · {} состояний",
-        id.piece.wid,
-        line.len()
-    ));
-    egui::CollapsingHeader::new("Все поля состояния")
-        .default_open(true)
-        .show(ui, |ui| {
-            ui.monospace(format!("{state:#?}"));
-        });
-    egui::CollapsingHeader::new("Причинные разрывы").show(ui, |ui| {
-        ui.monospace(format!("{:#?}", line.gaps()));
-    });
-    egui::CollapsingHeader::new("Записанные ходы").show(ui, |ui| {
-        for mv in game
-            .engine
-            .history()
-            .moves()
-            .values()
-            .filter(|mv| mv.pid.wid == id.piece.wid)
-        {
-            ui.monospace(format!("{mv:#?}"));
-        }
-    });
-    egui::CollapsingHeader::new("Мировая линия").show(ui, |ui| {
-        for (age, state) in line.iter().enumerate() {
-            egui::CollapsingHeader::new(format!(
-                "age={age} · t={} · {}",
-                state.t,
-                if state.alive {
-                    "жива"
-                } else {
-                    "мертва"
-                }
-            ))
-            .id_salt((id.piece.wid, age))
-            .show(ui, |ui| {
-                ui.monospace(format!("{state:#?}"));
-            });
-        }
-    });
-    ui.separator();
-}
-
-fn dialogs(ctx: &egui::Context, game: &mut GameUi) {
-    if game.undo_in_progress() {
-        egui::Modal::new("undo_in_progress".into()).show(ctx, |ui| {
-            ui.heading("Отмена хода");
-            ui.horizontal(|ui| {
-                ui.spinner();
-                ui.label("Восстанавливаем партию из начальной позиции…");
-            });
-        });
-    }
-    if game.import_open {
-        egui::Modal::new("import_game".into()).show(ctx, |ui| {
-            ui.set_width(560.0_f32.min(ctx.viewport_rect().width() - 60.0));
-            ui.heading("Продолжить партию из записи");
-            ui.label("Вставьте текст, полученный кнопкой «Копировать» (Ctrl+V).");
-            ui.small("Текущая партия заменится только после успешной проверки всех команд.");
-            let loading = game.replay_job.is_some();
-            ui.add_enabled_ui(!loading, |ui| {
-                egui::ScrollArea::vertical()
-                    .max_height(340.0)
-                    .show(ui, |ui| {
-                        ui.add(
-                            egui::TextEdit::multiline(&mut game.import_text)
-                                .font(egui::TextStyle::Monospace)
-                                .desired_width(f32::INFINITY)
-                                .desired_rows(13)
-                                .hint_text("TEMPORAL-CHESS 1\nmove 0 12:0:0 e2 e4 + normal"),
-                        );
-                    });
-            });
-            if let Some(error) = &game.import_error {
-                ui.colored_label(CAPTURE, error);
+            if icon_button(ui, Icon::Close, "Скрыть сообщение", false, true).clicked()
+            {
+                game.is_error = false;
             }
-            ui.horizontal(|ui| {
-                if ui
-                    .add_enabled(
-                        !loading && !game.import_text.trim().is_empty(),
-                        egui::Button::new("Начать из записи"),
-                    )
-                    .clicked()
-                {
-                    game.begin_import();
-                }
-                if ui
-                    .add_enabled(!loading, egui::Button::new("Отмена"))
-                    .clicked()
-                {
-                    game.import_open = false;
-                }
-                if loading {
-                    ui.spinner();
-                    ui.label("Проверка истории…");
-                }
-            });
+            ui.colored_label(CAPTURE, &game.notice);
         });
     }
-    if !game.promotion.is_empty() {
-        egui::Modal::new("promotion".into()).show(ctx, |ui| {
-            ui.heading("Превращение пешки");
-            ui.horizontal(|ui| {
-                for mv in game.promotion.clone() {
-                    if let Some(kind) = mv.promotion() {
-                        let (rect, response) =
-                            ui.allocate_exact_size(Vec2::splat(76.0), egui::Sense::click());
-                        ui.painter().rect_filled(
-                            rect,
-                            4.0,
-                            if response.hovered() {
-                                Color32::from_gray(95)
+    ui.separator();
+    ui.horizontal(|ui| {
+        ui.strong("Лента времени");
+        ui.colored_label(SUBTLE, format!("0 — {}", game.engine.history().horizon()));
+    });
+    ui.horizontal(|ui| {
+        if icon_button(ui, Icon::First, "Последняя доска", false, idle).clicked() {
+            game.jump_to = game.times().first().copied();
+        }
+        if icon_button(ui, Icon::Last, "Начало истории", false, idle).clicked() {
+            game.jump_to = Some(0);
+        }
+        if icon_button(ui, Icon::ResetZoom, "Сбросить масштаб", false, idle).clicked()
+        {
+            game.cell_size = 64.0;
+        }
+        ui.label(format!("{:.0}%", game.cell_size / 64.0 * 100.0));
+    });
+    ui.colored_label(SUBTLE, egui::RichText::new("Масштаб: ПКМ + колесо").small());
+    if let CalculationStatus::Paused { t, .. } = game.engine.calculation_status() {
+        ui.horizontal(|ui| {
+            if icon_button(ui, Icon::Continue, "Продолжить просчёт · C", false, idle).clicked()
+            {
+                game.continue_calculation();
+            }
+            ui.colored_label(REACTION, format!("Конфликт на доске {t}"));
+        });
+        ui.small("Продолжение просчёта не расходует ход.");
+    }
+    ui.separator();
+    if let Some(selection) = &game.selected {
+        let piece = selection.piece;
+        let direction = selection.direction;
+        let moves = selection
+            .moves
+            .iter()
+            .filter(|mv| mv.direction == direction)
+            .map(|mv| (mv.sq.0, mv.sq.1))
+            .collect::<std::collections::BTreeSet<_>>()
+            .len();
+        let captures = selection
+            .captures
+            .iter()
+            .filter(|(mv, _)| mv.direction == direction)
+            .map(|(mv, _)| (mv.sq.0, mv.sq.1))
+            .collect::<std::collections::BTreeSet<_>>()
+            .len();
+        let fatal = selection
+            .fatal_captures
+            .iter()
+            .filter(|(mv, _)| mv.direction == direction)
+            .map(|(mv, _)| (mv.sq.0, mv.sq.1))
+            .collect::<std::collections::BTreeSet<_>>()
+            .len();
+        let skips = if direction
+            == temporal_chess_engine::model::TimeDirection::from_inverted(piece.inverted)
+        {
+            selection.skips.len()
+        } else {
+            0
+        };
+        ui.horizontal(|ui| {
+            let (rect, _) = ui.allocate_exact_size(Vec2::splat(42.0), egui::Sense::hover());
+            art.paint_styled(
+                ui.painter(),
+                piece.kind,
+                piece.color,
+                rect,
+                1.0,
+                crate::piece_art::PieceStyle {
+                    inverted: piece.inverted,
+                    ..Default::default()
+                },
+            );
+            ui.vertical(|ui| {
+                ui.strong(format!(
+                    "{} · {}",
+                    piece_name(piece.kind),
+                    square_name(piece.sq)
+                ));
+                ui.colored_label(
+                    SUBTLE,
+                    format!(
+                        "Доска {}{}",
+                        piece.t,
+                        if piece.inverted {
+                            " · инверсия"
+                        } else {
+                            ""
+                        }
+                    ),
+                );
+            });
+        });
+        ui.horizontal(|ui| {
+            if icon_button(
+                ui,
+                if direction == temporal_chess_engine::model::TimeDirection::Future {
+                    Icon::Future
+                } else {
+                    Icon::Past
+                },
+                "Сменить направление · СКМ",
+                false,
+                idle,
+            )
+            .clicked()
+            {
+                game.toggle_direction();
+            }
+            ui.label(crate::controller::direction_name(direction));
+        });
+        ui.label(format!("Клеток для хода: {moves} · взятий: {captures}"));
+        if skips > 0 {
+            ui.colored_label(SUBTLE, format!("Ожидание доступно на {skips} досках"));
+        }
+        if fatal > 0 {
+            ui.horizontal_wrapped(|ui| {
+                let (rect, _) = ui.allocate_exact_size(Vec2::splat(18.0), egui::Sense::hover());
+                crate::icons::paint(
+                    ui.painter(),
+                    Icon::Skull,
+                    rect,
+                    egui::Stroke::new(1.5, CAPTURE),
+                );
+                ui.colored_label(
+                    CAPTURE,
+                    format!("Опасных клеток: {fatal} — ваша фигура погибнет"),
+                );
+            });
+        }
+    } else {
+        ui.colored_label(
+            SUBTLE,
+            if game.inspect_mode {
+                "Выберите фигуру для инспекции"
+            } else {
+                "Выберите свою активную фигуру"
+            },
+        );
+    }
+    ui.separator();
+    details_panel(ui, game, shell, art);
+}
+
+fn details_panel(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, art: &PieceArt) {
+    ui.horizontal(|ui| {
+        let history = ui.selectable_label(!game.inspect_mode, "Ходы партии");
+        if crate::input::clicked(&history) {
+            game.inspect_mode = false;
+            shell.history_open = true;
+        }
+        let inspect = ui
+            .selectable_label(game.inspect_mode, "Инспекция")
+            .on_hover_text("I · вся информация движка о фигуре");
+        if crate::input::clicked(&inspect) && game.transition.is_none() {
+            game.clear_selection();
+            game.inspect_mode = true;
+        }
+    });
+    if game.inspect_mode {
+        egui::ScrollArea::both()
+            .id_salt("inspector_scroll")
+            .max_height(360.0)
+            .show(ui, |ui| crate::dialogs::inspector(ui, game));
+    } else if game.record.commands().is_empty() {
+        ui.add_space(20.0);
+        ui.colored_label(SUBTLE, "Здесь появятся ходы партии");
+    } else {
+        let commands = game.record.commands();
+        egui::ScrollArea::both()
+            .id_salt("history_scroll")
+            .max_height(320.0)
+            .auto_shrink([false, false])
+            .show_rows(ui, 30.0, commands.len(), |ui, range| {
+                for row in range {
+                    let index = commands.len() - 1 - row;
+                    let (text, t) = match commands[index] {
+                        temporal_chess_engine::record::Command::Move { mv, from } => (
+                            format!(
+                                "({}, {}) -> ({}, {})",
+                                square_name(from),
+                                mv.t,
+                                square_name(mv.sq),
+                                mv.direction.step(mv.t).unwrap_or(mv.t)
+                            ),
+                            mv.t,
+                        ),
+                        temporal_chess_engine::record::Command::Advance { source, from, to_t } => (
+                            format!(
+                                "({}, {}) -> ({}, {})",
+                                square_name(from),
+                                source.t,
+                                square_name(from),
+                                to_t
+                            ),
+                            source.t,
+                        ),
+                        temporal_chess_engine::record::Command::Continue => (
+                            "Продолжение просчёта".into(),
+                            game.engine.history().horizon(),
+                        ),
+                    };
+                    let response = ui
+                        .horizontal(|ui| {
+                            ui.set_min_height(30.0);
+                            ui.label(format!("{}.", index + 1));
+                            let (rect, _) =
+                                ui.allocate_exact_size(Vec2::splat(24.0), egui::Sense::hover());
+                            if let Some(piece) = game.record.piece(index) {
+                                art.paint_styled(
+                                    ui.painter(),
+                                    piece.kind,
+                                    piece.color,
+                                    rect,
+                                    1.0,
+                                    crate::piece_art::PieceStyle {
+                                        inverted: piece.inverted,
+                                        ..Default::default()
+                                    },
+                                );
                             } else {
-                                Color32::from_gray(65)
-                            },
-                        );
-                        if let Some(art) = &game.art {
-                            art.paint(ui.painter(), kind, game.engine.turn(), rect, 1.0);
-                        }
-                        if response.on_hover_text(piece_name(kind)).clicked() {
-                            game.play(mv);
-                        }
+                                crate::icons::paint(
+                                    ui.painter(),
+                                    Icon::Continue,
+                                    rect.shrink(3.0),
+                                    egui::Stroke::new(1.5, TEXT),
+                                );
+                            }
+                            ui.add(egui::Label::new(text).wrap_mode(egui::TextWrapMode::Extend));
+                        })
+                        .response;
+                    let response = ui.interact(
+                        response.rect,
+                        ui.make_persistent_id(("record_row", index)),
+                        egui::Sense::click(),
+                    );
+                    if crate::input::clicked(&response.on_hover_text("Перейти к исходной доске"))
+                        && game.transition.is_none()
+                    {
+                        game.jump_to = Some(t);
                     }
                 }
             });
-            if ui.button("Отмена").clicked() {
-                game.promotion.clear();
-            }
-        });
-    }
-    if !game.overlapping.is_empty() {
-        egui::Modal::new("overlapping".into()).show(ctx, |ui| {
-            ui.heading("Выберите воплощение");
-            for piece in game.overlapping.clone() {
-                if ui
-                    .button(format!(
-                        "{} · {} · #{} · age={} · loop={}",
-                        side_name(piece.color),
-                        piece_name(piece.kind),
-                        piece.origin,
-                        piece.age,
-                        piece.loop_turn
-                    ))
-                    .clicked()
-                {
-                    game.choose(piece);
-                }
-            }
-            if ui.button("Отмена").clicked() {
-                game.overlapping.clear();
-            }
-        });
-    }
-    if game.confirm_restart {
-        egui::Modal::new("restart".into()).show(ctx, |ui| {
-            ui.heading("Начать новую партию?");
-            ui.label("Текущая партия будет сброшена.");
-            ui.horizontal(|ui| {
-                if ui.button("Начать").clicked() {
-                    let art = game.art.take();
-                    *game = GameUi {
-                        art,
-                        cell_size: game.cell_size,
-                        fonts_ready: game.fonts_ready,
-                        ..GameUi::default()
-                    };
-                }
-                if ui.button("Отмена").clicked() {
-                    game.confirm_restart = false;
-                }
-            });
-        });
     }
 }
 
-pub fn direction_color(direction: TimeDirection) -> Color32 {
-    match direction {
-        TimeDirection::Future => FUTURE,
-        TimeDirection::Past => PAST,
-    }
-}
-fn piece_name(kind: PieceKind) -> &'static str {
+pub fn piece_name(kind: PieceKind) -> &'static str {
     match kind {
         PieceKind::K { .. } => "Король",
         PieceKind::Q => "Ферзь",
@@ -549,21 +428,39 @@ fn piece_name(kind: PieceKind) -> &'static str {
     }
 }
 
+fn square_name(sq: temporal_chess_engine::model::Sq) -> String {
+    format!("{}{}", char::from(b'a' + sq.0 as u8), sq.1 + 1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use egui::{Pos2, Rect};
-    use temporal_chess_engine::model::Sq;
+    use temporal_chess_engine::model::{Sq, TimeDirection};
 
     fn frame(ctx: &egui::Context, game: &mut GameUi, events: Vec<egui::Event>) -> egui::FullOutput {
+        let key = egui::Id::new("test_art");
+        let art = ctx
+            .data_mut(|data| data.get_temp::<std::sync::Arc<PieceArt>>(key))
+            .unwrap_or_else(|| {
+                crate::theme::configure(ctx);
+                let art = std::sync::Arc::new(PieceArt::new(ctx));
+                ctx.data_mut(|data| data.insert_temp(key, art.clone()));
+                art
+            });
+        let shell_key = egui::Id::new("test_shell");
+        let mut shell = ctx
+            .data_mut(|data| data.get_temp::<ShellState>(shell_key))
+            .unwrap_or_default();
         let mut output = ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1260.0, 900.0))),
                 events,
                 ..Default::default()
             },
-            |ui| draw(ui.ctx(), game),
+            |ui| draw(ui.ctx(), game, &mut shell, &art),
         );
+        ctx.data_mut(|data| data.insert_temp(shell_key, shell));
         output.textures_delta.clear();
         assert!(
             !ctx.tessellate(output.shapes.clone(), output.pixels_per_point)
@@ -590,6 +487,7 @@ mod tests {
         frame(&ctx, &mut game, vec![]);
         assert!(game.viewport.offset.abs() < 0.1);
         assert_eq!(game.viewport.times.first(), Some(&1));
+        game.transition = None;
         game.inspect_mode = true;
         game.click_square(0, Sq(4, 1));
         frame(&ctx, &mut game, vec![]);
@@ -645,6 +543,12 @@ mod tests {
             .unwrap_or_else(|| panic!("missing UI text: {label}"))
     }
 
+    fn icon_position(ctx: &egui::Context, label: &str) -> Pos2 {
+        ctx.data_mut(|data| data.get_temp::<Rect>(egui::Id::new(("icon", label))))
+            .expect("icon button")
+            .center()
+    }
+
     fn click(ctx: &egui::Context, game: &mut GameUi, pos: Pos2) -> egui::FullOutput {
         frame(
             ctx,
@@ -677,19 +581,20 @@ mod tests {
         let mut game = GameUi::default();
         game.click_square(0, Sq(4, 1));
         game.click_square(0, Sq(4, 3));
+        game.transition = None;
         frame(&ctx, &mut game, vec![]);
-        let output = frame(&ctx, &mut game, vec![]);
-        let pos = text_position(&output, "Копировать");
+        let _output = frame(&ctx, &mut game, vec![]);
+        let pos = icon_position(&ctx, "Копировать партию");
         let output = click(&ctx, &mut game, pos);
         let text = game.record.to_text();
         assert!(output.platform_output.commands.iter().any(
             |command| matches!(command, egui::OutputCommand::CopyText(value) if value == &text)
         ));
-        let pos = text_position(&output, "Загрузить");
+        let pos = icon_position(&ctx, "Загрузить партию из записи");
         click(&ctx, &mut game, pos);
         assert!(game.import_open);
         let output = frame(&ctx, &mut game, vec![]);
-        let pos = text_position(&output, "TEMPORAL-CHESS 1");
+        let pos = text_position(&output, "NOLAN-CHESS 1");
         click(&ctx, &mut game, pos);
         frame(
             &ctx,

@@ -14,11 +14,10 @@ impl Engine {
             }
             candidate.apply_move_inner(mv)?;
             candidate.turn = candidate.turn.opposite();
-            candidate.reconcile()?;
-            if candidate.history.moves.get(&mv.id()) != Some(&mv) {
-                return Err(EngineErr::WrongMove);
-            }
-            Ok(())
+            // A legal command may rewrite its own cause out of history. Commit
+            // the resulting history even when validation cancels this move;
+            // GameRecord independently retains the accepted player command.
+            candidate.reconcile()
         })
     }
 

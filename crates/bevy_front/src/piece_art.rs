@@ -1,4 +1,4 @@
-use crate::view::{CAPTURE, INFORMATION, ORDINARY, REACTION};
+use crate::theme::{CAPTURE, INFORMATION, ORDINARY, REACTION};
 use bevy_egui::egui::{self, Color32, Pos2, Rect, TextureHandle, Vec2};
 use std::{collections::HashMap, sync::Mutex};
 use temporal_chess_engine::model::{Color, PieceKind};
@@ -37,6 +37,7 @@ impl Outline {
 
 /// Embedded, conventional chess artwork. Rasterized once; no network or asset
 /// directory lookup is needed when running the game.
+#[derive(bevy::prelude::Resource)]
 pub struct PieceArt {
     sources: [&'static [u8]; 12],
     textures: Mutex<TextureCache>,
@@ -242,7 +243,11 @@ fn raster(svg: &[u8], size: usize, side: Color, style: PieceStyle) -> egui::Colo
         for _ in 0..3 {
             soft = blur_mask(&soft, n, blur);
         }
-        (soft, dilate_mask(&alpha, n, rim_radius), exterior_transparency(&alpha, n))
+        (
+            soft,
+            dilate_mask(&alpha, n, rim_radius),
+            exterior_transparency(&alpha, n),
+        )
     });
     let outer = (style.outline != Outline::None).then(|| {
         let radius =
@@ -294,9 +299,9 @@ fn raster(svg: &[u8], size: usize, side: Color, style: PieceStyle) -> egui::Colo
                     }
                     let rim_alpha = (rim[i].saturating_sub(alpha[i]) as u32 * 212) / 255;
                     for channel in 0..3 {
-                        light_rgb[channel] =
-                            (stroke[channel] * rim_alpha
-                                + light_rgb[channel] * (255 - rim_alpha)) / 255;
+                        light_rgb[channel] = (stroke[channel] * rim_alpha
+                            + light_rgb[channel] * (255 - rim_alpha))
+                            / 255;
                     }
                     light_alpha += rim_alpha * (255 - light_alpha) / 255;
                 }
@@ -304,9 +309,9 @@ fn raster(svg: &[u8], size: usize, side: Color, style: PieceStyle) -> egui::Colo
             // Move highlights (including red checks and captures) override the halo.
             let outline_alpha = outer.as_ref().map_or(0, |mask| mask[i] as u32);
             for (channel, tint) in [color.r(), color.g(), color.b()].into_iter().enumerate() {
-                light_rgb[channel] =
-                    (tint as u32 * outline_alpha + light_rgb[channel] * (255 - outline_alpha))
-                        / 255;
+                light_rgb[channel] = (tint as u32 * outline_alpha
+                    + light_rgb[channel] * (255 - outline_alpha))
+                    / 255;
             }
             light_alpha += outline_alpha * (255 - light_alpha) / 255;
             for channel in 0..3 {
@@ -470,21 +475,27 @@ mod tests {
             assert!(inverted.pixels.contains(&body));
             assert!(inverted.pixels.contains(&ink));
             // The source silhouette stays opaque, without any glow inside.
-            assert!(normal
-                .pixels
-                .iter()
-                .zip(&inverted.pixels)
-                .all(|(src, result)| src.a() != 255 || result.a() == 255));
+            assert!(
+                normal
+                    .pixels
+                    .iter()
+                    .zip(&inverted.pixels)
+                    .all(|(src, result)| src.a() != 255 || result.a() == 255)
+            );
             // The halo is visible *outside* the original silhouette.
-            assert!(normal
-                .pixels
-                .iter()
-                .zip(&inverted.pixels)
-                .any(|(src, result)| src.a() == 0 && result.a() > 0));
-            assert!(inverted
-                .pixels
-                .iter()
-                .all(|p| p.r() <= p.a() && p.g() <= p.a() && p.b() <= p.a()));
+            assert!(
+                normal
+                    .pixels
+                    .iter()
+                    .zip(&inverted.pixels)
+                    .any(|(src, result)| src.a() == 0 && result.a() > 0)
+            );
+            assert!(
+                inverted
+                    .pixels
+                    .iter()
+                    .all(|p| p.r() <= p.a() && p.g() <= p.a() && p.b() <= p.a())
+            );
         }
     }
 
@@ -533,7 +544,10 @@ mod tests {
         assert!(outside[5 * n + 12], "exterior antialias pixels need glow");
         assert!(outside[12 * n + 5], "side antialias pixels need glow");
         assert!(!outside[12 * n + 12], "enclosed holes must remain dark");
-        assert!(!outside[9 * n + 12], "opaque SVG edges must not be affected");
+        assert!(
+            !outside[9 * n + 12],
+            "opaque SVG edges must not be affected"
+        );
     }
 
     #[test]
@@ -551,9 +565,13 @@ mod tests {
         );
         // Some antialiased edge texels must gain halo coverage, rather than
         // letting the board background show through between two purple bands.
-        assert!(regular.pixels.iter().zip(&inverted.pixels).any(|(src, lit)| {
-            (1..255).contains(&src.a()) && lit.a() > src.a()
-        }));
+        assert!(
+            regular
+                .pixels
+                .iter()
+                .zip(&inverted.pixels)
+                .any(|(src, lit)| { (1..255).contains(&src.a()) && lit.a() > src.a() })
+        );
     }
 
     #[test]
@@ -569,11 +587,13 @@ mod tests {
                 ..Default::default()
             },
         );
-        assert!(plain
-            .pixels
-            .iter()
-            .zip(&check.pixels)
-            .any(|(a, b)| a.a() == 0 && b.a() > 0 && b.r() > b.g() * 2));
+        assert!(
+            plain
+                .pixels
+                .iter()
+                .zip(&check.pixels)
+                .any(|(a, b)| a.a() == 0 && b.a() > 0 && b.r() > b.g() * 2)
+        );
     }
 
     #[test]

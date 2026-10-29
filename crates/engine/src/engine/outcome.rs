@@ -94,7 +94,7 @@ impl Engine {
     }
 
     /// Probe commands without recursively adjudicating their resulting turns.
-    /// Geometric candidates rejected during reconciliation do not avert a draw.
+    /// Successful reconciliation counts even if it cancels the initiating move.
     fn can_act(&self, side: Color) -> Result<bool, EngineErr> {
         let mut prepared = self.clone();
         prepared.history.calculation.interactive = false;
@@ -123,9 +123,7 @@ impl Engine {
                     probe.turn = side.opposite();
                     probe.reconcile()
                 });
-                if (result.is_ok() && probe.history.moves.get(&mv.id()) == Some(&mv))
-                    || result == Err(EngineErr::InfLoop)
-                {
+                if result.is_ok() || result == Err(EngineErr::InfLoop) {
                     // A player may choose a paradox-causing command and lose;
                     // it must not be silently reclassified as stalemate.
                     return Ok(true);

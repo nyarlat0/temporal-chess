@@ -5,6 +5,14 @@ use crate::board::{Board, PreBoard};
 use crate::model::{Move, MoveId, PieceAt, ShortPieceId, Worldline};
 use crate::pieces::{Color, PieceView};
 
+/// Result of resolving a candidate encounter on an isolated history.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CaptureOutcome {
+    Captured,
+    AttackerLost,
+    Unresolved,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WinReason {
     Checkmate,

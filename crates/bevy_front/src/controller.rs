@@ -1,12 +1,14 @@
 use crate::animation::{BoardTransition, SmoothScroll};
-use bevy::prelude::Resource;
-use std::sync::{Mutex, mpsc};
+use bevy::{
+    prelude::Resource,
+    tasks::{AsyncComputeTaskPool, Task, TaskPool, futures::check_ready},
+};
 use temporal_chess_engine::{
     engine::{
         CalculationStatus, CheckStatus, Engine, GameOutcome, GameStatus, WaitingReason, WinReason,
     },
     model::{Color, Move, PieceAt, PieceId, PieceView, Sq, TimeDirection},
-    record::{Command, GameRecord, RecordError},
+    record::{Command, GameRecord},
 };
 
 pub fn identity(piece: PieceView) -> PieceAt {
@@ -25,8 +27,8 @@ pub fn side_name(side: Color) -> &'static str {
 
 pub fn direction_name(direction: TimeDirection) -> &'static str {
     match direction {
-        TimeDirection::Future => "В будущее ↑",
-        TimeDirection::Past => "В прошлое ↓",
+        TimeDirection::Future => "В будущее",
+        TimeDirection::Past => "В прошлое",
     }
 }
 
@@ -35,6 +37,7 @@ pub struct Selection {
     pub direction: TimeDirection,
     pub moves: Vec<Move>,
     pub captures: Vec<(Move, PieceView)>,
+    pub fatal_captures: Vec<(Move, PieceView)>,
     pub skips: Vec<usize>,
 }
 
@@ -65,12 +68,9 @@ pub struct GameUi {
     pub overlapping: Vec<PieceView>,
     pub notice: String,
     pub is_error: bool,
-    pub log: Vec<String>,
     pub cell_size: f32,
     pub jump_to: Option<usize>,
     pub confirm_restart: bool,
-    pub fonts_ready: bool,
-    pub art: Option<crate::piece_art::PieceArt>,
     pub viewport: TimelineViewport,
     pub transition: Option<BoardTransition>,
     pub record: GameRecord,
@@ -78,6 +78,8 @@ pub struct GameUi {
     pub import_text: String,
     pub import_error: Option<String>,
     pub replay_job: Option<ReplayJob>,
+    pub pending_square: Option<(usize, Sq)>,
+    pub pending_move: Option<Move>,
 }
 
 #[derive(Clone, Copy)]
@@ -88,7 +90,7 @@ enum ReplayKind {
 
 pub struct ReplayJob {
     kind: ReplayKind,
-    receiver: Mutex<mpsc::Receiver<Result<(Engine, GameRecord), RecordError>>>,
+    task: Task<Result<(Engine, GameRecord), String>>,
 }
 
 /// Retain the visible board when newer boards are inserted above it.
@@ -98,6 +100,9 @@ pub struct TimelineViewport {
     pub offset: f32,
     pub stride: f32,
     pub scroll: Option<SmoothScroll>,
+    pub frame: Option<u64>,
+    pub motion_progress: f32,
+    pub focused: Option<usize>,
 }
 
 impl TimelineViewport {
@@ -129,12 +134,9 @@ impl Default for GameUi {
             overlapping: Vec::new(),
             notice: "Выберите фигуру. Здесь играют вдвоём за одним компьютером.".into(),
             is_error: false,
-            log: Vec::new(),
             cell_size: 64.0,
             jump_to: Some(0),
             confirm_restart: false,
-            fonts_ready: false,
-            art: None,
             viewport: TimelineViewport::default(),
             transition: None,
             record: GameRecord::default(),
@@ -142,6 +144,8 @@ impl Default for GameUi {
             import_text: String::new(),
             import_error: None,
             replay_job: None,
+            pending_square: None,
+            pending_move: None,
         }
     }
 }
@@ -195,6 +199,7 @@ impl GameUi {
         let current = self
             .jump_to
             .or_else(|| self.viewport.scroll.as_ref().map(|scroll| scroll.target))
+            .or(self.viewport.focused)
             .or_else(|| {
                 let row = if self.viewport.stride > 0.0 {
                     (self.viewport.offset / self.viewport.stride).round() as usize
@@ -240,46 +245,66 @@ impl GameUi {
         Vec::new()
     }
 
+    pub fn selectable(&self, piece: PieceView) -> bool {
+        self.engine.board(piece.t).is_some()
+            && piece.color == self.engine.turn()
+            && self
+                .engine
+                .move_sources()
+                .any(|p| identity(p) == identity(piece))
+    }
+
+    pub fn apply_pending_input(&mut self) {
+        if let Some(mv) = self.pending_move.take() {
+            self.play(mv);
+        }
+        if let Some((t, sq)) = self.pending_square.take() {
+            self.click_square(t, sq);
+        }
+    }
+
     pub fn choose(&mut self, piece: PieceView) {
+        if !self.inspect_mode && !self.selectable(piece) {
+            return;
+        }
         self.overlapping.clear();
         if self.inspect_mode {
             self.inspected = Some(identity(piece));
             return;
         }
-        if self.engine.board(piece.t).is_none() {
-            self.message(
-                "Это предоска: сначала продолжите просчёт. Инспекция доступна уже сейчас.",
-                true,
-            );
-            return;
-        }
-        if !self
-            .engine
-            .move_sources()
-            .any(|p| identity(p) == identity(piece))
-        {
-            self.message(
-                "Фигура не активна для текущего игрока. Её можно посмотреть в инспекции.",
-                true,
-            );
-            return;
-        }
         match self.engine.possible_moves(piece.origin, piece.age) {
             Ok(moves) => {
                 let skips = self.engine.possible_skips(identity(piece));
-                let captures = moves
-                    .iter()
-                    .filter_map(|mv| {
-                        self.engine
-                            .move_capture_target(*mv)
-                            .map(|target| (*mv, target))
+                let mut captures = Vec::new();
+                let mut fatal_captures = Vec::new();
+                for &mv in &moves {
+                    if let Some((target, outcome)) = self.engine.preview_capture(mv) {
+                        match outcome {
+                            temporal_chess_engine::engine::CaptureOutcome::Captured => {
+                                captures.push((mv, target))
+                            }
+                            temporal_chess_engine::engine::CaptureOutcome::AttackerLost => {
+                                fatal_captures.push((mv, target))
+                            }
+                            temporal_chess_engine::engine::CaptureOutcome::Unresolved => {}
+                        }
+                    }
+                }
+                // Promotion choices may have different outcomes. Warn of an
+                // unavoidable loss only when no variant can capture this target.
+                fatal_captures.retain(|(mv, target)| {
+                    !captures.iter().any(|(capture, victim)| {
+                        capture.direction == mv.direction
+                            && capture.sq == mv.sq
+                            && identity(*victim) == identity(*target)
                     })
-                    .collect();
+                });
                 self.selected = Some(Selection {
                     piece,
                     direction: TimeDirection::from_inverted(piece.inverted),
                     moves,
                     captures,
+                    fatal_captures,
                     skips,
                 });
                 self.message(
@@ -328,7 +353,11 @@ impl GameUi {
         if self.engine.preboard(t).is_none() {
             return;
         }
-        let pieces: Vec<_> = self.pieces(t).into_iter().filter(|p| p.sq == sq).collect();
+        let pieces: Vec<_> = self
+            .pieces(t)
+            .into_iter()
+            .filter(|p| p.sq == sq && (self.inspect_mode || self.selectable(*p)))
+            .collect();
         match pieces.len() {
             0 => {}
             1 => self.choose(pieces[0]),
@@ -360,7 +389,17 @@ impl GameUi {
             None => Err(temporal_chess_engine::engine::EngineErr::WrongPiece),
         };
         if result.is_ok() {
-            self.transition = BoardTransition::new(&before, &self.engine, mv);
+            self.transition = if matches!(
+                self.engine.outcome(),
+                Some(GameOutcome::Victory {
+                    reason: WinReason::Paradox,
+                    ..
+                })
+            ) {
+                None
+            } else {
+                BoardTransition::new(&before, &self.engine, mv)
+            };
             self.viewport.scroll = None;
             self.jump_to = if self.transition.is_none() {
                 self.active_times().first().copied()
@@ -380,10 +419,6 @@ impl GameUi {
             Ok(()) => {
                 self.refresh_checks();
                 self.clear_selection();
-                self.log.push(text.clone());
-                if self.log.len() > 200 {
-                    self.log.remove(0);
-                }
                 self.message(text, false);
             }
             Err(error) => {
@@ -459,14 +494,14 @@ impl GameUi {
     fn begin_replay(&mut self, text: String, kind: ReplayKind) {
         self.transition = None;
         self.viewport.scroll = None;
-        let (sender, receiver) = mpsc::channel();
-        self.replay_job = Some(ReplayJob {
-            kind,
-            receiver: Mutex::new(receiver),
+        let task = AsyncComputeTaskPool::get_or_init(TaskPool::new).spawn(async move {
+            // A failed replay must leave the live game intact, including a panic
+            // in historical validation. The task owns only the imported text.
+            std::panic::catch_unwind(|| GameRecord::load(&text))
+                .map_err(|_| "Не удалось завершить восстановление партии".to_owned())?
+                .map_err(|error| error.to_string())
         });
-        std::thread::spawn(move || {
-            let _ = sender.send(GameRecord::load(&text));
-        });
+        self.replay_job = Some(ReplayJob { kind, task });
     }
 
     fn replay_failed(&mut self, kind: ReplayKind, error: String) {
@@ -478,23 +513,17 @@ impl GameUi {
     }
 
     pub fn poll_replay(&mut self) {
-        let Some(job) = &self.replay_job else {
+        let Some(job) = &mut self.replay_job else {
             return;
         };
         let kind = job.kind;
-        let result = job.receiver.lock().expect("replay receiver").try_recv();
+        let result = check_ready(&mut job.task);
         match result {
-            Ok(Ok((engine, record))) => {
+            Some(Ok((engine, record))) => {
                 self.clear_selection();
                 self.engine = engine;
                 self.record = record;
                 self.refresh_checks();
-                self.log = self
-                    .record
-                    .commands()
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect();
                 self.jump_to = Some(match kind {
                     ReplayKind::Undo { source_t } => source_t.min(self.engine.history().horizon()),
                     ReplayKind::Import => match self.engine.calculation_status() {
@@ -514,13 +543,8 @@ impl GameUi {
                     false,
                 );
             }
-            Ok(Err(error)) => {
-                self.replay_failed(kind, error.to_string());
-            }
-            Err(mpsc::TryRecvError::Disconnected) => {
-                self.replay_failed(kind, "Не удалось завершить восстановление партии".into());
-            }
-            Err(mpsc::TryRecvError::Empty) => {}
+            Some(Err(error)) => self.replay_failed(kind, error),
+            None => {}
         }
     }
 

@@ -2,7 +2,10 @@
 //! Recorded moves in History can be replaced or cancelled; they are not a replay log.
 use crate::{
     engine::{Engine, EngineErr},
-    model::{Castling, Move, MoveEffect, PieceAt, PieceId, Promotion, Sq, TimeDirection},
+    model::{
+        Castling, Color, Move, MoveEffect, PieceAt, PieceId, PieceKind, Promotion, Sq,
+        TimeDirection,
+    },
 };
 use std::fmt;
 
@@ -25,6 +28,16 @@ pub enum Command {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct GameRecord {
     commands: Vec<Command>,
+    pieces: Vec<Option<RecordedPiece>>,
+}
+
+/// Historical command appearance, captured before later edits can remove or
+/// transform its source occurrence. Reconstructed during import, not serialized.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RecordedPiece {
+    pub kind: PieceKind,
+    pub color: Color,
+    pub inverted: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -44,6 +57,10 @@ impl GameRecord {
         &self.commands
     }
 
+    pub fn piece(&self, command_index: usize) -> Option<RecordedPiece> {
+        self.pieces.get(command_index).copied().flatten()
+    }
+
     /// The chronological prefix immediately before the last spatial move.
     /// Later free advances and calculation acknowledgements belong to the
     /// discarded continuation too; replaying them could reference erased states.
@@ -58,6 +75,7 @@ impl GameRecord {
                     Some((
                         Self {
                             commands: self.commands[..index].to_vec(),
+                            pieces: self.pieces[..index].to_vec(),
                         },
                         *mv,
                     ))
@@ -68,7 +86,26 @@ impl GameRecord {
     }
 
     /// A failed command leaves both the game and its replay record unchanged.
+    /// Successful commands are retained even when reconciliation removes the
+    /// initiating move from History: replay needs the command and its effects.
     pub fn apply(&mut self, engine: &mut Engine, command: Command) -> Result<(), EngineErr> {
+        let piece = match command {
+            Command::Move { mv, .. } => {
+                engine.piece_state(mv.source()).map(|state| RecordedPiece {
+                    kind: state.kind,
+                    color: state.color,
+                    inverted: mv.to_past(),
+                })
+            }
+            Command::Advance { source, .. } => {
+                engine.piece_state(source).map(|state| RecordedPiece {
+                    kind: state.kind,
+                    color: state.color,
+                    inverted: state.inverted,
+                })
+            }
+            Command::Continue => None,
+        };
         match command {
             Command::Move { mv, from } => {
                 check_source(engine, mv.source(), from)?;
@@ -86,6 +123,7 @@ impl GameRecord {
             }
         }
         self.commands.push(command);
+        self.pieces.push(piece);
         Ok(())
     }
 

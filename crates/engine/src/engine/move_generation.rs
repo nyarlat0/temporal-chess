@@ -123,6 +123,50 @@ impl Engine {
             .copied()
     }
 
+    /// Resolve a legal candidate's encounter without modifying the live game.
+    /// Unlike `move_capture_target`, occupancy alone does not imply a capture.
+    /// Analysis runs past interactive barriers and examines the resulting states,
+    /// even if the initiating move was cancelled. Errors/paradoxes stay unresolved.
+    pub fn preview_capture(&self, mv: Move) -> Option<(PieceView, super::CaptureOutcome)> {
+        use super::CaptureOutcome;
+        let target = self.move_capture_target(mv)?;
+        let mut probe = self.clone();
+        probe.history.calculation.interactive = false;
+        let result = (|| -> Result<CaptureOutcome, EngineErr> {
+            let next = probe
+                .piece_state(mv.source())
+                .and_then(|state| state.step(mv.direction))
+                .ok_or(EngineErr::WrongPiece)?;
+            let attacker = super::PieceAt {
+                piece: PieceId::from_state(&next, mv.pid.wid),
+                t: next.t,
+            };
+            probe.apply_move_inner(mv)?;
+            // The recorded target refers to the actual arrival occurrence,
+            // including when a new board was created using source occupancy.
+            let victim = *probe
+                .history
+                .targets
+                .get(&mv.id())
+                .and_then(|targets| targets.first())
+                .ok_or(EngineErr::WrongPiece)?;
+            probe.turn = probe.turn.opposite();
+            probe.reconcile()?;
+            match probe.piece_state(victim) {
+                Some(state) if !state.alive => Ok(CaptureOutcome::Captured),
+                Some(_)
+                    if probe
+                        .piece_state(attacker)
+                        .is_some_and(|state| !state.alive) =>
+                {
+                    Ok(CaptureOutcome::AttackerLost)
+                }
+                _ => Ok(CaptureOutcome::Unresolved),
+            }
+        })();
+        Some((target, result.unwrap_or(CaptureOutcome::Unresolved)))
+    }
+
     /// Historical validation must not recursively apply the rules for a new
     /// command to recorded moves; future edits may have changed their threats.
     pub(super) fn candidate_moves(&self, wid: usize, age: usize) -> Result<Vec<Move>, EngineErr> {
