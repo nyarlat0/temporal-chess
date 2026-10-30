@@ -4,7 +4,7 @@ use crate::model::{Color, PieceKind, Sq};
 #[test]
 fn reported_bishop_opening_is_checkmate_without_an_automatic_pass() {
     for interactive in [false, true] {
-        let mut engine = Engine::default();
+        let mut engine = Engine::new(true);
         if interactive {
             engine = engine.with_interactive_calculation().unwrap();
         }
@@ -78,7 +78,7 @@ fn stalemate_lines() -> Vec<Vec<State>> {
 
 #[test]
 fn stalemate_is_final_only_without_past_reserves_or_opponent_ordinary_debt() {
-    let engine = Engine::from_worldlines(stalemate_lines(), Color::White).unwrap();
+    let engine = super::legacy_from_worldlines(stalemate_lines(), Color::White).unwrap();
     assert_eq!(engine.outcome(), Some(GameOutcome::Stalemate));
     assert!(!engine.checks(Color::White).unwrap().is_check());
     assert_eq!(engine.move_sources().count(), 0);
@@ -88,7 +88,7 @@ fn stalemate_is_final_only_without_past_reserves_or_opponent_ordinary_debt() {
     let mut reserve = line(PieceKind::P { moved: true }, Color::White, Sq(7, 7), 4);
     reserve[0].rights.ordinary = true; // No spatial pawn moves, but can wait.
     lines.push(reserve);
-    let engine = Engine::from_worldlines(lines, Color::White).unwrap();
+    let engine = super::legacy_from_worldlines(lines, Color::White).unwrap();
     assert_eq!(engine.status(), GameStatus::Ongoing);
     assert!(engine.possible_moves(3, 0).unwrap().is_empty());
 
@@ -96,7 +96,7 @@ fn stalemate_is_final_only_without_past_reserves_or_opponent_ordinary_debt() {
     let mut reactive = line(PieceKind::N, Color::Black, Sq(6, 7), 4);
     reactive[1].rights.new_information = true;
     lines.push(reactive);
-    let engine = Engine::from_worldlines(lines, Color::White).unwrap();
+    let engine = super::legacy_from_worldlines(lines, Color::White).unwrap();
     assert_eq!(engine.outcome(), Some(GameOutcome::Stalemate));
 }
 
@@ -107,7 +107,7 @@ fn blocked_player_is_rechecked_after_each_opponent_move() {
     debt[1].rights.ordinary = true;
     debt[3].rights.ordinary = true;
     lines.push(debt);
-    let mut engine = Engine::from_worldlines(lines, Color::White).unwrap();
+    let mut engine = super::legacy_from_worldlines(lines, Color::White).unwrap();
     let waiting = GameStatus::Waiting {
         player: Color::White,
         reason: WaitingReason::OpponentPastMoves,
@@ -131,7 +131,7 @@ fn an_opponent_move_can_reactivate_the_waiting_player() {
     let mut debt = line(PieceKind::N, Color::Black, Sq(4, 3), 4);
     debt[1].rights.ordinary = true;
     lines.push(debt);
-    let mut engine = Engine::from_worldlines(lines, Color::White).unwrap();
+    let mut engine = super::legacy_from_worldlines(lines, Color::White).unwrap();
     assert!(matches!(engine.status(), GameStatus::Waiting { .. }));
     play(&mut engine, 4, 1, TimeDirection::Future, Sq(6, 2));
     assert_eq!(engine.status(), GameStatus::Ongoing);
@@ -151,7 +151,7 @@ fn free_wait_can_close_the_last_opponent_debt_without_a_spatial_move() {
     debt[1].rights.ordinary = true;
     debt[3].rights.ordinary = true;
     lines.push(debt);
-    let mut engine = Engine::from_worldlines(lines, Color::White).unwrap();
+    let mut engine = super::legacy_from_worldlines(lines, Color::White).unwrap();
     let source = Engine::piece_at(engine.get_piv(3, 1).unwrap());
     engine.skip_ordinary(source, 4).unwrap();
     assert_eq!(engine.turn(), Color::White); // Black has no active pieces left.
@@ -169,7 +169,7 @@ fn free_wait_is_piece_local_preserves_unmoved_flags_and_has_no_turn_cost() {
     let mut knight = line(PieceKind::N, Color::White, Sq(1, 0), 4);
     knight[0].rights.ordinary = true;
     knight[0].rights.new_information = true;
-    let mut engine = Engine::from_worldlines(vec![pawn, knight], Color::White).unwrap();
+    let mut engine = super::legacy_from_worldlines(vec![pawn, knight], Color::White).unwrap();
     let source = Engine::piece_at(engine.get_piv(0, 0).unwrap());
     engine.skip_ordinary(source, 4).unwrap();
     assert_eq!(engine.turn(), Color::White);
@@ -194,7 +194,7 @@ fn invalid_waits_are_atomic_and_reactions_alone_cannot_wait() {
     let mut knight = line(PieceKind::N, Color::White, Sq(1, 0), 4);
     knight[2].rights.ordinary = true;
     knight[0].rights.new_information = true;
-    let mut engine = Engine::from_worldlines(vec![knight], Color::White).unwrap();
+    let mut engine = super::legacy_from_worldlines(vec![knight], Color::White).unwrap();
     let source = Engine::piece_at(engine.get_piv(0, 2).unwrap());
     let before = engine.clone();
     for to in [0, 5, usize::MAX] {
@@ -213,7 +213,7 @@ fn invalid_waits_are_atomic_and_reactions_alone_cannot_wait() {
 fn ordinary_royal_capture_finishes_and_locks_the_game() {
     let mut rook = line(PieceKind::R { moved: true }, Color::White, Sq(0, 0), 0);
     rook[0].rights.ordinary = true;
-    let mut engine = Engine::from_worldlines(
+    let mut engine = super::legacy_from_worldlines(
         vec![
             rook,
             line(PieceKind::K { moved: true }, Color::White, Sq(7, 0), 0),
@@ -244,7 +244,7 @@ fn king_escape_exposing_its_past_is_rejected_but_existing_inverse_capture_still_
     king[0].rights.ordinary = true; // A real past reserve prevents immediate mate in this fixture.
     king[2].rights.ordinary = true;
     let rook = line(PieceKind::R { moved: true }, Color::Black, Sq(0, 7), 2);
-    let mut engine = Engine::from_worldlines(
+    let mut engine = super::legacy_from_worldlines(
         vec![
             king,
             line(PieceKind::K { moved: true }, Color::Black, Sq(7, 7), 2),
@@ -298,7 +298,7 @@ fn king_escape_exposing_its_past_is_rejected_but_existing_inverse_capture_still_
 fn no_active_pieces_passes_to_the_side_with_reserves_instead_of_drawing() {
     let mut knight = line(PieceKind::N, Color::Black, Sq(6, 7), 2);
     knight[1].rights.ordinary = true;
-    let engine = Engine::from_worldlines(
+    let engine = super::legacy_from_worldlines(
         vec![
             line(PieceKind::K { moved: true }, Color::White, Sq(0, 0), 2),
             line(PieceKind::K { moved: true }, Color::Black, Sq(7, 7), 2),
@@ -314,7 +314,7 @@ fn no_active_pieces_passes_to_the_side_with_reserves_instead_of_drawing() {
 
 #[test]
 fn two_sides_without_active_pieces_wait_without_a_false_stalemate_or_loop() {
-    let engine = Engine::from_worldlines(
+    let engine = super::legacy_from_worldlines(
         vec![
             line(PieceKind::K { moved: true }, Color::White, Sq(0, 0), 2),
             line(PieceKind::K { moved: true }, Color::Black, Sq(7, 7), 2),
@@ -339,7 +339,7 @@ fn interposing_only_on_the_future_board_cannot_leave_a_past_royal_capture() {
     bishop[2].rights.ordinary = true;
     let mut rook = line(PieceKind::R { moved: true }, Color::Black, Sq(0, 7), 3);
     rook[3].rights.ordinary = true;
-    let mut engine = Engine::from_worldlines(
+    let mut engine = super::legacy_from_worldlines(
         vec![
             line(PieceKind::K { moved: true }, Color::White, Sq(0, 0), 3),
             line(PieceKind::K { moved: true }, Color::Black, Sq(7, 7), 3),
@@ -371,7 +371,7 @@ fn inverted_check_uses_past_blockers_not_the_future_interposition() {
         if block_in_past {
             blocker[2].x = 0;
         }
-        let engine = Engine::from_worldlines(
+        let engine = super::legacy_from_worldlines(
             vec![
                 line(PieceKind::K { moved: true }, Color::White, Sq(0, 0), 3),
                 line(PieceKind::K { moved: true }, Color::Black, Sq(7, 7), 3),
@@ -395,7 +395,7 @@ fn inverted_check_uses_past_blockers_not_the_future_interposition() {
 
 #[test]
 fn paradox_is_a_committed_loss_but_other_failures_roll_back() {
-    let mut engine = Engine::default();
+    let mut engine = Engine::new(true);
     let before = engine.clone();
     assert_eq!(
         engine.transaction(|candidate| {
@@ -429,7 +429,7 @@ fn checked_active_pieces_without_defence_end_in_mate_without_growing_history() {
     for state in &mut lines[2] {
         state.y = 1;
     }
-    let engine = Engine::from_worldlines(lines, Color::White).unwrap();
+    let engine = super::legacy_from_worldlines(lines, Color::White).unwrap();
     assert_eq!(engine.turn(), Color::White);
     assert_eq!(engine.history.horizon(), 4);
     roundtrip(&engine);
@@ -451,7 +451,7 @@ fn checkmate_waits_for_opponent_causal_debt_then_finishes_when_it_is_closed() {
     let mut debt = line(PieceKind::N, Color::Black, Sq(6, 7), 4);
     debt[1].rights.ordinary = true;
     lines.push(debt);
-    let mut engine = Engine::from_worldlines(lines, Color::White).unwrap();
+    let mut engine = super::legacy_from_worldlines(lines, Color::White).unwrap();
     assert_eq!(
         engine.status(),
         GameStatus::Waiting {
@@ -475,7 +475,7 @@ fn checkmate_waits_for_opponent_causal_debt_then_finishes_when_it_is_closed() {
 
 #[test]
 fn ordinary_right_cannot_be_discarded_at_the_current_time() {
-    let mut engine = Engine::default();
+    let mut engine = Engine::new(true);
     let source = Engine::piece_at(engine.move_sources().next().unwrap());
     let before = engine.clone();
     assert_eq!(
@@ -491,7 +491,7 @@ fn capturing_the_future_attacker_removes_its_inverted_check() {
     rook[2].rights.ordinary = true;
     let mut enemy = line(PieceKind::R { moved: true }, Color::Black, Sq(0, 7), 3);
     enemy[3].rights.ordinary = true;
-    let mut engine = Engine::from_worldlines(
+    let mut engine = super::legacy_from_worldlines(
         vec![
             line(PieceKind::K { moved: true }, Color::White, Sq(0, 0), 3),
             line(PieceKind::K { moved: true }, Color::Black, Sq(6, 5), 3),
@@ -533,7 +533,7 @@ fn an_inverted_wait_reaches_zero_but_cannot_discard_its_boundary_right() {
     let second = first.prolongate().unwrap();
     let third = second.prolongate().unwrap();
     let mut engine =
-        Engine::from_worldlines(vec![vec![first, second, third]], Color::White).unwrap();
+        super::legacy_from_worldlines(vec![vec![first, second, third]], Color::White).unwrap();
     let source = Engine::piece_at(engine.get_piv(0, 2).unwrap());
     engine.skip_ordinary(source, 0).unwrap();
     let endpoint = engine.get_piv(0, 4).unwrap();
@@ -558,7 +558,7 @@ fn waiting_across_a_pivot_closes_the_gap_without_a_new_spatial_move() {
     for t in [0, 2, 4, 6] {
         knight[t].rights.ordinary = true;
     }
-    let mut engine = Engine::from_worldlines(vec![knight], Color::White).unwrap();
+    let mut engine = super::legacy_from_worldlines(vec![knight], Color::White).unwrap();
     play(&mut engine, 0, 4, TimeDirection::Past, Sq(2, 2));
     engine.turn = Color::White;
     let source = engine
@@ -592,7 +592,7 @@ fn self_annihilation_validation_cycle_loses_for_the_command_author() {
     for t in [0, 2, 4, 6, 8] {
         rook[t].rights.ordinary = true;
     }
-    let mut engine = Engine::from_worldlines(vec![rook], Color::White).unwrap();
+    let mut engine = super::legacy_from_worldlines(vec![rook], Color::White).unwrap();
     play(&mut engine, 0, 2, TimeDirection::Future, Sq(0, 2));
     engine.turn = Color::White;
     play(&mut engine, 0, 4, TimeDirection::Future, Sq(2, 2));
@@ -634,7 +634,7 @@ fn waiting_cannot_overwrite_a_later_recorded_move_and_rolls_back_consumed_rights
     for t in [0, 2, 4] {
         knight[t].rights.ordinary = true;
     }
-    let mut engine = Engine::from_worldlines(vec![knight], Color::White).unwrap();
+    let mut engine = super::legacy_from_worldlines(vec![knight], Color::White).unwrap();
     play(&mut engine, 0, 2, TimeDirection::Future, Sq(2, 2));
     engine.turn = Color::White;
     let before = engine.clone();
@@ -653,7 +653,7 @@ fn an_inverted_wait_inserts_before_the_borrowed_future_without_changing_it() {
     for t in [0, 2, 4, 6, 8] {
         knight[t].rights.ordinary = true;
     }
-    let mut engine = Engine::from_worldlines(vec![knight], Color::White).unwrap();
+    let mut engine = super::legacy_from_worldlines(vec![knight], Color::White).unwrap();
     let tail = engine.history.worldlines[0][7..].to_vec();
     play(&mut engine, 0, 6, TimeDirection::Past, Sq(2, 2));
     engine.turn = Color::White;

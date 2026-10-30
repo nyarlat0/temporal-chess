@@ -124,6 +124,11 @@ fn sidebar(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, art: &P
                 });
             });
         });
+    ui.small(if game.engine.history().causal_gaps() {
+        "Режим: с причинными разрывами"
+    } else {
+        "Режим: без причинных разрывов"
+    });
     crate::multiplayer::panel(ui, game);
     ui.horizontal(|ui| {
         if icon_button(

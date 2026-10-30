@@ -194,12 +194,17 @@ pub fn draw(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState, art:
         egui::Modal::new("restart".into()).show(ctx, |ui| {
             ui.heading("Начать новую партию?");
             ui.label("Текущая партия будет сброшена.");
+            ui.checkbox(
+                &mut game.new_game_causal_gaps,
+                "Причинные разрывы: сохранять будущее при инверсии",
+            );
+            ui.small("Без разрывов поворот удаляет прежнее продолжение фигуры.");
             ui.horizontal(|ui| {
                 if icon_button(ui, Icon::Check, "Начать новую партию", false, true).clicked()
                 {
                     *game = GameUi {
                         cell_size: game.cell_size,
-                        ..GameUi::default()
+                        ..GameUi::new(game.new_game_causal_gaps)
                     };
                 }
                 if icon_button(ui, Icon::Close, "Отмена", false, true).clicked() {

@@ -16,6 +16,7 @@ use temporal_chess_protocol::{
 use web_time::Instant;
 
 pub struct OnlineState {
+    pub causal_gaps: bool,
     pub enabled: bool,
     pub ready: bool,
     pub waiting: bool,
@@ -35,6 +36,7 @@ pub struct OnlineState {
 impl Default for OnlineState {
     fn default() -> Self {
         Self {
+            causal_gaps: false,
             enabled: false,
             ready: false,
             waiting: false,
@@ -178,6 +180,7 @@ pub fn poll(
                     client.token = None;
                     game.online.room = None;
                     ClientMessage::CreateGame {
+                        causal_gaps: game.online.causal_gaps,
                         protocol: PROTOCOL_VERSION,
                         side: game.online.preference,
                     }
@@ -309,6 +312,7 @@ pub fn poll(
 fn receive(client: &mut MultiplayerClient, game: &mut GameUi, message: ServerMessage) {
     match message {
         ServerMessage::GameReady {
+            causal_gaps,
             game_id,
             player_token,
             side,
@@ -317,6 +321,7 @@ fn receive(client: &mut MultiplayerClient, game: &mut GameUi, message: ServerMes
             opponent_connected,
             ..
         } => {
+            game.online.causal_gaps = causal_gaps;
             let key = token_key(&game.online.endpoint, &game_id);
             client.tokens.insert(key.clone(), player_token.clone());
             save_token(&key, &player_token);
@@ -449,6 +454,7 @@ pub fn panel(ui: &mut egui::Ui, game: &mut GameUi) {
             .show(ui, |ui| {
                 ui.add_enabled_ui(idle, |ui| {
                     ui.label("Создать новую комнату");
+                    ui.checkbox(&mut game.online.causal_gaps, "С причинными разрывами");
                     ui.horizontal(|ui| {
                         ui.selectable_value(
                             &mut game.online.preference,

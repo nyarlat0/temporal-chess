@@ -28,6 +28,7 @@ pub(crate) struct AuthenticatedPlayer {
 
 #[derive(Debug)]
 pub(crate) struct ReadyGame {
+    pub(crate) causal_gaps: bool,
     pub(crate) auth: AuthenticatedPlayer,
     pub(crate) revision: u64,
     pub(crate) history: Vec<String>,
@@ -58,6 +59,7 @@ pub(crate) enum RepositoryError {
 
 #[derive(FromRow)]
 struct RoomRow {
+    causal_gaps: bool,
     game_id: String,
     white_token_hash: Option<Vec<u8>>,
     black_token_hash: Option<Vec<u8>>,
@@ -72,6 +74,7 @@ impl Repository {
     pub(crate) async fn create_game(
         &self,
         preference: SidePreference,
+        causal_gaps: bool,
     ) -> Result<ReadyGame, RepositoryError> {
         let side = resolve_side(preference);
         let player_token = generate_token();
@@ -85,17 +88,19 @@ impl Repository {
             };
             let result = sqlx::query(
                 "INSERT INTO games
-                    (game_id, white_token_hash, black_token_hash, revision)
-                 VALUES ($1, $2, $3, 0)
+                    (game_id, white_token_hash, black_token_hash, revision, causal_gaps)
+                 VALUES ($1, $2, $3, 0, $4)
                  ON CONFLICT (game_id) DO NOTHING",
             )
             .bind(&game_id)
             .bind(white_hash)
             .bind(black_hash)
+            .bind(causal_gaps)
             .execute(&self.pool)
             .await?;
             if result.rows_affected() == 1 {
                 return Ok(ReadyGame {
+                    causal_gaps,
                     auth: AuthenticatedPlayer {
                         game_id,
                         side,
@@ -129,7 +134,7 @@ impl Repository {
         let game_id = normalize_game_id(game_id)?;
         let mut transaction = self.pool.begin().await?;
         let mut room = sqlx::query_as::<_, RoomRow>(
-            "SELECT game_id, white_token_hash, black_token_hash, revision
+            "SELECT game_id, white_token_hash, black_token_hash, revision, causal_gaps
              FROM games WHERE game_id = $1 FOR UPDATE",
         )
         .bind(&game_id)
@@ -187,6 +192,7 @@ impl Repository {
         let revision = revision_to_u64(room.revision, &room.game_id)?;
         transaction.commit().await?;
         Ok(ReadyGame {
+            causal_gaps: room.causal_gaps,
             auth: AuthenticatedPlayer {
                 game_id: room.game_id,
                 side,
@@ -228,7 +234,11 @@ impl Repository {
                 "Достигнут предел: 10000 команд.",
             ));
         }
-        let text = format!("NOLAN-CHESS 1\n{}\n", history.join("\n"));
+        let text = format!(
+            "NOLAN-CHESS 2\ncausal_gaps {}\n{}\n",
+            if room.causal_gaps { "on" } else { "off" },
+            history.join("\n")
+        );
         let requested = command.to_owned();
         let side = auth.side;
         // Temporal reconciliation is CPU work; do not block the WebSocket reactor.
@@ -316,7 +326,7 @@ async fn locked_room(
     game_id: &str,
 ) -> Result<RoomRow, RepositoryError> {
     sqlx::query_as::<_, RoomRow>(
-        "SELECT game_id, white_token_hash, black_token_hash, revision
+        "SELECT game_id, white_token_hash, black_token_hash, revision, causal_gaps
          FROM games WHERE game_id = $1 FOR UPDATE",
     )
     .bind(game_id)

@@ -9,7 +9,7 @@ use crate::{
 };
 use std::fmt;
 
-const HEADER: &str = "NOLAN-CHESS 1";
+const HEADER: &str = "NOLAN-CHESS 2";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command {
@@ -27,6 +27,7 @@ pub enum Command {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct GameRecord {
+    causal_gaps: bool,
     commands: Vec<Command>,
     pieces: Vec<Option<RecordedPiece>>,
 }
@@ -53,6 +54,16 @@ impl fmt::Display for RecordError {
 impl std::error::Error for RecordError {}
 
 impl GameRecord {
+    pub fn new(causal_gaps: bool) -> Self {
+        Self {
+            causal_gaps,
+            ..Self::default()
+        }
+    }
+    pub fn causal_gaps(&self) -> bool {
+        self.causal_gaps
+    }
+
     pub fn commands(&self) -> &[Command] {
         &self.commands
     }
@@ -74,6 +85,7 @@ impl GameRecord {
                 if let Command::Move { mv, .. } = command {
                     Some((
                         Self {
+                            causal_gaps: self.causal_gaps,
                             commands: self.commands[..index].to_vec(),
                             pieces: self.pieces[..index].to_vec(),
                         },
@@ -89,6 +101,11 @@ impl GameRecord {
     /// Successful commands are retained even when reconciliation removes the
     /// initiating move from History: replay needs the command and its effects.
     pub fn apply(&mut self, engine: &mut Engine, command: Command) -> Result<(), EngineErr> {
+        if !self.commands.is_empty() && self.causal_gaps != engine.history().causal_gaps() {
+            return Err(EngineErr::InvalidHistory(
+                "record rules differ from engine rules",
+            ));
+        }
         let piece = match command {
             Command::Move { mv, .. } => {
                 engine.piece_state(mv.source()).map(|state| RecordedPiece {
@@ -122,13 +139,17 @@ impl GameRecord {
                 engine.continue_calculation()?;
             }
         }
+        self.causal_gaps = engine.history().causal_gaps();
         self.commands.push(command);
         self.pieces.push(piece);
         Ok(())
     }
 
     pub fn to_text(&self) -> String {
-        let mut text = format!("{HEADER}\n");
+        let mut text = format!(
+            "{HEADER}\ncausal_gaps {}\n",
+            if self.causal_gaps { "on" } else { "off" }
+        );
         for command in &self.commands {
             text.push_str(&format!("{command}\n"));
         }
@@ -151,13 +172,34 @@ impl GameRecord {
         let (line, header) = lines
             .next()
             .ok_or_else(|| error(1, "Пустая запись партии".into()))?;
-        if header != HEADER {
-            return Err(error(line, format!("Ожидался заголовок {HEADER}")));
-        }
-        let mut engine = Engine::default()
+        let causal_gaps = match header {
+            "NOLAN-CHESS 1" => true, // Existing records used preserved futures.
+            HEADER => {
+                let (line, mode) = lines
+                    .next()
+                    .ok_or_else(|| error(line, "Не указан режим causal_gaps".into()))?;
+                match mode {
+                    "causal_gaps on" => true,
+                    "causal_gaps off" => false,
+                    _ => {
+                        return Err(error(
+                            line,
+                            "Ожидалось causal_gaps on или causal_gaps off".into(),
+                        ));
+                    }
+                }
+            }
+            _ => {
+                return Err(error(
+                    line,
+                    format!("Ожидался заголовок {HEADER} или NOLAN-CHESS 1"),
+                ));
+            }
+        };
+        let mut engine = Engine::new(causal_gaps)
             .with_interactive_calculation()
             .map_err(|e| error(line, e.to_string()))?;
-        let mut record = Self::default();
+        let mut record = Self::new(causal_gaps);
         for (line, text) in lines {
             if record.commands.len() >= 10_000 {
                 return Err(error(line, "Больше 10000 команд".into()));
@@ -392,7 +434,7 @@ move 5 17:5:0 c6 d4 - normal
             "move 0 12:0:0 e2 e4 ? normal",
         ] {
             let error =
-                GameRecord::load(&format!("{HEADER}\n# comment\n\n{command}\n")).unwrap_err();
+                GameRecord::load(&format!("NOLAN-CHESS 1\n# comment\n\n{command}\n")).unwrap_err();
             assert_eq!(error.line, 4);
         }
         assert!(GameRecord::load("NOLAN-CHESS 2").is_err());

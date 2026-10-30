@@ -20,7 +20,7 @@ fn play(engine: &mut Engine, from: Sq, to: Sq) -> Move {
 
 #[test]
 fn cancelling_an_earlier_move_revalidates_later_moves_and_revives_the_victim() {
-    let mut engine = Engine::default();
+    let mut engine = Engine::new(true);
     let first = play(&mut engine, Sq(4, 1), Sq(4, 3));
     let black = play(&mut engine, Sq(3, 6), Sq(3, 4));
     let capture = play(&mut engine, Sq(4, 3), Sq(3, 4));
@@ -43,7 +43,7 @@ fn cancelling_an_earlier_move_revalidates_later_moves_and_revives_the_victim() {
 
 #[test]
 fn undoing_en_passant_removes_its_capture_cause() {
-    let mut engine = Engine::default();
+    let mut engine = Engine::new(true);
     play(&mut engine, Sq(4, 1), Sq(4, 3));
     play(&mut engine, Sq(0, 6), Sq(0, 5));
     play(&mut engine, Sq(4, 3), Sq(4, 4));
@@ -65,7 +65,7 @@ fn an_existing_inverted_segment_can_move_and_be_undone_without_erasing_its_state
     let middle = state.prolongate().unwrap();
     let last = middle.prolongate().unwrap();
     let mut engine =
-        Engine::from_worldlines(vec![vec![state, middle, last]], Color::White).unwrap();
+        super::legacy_from_worldlines(vec![vec![state, middle, last]], Color::White).unwrap();
     let mv = engine
         .possible_moves(0, 0)
         .unwrap()
@@ -84,7 +84,7 @@ fn an_existing_inverted_segment_can_move_and_be_undone_without_erasing_its_state
 
 #[test]
 fn castling_undo_restores_rook_position_and_rights() {
-    let mut engine = Engine::from_worldlines(
+    let mut engine = super::legacy_from_worldlines(
         vec![
             vec![State::new(
                 PieceKind::K { moved: false },
@@ -121,7 +121,7 @@ fn castling_undo_restores_rook_position_and_rights() {
 fn new_information_grants_an_optional_reaction_without_granting_an_ordinary_move() {
     let mut rook = State::new(PieceKind::R { moved: true }, Color::White, Sq(0, 0));
     rook.rights.ordinary = false;
-    let mut engine = Engine::from_worldlines(
+    let mut engine = super::legacy_from_worldlines(
         vec![
             vec![rook],
             vec![State::new(
@@ -161,6 +161,7 @@ fn oncoming_tracking_uses_orientation_even_when_inverted_piece_knows_more_future
     inverted_last.y = 3;
     let engine = Engine {
         history: History {
+            causal_gaps: false,
             worldlines: vec![
                 vec![ordinary, ordinary_next].into(),
                 vec![inverted, inverted_next, inverted_last].into(),

@@ -40,7 +40,8 @@ impl Engine {
         if !piece.rights.ordinary {
             return Err(EngineErr::WrongPiece);
         }
-        if to_t == piece.t
+        if crate::model::Color::from_board(to_t) != piece.color
+            || to_t == piece.t
             || to_t > self.history.horizon
             || (piece.inverted && to_t > piece.t)
             || (!piece.inverted && to_t < piece.t)

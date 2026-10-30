@@ -41,7 +41,7 @@ cargo run -p temporal-chess-server --release
 Пример первого сообщения:
 
 ```json
-{"type":"create_game","protocol":1,"side":"random"}
+{"type":"create_game","protocol":2,"side":"random","causal_gaps":false}
 ```
 
 Клиент сохраняет токен автоматически: браузер — `localStorage`, нативный клиент —
@@ -53,3 +53,7 @@ cargo run -p temporal-chess-server --release
 
 Локальный режим, экспорт и инспекция сохранены. Импорт, новая позиция и отмена хода
 не меняют сетевую комнату: они доступны после выхода в локальный режим.
+
+Режим комнаты задаётся `causal_gaps` при создании (обычно `false`), хранится
+в PostgreSQL и передаётся обоим клиентам в `game_ready`. Протокол — версия 2.
+Миграция 0002 сохраняет старые комнаты с `causal_gaps=true`.

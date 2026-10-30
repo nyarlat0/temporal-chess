@@ -16,7 +16,7 @@ fn calculation_advances_one_own_cancelled_board_without_spending_rights_or_turn(
     white[4].rights.cancelled_move = true;
     let mut black = line(Color::Black, Sq(6, 7), 6);
     black[1].rights.cancelled_move = true;
-    let mut engine = Engine::from_worldlines(vec![white, black], Color::White)
+    let mut engine = super::legacy_from_worldlines(vec![white, black], Color::White)
         .unwrap()
         .with_interactive_calculation()
         .unwrap();
@@ -77,7 +77,7 @@ fn play(engine: &mut Engine, t: usize, from: Sq, to: Sq) -> Move {
 
 #[test]
 fn later_invalid_capture_and_revival_are_deferred_until_user_advances() {
-    let mut engine = Engine::default();
+    let mut engine = Engine::new(true);
     let first = play(&mut engine, 0, Sq(4, 1), Sq(4, 3));
     play(&mut engine, 1, Sq(3, 6), Sq(3, 4));
     let capture = play(&mut engine, 2, Sq(4, 3), Sq(3, 4));
@@ -112,7 +112,7 @@ fn later_invalid_capture_and_revival_are_deferred_until_user_advances() {
 
 #[test]
 fn preboards_preserve_all_overlapping_live_pieces_and_reject_uncomputed_sources() {
-    let mut engine = Engine::from_worldlines(
+    let mut engine = super::legacy_from_worldlines(
         vec![
             line(Color::White, Sq(1, 0), 4),
             line(Color::White, Sq(2, 0), 4),
@@ -157,7 +157,7 @@ fn preboards_preserve_all_overlapping_live_pieces_and_reject_uncomputed_sources(
 #[test]
 fn skip_preview_includes_intermediate_times_and_ignores_wrong_orientation() {
     let engine =
-        Engine::from_worldlines(vec![line(Color::White, Sq(1, 0), 6)], Color::White).unwrap();
+        super::legacy_from_worldlines(vec![line(Color::White, Sq(1, 0), 6)], Color::White).unwrap();
     let source = PieceAt {
         piece: PieceId::from_state(&engine.history.worldlines[0][2], 0),
         t: 2,

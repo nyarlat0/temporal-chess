@@ -72,6 +72,7 @@ pub struct GameUi {
     pub cell_size: f32,
     pub jump_to: Option<usize>,
     pub confirm_restart: bool,
+    pub new_game_causal_gaps: bool,
     pub viewport: TimelineViewport,
     pub transition: Option<BoardTransition>,
     pub facing: crate::animation::BoardFacing,
@@ -141,6 +142,7 @@ impl Default for GameUi {
             cell_size: 64.0,
             jump_to: Some(0),
             confirm_restart: false,
+            new_game_causal_gaps: false,
             viewport: TimelineViewport::default(),
             transition: None,
             facing: Default::default(),
@@ -156,6 +158,16 @@ impl Default for GameUi {
 }
 
 impl GameUi {
+    pub fn new(causal_gaps: bool) -> Self {
+        Self {
+            engine: Engine::new(causal_gaps)
+                .with_interactive_calculation()
+                .expect("initial game"),
+            record: GameRecord::new(causal_gaps),
+            new_game_causal_gaps: causal_gaps,
+            ..Self::default()
+        }
+    }
     pub fn clear_selection(&mut self) {
         self.selected = None;
         self.promotion.clear();
@@ -460,7 +472,11 @@ impl GameUi {
         self.import_open = false;
         self.confirm_restart = false;
         self.begin_replay(
-            format!("NOLAN-CHESS 1\n{}\n", history.join("\n")),
+            format!(
+                "NOLAN-CHESS 2\ncausal_gaps {}\n{}\n",
+                if self.online.causal_gaps { "on" } else { "off" },
+                history.join("\n")
+            ),
             ReplayKind::Network,
         );
     }

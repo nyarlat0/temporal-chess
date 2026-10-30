@@ -25,7 +25,7 @@ fn game(last: usize) -> Engine {
             ..st.clone()
         })
         .collect();
-    Engine::from_worldlines(vec![white, black], Color::White).unwrap()
+    super::legacy_from_worldlines(vec![white, black], Color::White).unwrap()
 }
 
 // These worldline fixtures select the acting side explicitly; the public command
@@ -194,7 +194,7 @@ fn future_moves_see_future_blockers_and_past_moves_see_past_blockers() {
     blocker[1].y = 2;
     blocker[3].x = 0;
     blocker[3].y = 2;
-    let engine = Engine::from_worldlines(vec![white, blocker], Color::White).unwrap();
+    let engine = super::legacy_from_worldlines(vec![white, blocker], Color::White).unwrap();
     let moves = engine.possible_moves(0, 2).unwrap();
     assert!(
         moves
@@ -308,7 +308,7 @@ fn counter_overflow_rejects_the_entire_command_even_after_rights_were_consumed()
     let mut state = line(4).pop().unwrap();
     state.inverted = true;
     state.loop_turn = usize::MAX;
-    let mut engine = Engine::from_worldlines(vec![vec![state]], Color::White).unwrap();
+    let mut engine = super::legacy_from_worldlines(vec![vec![state]], Color::White).unwrap();
     let before = engine.clone();
     let mv = engine
         .possible_moves(0, 0)
@@ -340,7 +340,7 @@ fn cancelling_a_return_restores_inverted_direction_and_preserves_the_debt() {
 
 #[test]
 fn empty_future_board_survives_departure_and_snapshot_restore() {
-    let mut engine = Engine::from_worldlines(vec![line(4)], Color::White).unwrap();
+    let mut engine = super::legacy_from_worldlines(vec![line(4)], Color::White).unwrap();
     play(&mut engine, 4, 0, TimeDirection::Past, Sq(2, 2));
     assert_eq!(engine.history.horizon(), 5);
     assert!(engine.board(5).unwrap().pieces().is_empty());
@@ -386,7 +386,7 @@ fn a_backward_pawn_capture_survives_validation_and_undo_restores_the_victim() {
             ..state
         })
         .collect();
-    let mut engine = Engine::from_worldlines(vec![white, black], Color::White).unwrap();
+    let mut engine = super::legacy_from_worldlines(vec![white, black], Color::White).unwrap();
     let capture = play(&mut engine, 4, 0, TimeDirection::Past, Sq(4, 4));
     assert!(engine.history.moves.contains_key(&capture.id()));
     assert!(engine.history.worldlines[1][1].alive);
@@ -430,7 +430,7 @@ fn king_safety_is_checked_on_the_selected_target_board() {
             ..state
         })
         .collect();
-    let engine = Engine::from_worldlines(vec![white, black], Color::White).unwrap();
+    let engine = super::legacy_from_worldlines(vec![white, black], Color::White).unwrap();
     let moves = engine.possible_moves(0, 2).unwrap();
     for (direction, allowed, attacked) in [
         (TimeDirection::Past, Sq(5, 0), Sq(3, 0)),
@@ -485,7 +485,7 @@ fn only_a_new_capture_on_the_current_board_grants_information() {
                 ..state
             })
             .collect();
-        let mut engine = Engine::from_worldlines(vec![white, black], Color::White).unwrap();
+        let mut engine = super::legacy_from_worldlines(vec![white, black], Color::White).unwrap();
         assert!(!engine.history.worldlines[0][2].rights.is_movable());
         engine.history.worldlines[1][target_time].x = 2;
         engine.history.worldlines[1][target_time].y = 2;
@@ -508,7 +508,7 @@ fn mixed_direction_games_keep_restorable_history_and_atomic_failures() {
     let mut backward_moves = 0;
     for initial_seed in [11_u64, 29, 47, 83] {
         let mut seed = initial_seed;
-        let mut engine = Engine::default();
+        let mut engine = Engine::new(true);
         for turn in 0..24 {
             let moves: Vec<_> = engine
                 .move_sources()
@@ -580,7 +580,7 @@ fn replacing_castling_restores_rook_and_inversion_preserves_king_future() {
             ..state
         })
         .collect();
-    let mut engine = Engine::from_worldlines(vec![king, rook], Color::White).unwrap();
+    let mut engine = super::legacy_from_worldlines(vec![king, rook], Color::White).unwrap();
     let castling = play(&mut engine, 2, 0, TimeDirection::Future, Sq(6, 0));
     assert!(castling.castling().is_some());
     engine.history.worldlines[0][2].rights.new_information = true;

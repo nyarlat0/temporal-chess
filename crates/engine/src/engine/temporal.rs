@@ -7,6 +7,9 @@ impl Engine {
     /// Remove the old backward excursion, retaining the first continuation in
     /// future board time. Journal entries are removed by their source identities.
     pub(super) fn remove_past_route(&mut self, piece: PieceView) -> Result<(), EngineErr> {
+        if !self.history.causal_gaps {
+            return self.prune_route(piece, self.history.worldlines[piece.origin].len());
+        }
         let line = &self.history.worldlines[piece.origin];
         let end = (piece.age + 1..line.len())
             .find(|&i| line[i].t > piece.t)
@@ -15,6 +18,9 @@ impl Engine {
     }
 
     pub(super) fn remove_return_route(&mut self, piece: PieceView) -> Result<(), EngineErr> {
+        if !self.history.causal_gaps {
+            return self.prune_route(piece, self.history.worldlines[piece.origin].len());
+        }
         let line = &self.history.worldlines[piece.origin];
         let end = (piece.age + 1..line.segment_end(piece.age))
             .find(|&i| line[i].t > piece.t && line[i].loop_turn < piece.loop_turn)
@@ -152,14 +158,21 @@ impl Engine {
             self.relocate_from(piece.origin, piece.age + 1, &next);
             age = piece.age + 1;
         } else {
-            if connected
+            if !self.history.causal_gaps {
+                // Discard the old causal suffix in either turning direction.
+                // No preserved tail means no gap and no borrowed states.
+                self.prune_route(piece, self.history.worldlines[piece.origin].len())?;
+            }
+            if self.history.causal_gaps
+                && connected
                 && line.get(piece.age + 1).is_some_and(|st| st.t < piece.t)
                 && mv.direction == TimeDirection::Future
             {
                 self.remove_past_route(piece)?;
             }
             let line = &mut self.history.worldlines[piece.origin];
-            if line.gap_after(piece.age).is_none()
+            if self.history.causal_gaps
+                && line.gap_after(piece.age).is_none()
                 && (line.get(piece.age + 1).is_some() || mv.to_past())
             {
                 let key = MoveId::from_piv(piece);

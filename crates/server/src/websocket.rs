@@ -173,11 +173,15 @@ async fn handle_client_message(
         }
     }
     match message {
-        ClientMessage::CreateGame { protocol, side } => {
+        ClientMessage::CreateGame {
+            protocol,
+            side,
+            causal_gaps,
+        } => {
             if !check_handshake(protocol, authenticated, sender) {
                 return;
             }
-            match state.repository.create_game(side).await {
+            match state.repository.create_game(side, causal_gaps).await {
                 Ok(ready) => {
                     let opponent_connected = state
                         .hub
@@ -191,6 +195,7 @@ async fn handle_client_message(
                     send_local(
                         sender,
                         ServerMessage::GameReady {
+                            causal_gaps: ready.causal_gaps,
                             created: true,
                             game_id: ready.auth.game_id.clone(),
                             player_token: ready.auth.player_token.clone(),
@@ -239,6 +244,7 @@ async fn handle_client_message(
                     send_local(
                         sender,
                         ServerMessage::GameReady {
+                            causal_gaps: ready.causal_gaps,
                             created: false,
                             game_id: ready.auth.game_id.clone(),
                             player_token: ready.auth.player_token.clone(),

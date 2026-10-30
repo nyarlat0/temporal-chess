@@ -31,3 +31,16 @@ mod outcome_tests;
 mod temporal_tests;
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+fn legacy_from_worldlines(
+    worldlines: Vec<Vec<State>>,
+    turn: crate::model::Color,
+) -> Result<Engine, EngineErr> {
+    let mut engine = Engine::from_worldlines(worldlines, turn)?;
+    engine.history.causal_gaps = true;
+    Ok(engine)
+}
+
+#[cfg(test)]
+mod mode_tests;

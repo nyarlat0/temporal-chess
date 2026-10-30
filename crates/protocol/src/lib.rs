@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u16 = 1;
+pub const PROTOCOL_VERSION: u16 = 2;
 pub const MAX_GAME_ID_LEN: usize = 12;
 pub const MAX_COMMAND_LEN: usize = 192;
 
@@ -34,6 +34,7 @@ pub enum SidePreference {
 pub enum ClientMessage {
     CreateGame {
         protocol: u16,
+        causal_gaps: bool,
         side: SidePreference,
     },
     JoinGame {
@@ -61,6 +62,7 @@ pub enum SyncReason {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMessage {
     GameReady {
+        causal_gaps: bool,
         created: bool,
         game_id: String,
         player_token: String,

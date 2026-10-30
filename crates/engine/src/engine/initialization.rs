@@ -16,6 +16,14 @@ impl Default for Engine {
 }
 
 impl Engine {
+    /// Choose immutable rules for a fresh standard game. Default is destructive
+    /// temporal turns; opt in to borrowing a preserved future across causal gaps.
+    pub fn new(causal_gaps: bool) -> Self {
+        let mut engine = Self::default();
+        engine.history.causal_gaps = causal_gaps;
+        engine
+    }
+
     /// Build a scenario from worldlines, validating and projecting it immediately.
     pub fn from_worldlines(worldlines: Vec<Vec<State>>, turn: Color) -> Result<Self, EngineErr> {
         let horizon = worldlines
@@ -26,6 +34,7 @@ impl Engine {
             .unwrap_or(0);
         Self::from_history(
             History {
+                causal_gaps: false,
                 worldlines: worldlines.into_iter().map(Into::into).collect(),
                 moves: BTreeMap::new(),
                 targets: BTreeMap::new(),
@@ -40,6 +49,9 @@ impl Engine {
     /// Restore an owned snapshot without trusting any cached boards or lookups.
     pub fn from_history(history: History, turn: Color) -> Result<Self, EngineErr> {
         for line in &history.worldlines {
+            if !history.causal_gaps && !line.gaps.is_empty() {
+                return Err(EngineErr::InvalidHistory("causal gaps disabled"));
+            }
             let Some(first) = line.first() else {
                 return Err(EngineErr::InvalidHistory("empty worldline"));
             };
