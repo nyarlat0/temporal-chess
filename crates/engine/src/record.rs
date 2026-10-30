@@ -308,6 +308,45 @@ fn parse(text: &str) -> Result<Command, String> {
 mod tests {
     use super::*;
     use crate::engine::CalculationStatus;
+    // Regression fixture: death on d4 at t=3 must not cancel d2-d4 at t=2.
+    #[test]
+    fn arrival_collision_does_not_grant_a_spurious_cancellation_reaction() {
+        let text = "NOLAN-CHESS 1
+move 0 6:0:0 g1 f3 + normal
+move 1 17:1:0 b8 c6 + normal
+move 2 11:2:0 d2 d4 + normal
+move 3 31:3:0 h7 h6 + normal
+move 4 15:4:0 h2 h3 + normal
+move 5 30:5:0 g7 g5 + normal
+move 6 14:6:0 g2 g4 + normal
+move 7 17:7:0 c6 d4 - normal
+move 6 6:6:0 f3 d4 - normal
+move 5 17:5:0 c6 d4 - normal
+";
+        let (engine, record) = GameRecord::load(text).unwrap();
+        let Command::Move { mv, .. } = record.commands()[2] else {
+            unreachable!()
+        };
+        assert_eq!(engine.history().moves().get(&mv.id()), Some(&mv));
+        assert!(
+            !engine
+                .piece_state(mv.source())
+                .unwrap()
+                .rights
+                .cancelled_move
+        );
+        assert!(!engine.move_sources().any(|piece| piece.t == 2));
+        let arrival = &engine.history().worldlines()[11][3];
+        assert_eq!(
+            (arrival.t, arrival.x, arrival.y, arrival.alive),
+            (3, 3, 3, false)
+        );
+        // Revalidation's collision exception must not open a new straight pawn
+        // capture against the actual occupant of the destination board.
+        assert!(!engine.possible_moves(11, 2).unwrap().contains(&mv));
+        assert_eq!(record.commands().len(), 10);
+    }
+
     #[test]
     fn replay_inversion_and_then_continue_playing() {
         let mut engine = Engine::default().with_interactive_calculation().unwrap();

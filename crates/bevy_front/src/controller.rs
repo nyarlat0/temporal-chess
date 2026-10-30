@@ -74,6 +74,7 @@ pub struct GameUi {
     pub confirm_restart: bool,
     pub viewport: TimelineViewport,
     pub transition: Option<BoardTransition>,
+    pub facing: crate::animation::BoardFacing,
     pub record: GameRecord,
     pub import_open: bool,
     pub import_text: String,
@@ -142,6 +143,7 @@ impl Default for GameUi {
             confirm_restart: false,
             viewport: TimelineViewport::default(),
             transition: None,
+            facing: Default::default(),
             record: GameRecord::default(),
             import_open: false,
             import_text: String::new(),
@@ -327,6 +329,7 @@ impl GameUi {
             || self.import_open
             || self.replay_job.is_some()
             || self.transition.is_some()
+            || self.facing.animating()
         {
             return;
         }
@@ -369,11 +372,12 @@ impl GameUi {
     }
 
     pub fn can_submit(&self) -> bool {
-        !self.online.enabled
-            || (self.online.ready
-                && !self.online.waiting
-                && !self.online.synchronizing
-                && self.online.side == Some(self.engine.turn()))
+        !self.facing.animating()
+            && (!self.online.enabled
+                || (self.online.ready
+                    && !self.online.waiting
+                    && !self.online.synchronizing
+                    && self.online.side == Some(self.engine.turn())))
     }
 
     fn submit(&mut self, command: Command) {
@@ -471,6 +475,7 @@ impl GameUi {
 
     pub fn can_undo(&self) -> bool {
         !self.online.enabled
+            && !self.facing.animating()
             && self.replay_job.is_none()
             && self.transition.is_none()
             && !self.import_open

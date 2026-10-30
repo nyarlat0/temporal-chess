@@ -83,7 +83,7 @@ pub fn draw(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState, art:
 }
 
 fn sidebar(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, art: &PieceArt) {
-    let idle = game.replay_job.is_none() && game.transition.is_none();
+    let idle = game.replay_job.is_none() && game.transition.is_none() && !game.facing.animating();
     ui.horizontal(|ui| {
         ui.heading("Temporal Chess");
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

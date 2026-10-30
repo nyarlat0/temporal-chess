@@ -170,6 +170,71 @@ impl Engine {
     /// Historical validation must not recursively apply the rules for a new
     /// command to recorded moves; future edits may have changed their threats.
     pub(super) fn candidate_moves(&self, wid: usize, age: usize) -> Result<Vec<Move>, EngineErr> {
+        self.candidates_for(wid, age, None)
+    }
+
+    pub(super) fn recorded_move_candidates(
+        &self,
+        wid: usize,
+        age: usize,
+        recorded: Move,
+    ) -> Result<Vec<Move>, EngineErr> {
+        self.candidates_for(wid, age, Some(recorded))
+    }
+
+    /// A completed collision may kill the mover exactly at arrival. Its winner
+    /// is a consequence of that old move, not a new obstacle that cancels it.
+    /// This adjustment belongs only to revalidation, never to newly offered moves.
+    fn restore_lost_arrival(&self, piece: PieceView, recorded: Move, board: &mut Board) {
+        use super::collision_rules::{CollisionEffect, collision_effects};
+        let line = &self.history.worldlines[piece.origin];
+        let Some(arrival) = line.get(piece.age + 1) else {
+            return;
+        };
+        if line.gap_after(piece.age).is_some()
+            || arrival.alive
+            || recorded.direction.step(piece.t) != Some(arrival.t)
+            || board.time() != arrival.t
+            || Sq(arrival.x, arrival.y) != recorded.sq
+        {
+            return;
+        }
+        let victim = PieceView::from_state(arrival, piece.origin, piece.age + 1);
+        let Some(winner) = board.get_piece(arrival.x, arrival.y).copied() else {
+            return;
+        };
+        let Some(collision) = self.track_collision(victim, winner) else {
+            return;
+        };
+        let killed_on_arrival = collision_effects(collision).iter().any(|effect| {
+            matches!(effect, CollisionEffect::KillFrom(id)
+                if id.wid == victim.origin && id.age == victim.age)
+        });
+        if !killed_on_arrival {
+            return;
+        }
+        board.remove_piece(recorded.sq);
+        // Retain the original capture geometry (including diagonal pawn moves).
+        // The ordinary move-board restoration could not restore a victim while
+        // this collision's surviving piece occupied the destination.
+        if let Some(targets) = self.history.targets.get(&recorded.id()) {
+            for &target in targets {
+                if let Some(target) = self.occurrence(target)
+                    && target.t == board.time()
+                    && board.is_empty(target.sq)
+                {
+                    board.add_piece(target);
+                }
+            }
+        }
+    }
+
+    fn candidates_for(
+        &self,
+        wid: usize,
+        age: usize,
+        recorded: Option<Move>,
+    ) -> Result<Vec<Move>, EngineErr> {
         let piece = self.get_piv(wid, age).ok_or(EngineErr::WrongPiece)?;
         let source = self.board(piece.t).ok_or(EngineErr::AbsentBoard)?;
         let candidate = |sq, direction, effect| Move {
@@ -184,11 +249,14 @@ impl Engine {
             if direction == TimeDirection::Past && piece.t <= 1 {
                 continue;
             }
-            let board = match self.move_board(piece, direction) {
+            let mut board = match self.move_board(piece, direction) {
                 Ok(board) => board,
                 Err(EngineErr::AbsentBoard) => continue,
                 Err(error) => return Err(error),
             };
+            if let Some(recorded) = recorded.filter(|mv| mv.direction == direction) {
+                self.restore_lost_arrival(piece, recorded, &mut board);
+            }
             let mut directed = Vec::new();
             for square in piece.basic_moves(&board) {
                 directed.push(candidate(square, direction, MoveEffect::Normal));

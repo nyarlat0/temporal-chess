@@ -29,7 +29,7 @@ impl Engine {
                 continue;
             }
             if self.history.worldlines[wid][age].alive
-                && !self.candidate_moves(wid, age)?.contains(&mv)
+                && !self.recorded_move_candidates(wid, age, mv)?.contains(&mv)
             {
                 self.undo_mv(id)?;
                 return Ok(ValidRes::HistChanged);

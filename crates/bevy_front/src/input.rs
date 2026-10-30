@@ -58,7 +58,7 @@ pub fn handle(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState) {
     if !down && wheel_delta != 0.0 {
         shell.suppress_wheel = false;
     }
-    if !modal && game.transition.is_none() && down {
+    if !modal && game.transition.is_none() && !game.facing.animating() && down {
         let over_boards = ctx.pointer_hover_pos().is_some_and(|pos| {
             shell.ribbon_rect.contains(pos)
                 && ctx
@@ -94,7 +94,11 @@ pub fn handle(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState) {
     if released {
         shell.zoom_gesture = false;
     }
-    if modal || game.transition.is_some() || ctx.egui_wants_keyboard_input() {
+    if modal
+        || game.transition.is_some()
+        || game.facing.animating()
+        || ctx.egui_wants_keyboard_input()
+    {
         return;
     }
     ctx.input(|i| {

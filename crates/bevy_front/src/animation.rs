@@ -236,3 +236,61 @@ impl SmoothScroll {
         (self.started.elapsed().as_secs_f32() / self.duration).min(1.0)
     }
 }
+
+/// All boards share the side-to-move orientation. Finish spatial travel before
+/// fading out, switch square mapping at full transparency, then fade back in.
+/// Cache once per egui frame so layout retries cannot change hit testing.
+pub struct BoardFacing {
+    pub black_bottom: bool,
+    pub opacity: f32,
+    started: Option<Instant>,
+    target_black: bool,
+    frame: Option<u64>,
+}
+
+impl Default for BoardFacing {
+    fn default() -> Self {
+        Self {
+            black_bottom: false,
+            opacity: 1.0,
+            started: None,
+            target_black: false,
+            frame: None,
+        }
+    }
+}
+
+impl BoardFacing {
+    pub fn animating(&self) -> bool {
+        self.started.is_some()
+    }
+
+    pub fn update(&mut self, black_turn: bool, travelling: bool, frame: u64) {
+        if self.frame == Some(frame) {
+            return;
+        }
+        self.frame = Some(frame);
+        if travelling {
+            return;
+        }
+        if self.started.is_none() && self.black_bottom != black_turn {
+            self.target_black = black_turn;
+            self.started = Some(Instant::now());
+        }
+        if let Some(started) = self.started {
+            let progress = (started.elapsed().as_secs_f32() / 0.32).clamp(0.0, 1.0);
+            if progress >= 0.5 {
+                self.black_bottom = self.target_black;
+            }
+            self.opacity = if progress < 0.5 {
+                1.0 - ease(progress * 2.0)
+            } else {
+                ease(progress * 2.0 - 1.0)
+            };
+            if progress >= 1.0 {
+                self.started = None;
+                self.opacity = 1.0;
+            }
+        }
+    }
+}

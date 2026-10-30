@@ -108,8 +108,14 @@ pub fn ribbon(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt) {
         game.viewport.motion_progress = raw;
         game.viewport.frame = Some(frame);
     }
+    game.facing.update(
+        game.engine.turn() == Color::Black,
+        game.transition.is_some(),
+        frame,
+    );
+    let flipped = game.facing.black_bottom;
     let offset = game.viewport.offset;
-    let moving = game.transition.is_some();
+    let moving = game.transition.is_some() || game.facing.animating();
     let painter = ui
         .painter()
         .with_clip_rect(viewport.intersect(ui.clip_rect()));
@@ -147,10 +153,12 @@ pub fn ribbon(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt) {
             Sense::click(),
         );
         if !moving && let Some(pos) = response.hover_pos() {
-            hovered = Some((t, square_at(board, cell, pos)));
+            hovered = Some((t, square_at(board, cell, pos, flipped)));
         }
         rows.push((t, board, response));
     }
+    let mut board_painter = painter.clone();
+    board_painter.multiply_opacity(game.facing.opacity);
     for (t, board, response) in rows {
         let own_active = game
             .pieces(t)
@@ -180,7 +188,7 @@ pub fn ribbon(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt) {
             .as_ref()
             .is_some_and(|motion| motion.to_t == t && game.viewport.motion_progress < 0.84);
         if !covered_by_transition {
-            paint_board(&painter, game, art, t, board, cell, hovered);
+            paint_board(&board_painter, game, art, t, board, cell, hovered);
         }
         if !moving
             && game.viewport.scroll.is_none()
@@ -188,7 +196,7 @@ pub fn ribbon(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt) {
             && let Some(pos) = response.interact_pointer_pos()
         {
             // Apply next Update, never halfway through drawing a history frame.
-            game.pending_square = Some((t, square_at(board, cell, pos)));
+            game.pending_square = Some((t, square_at(board, cell, pos, flipped)));
             ui.ctx().request_repaint();
         }
     }
@@ -198,7 +206,7 @@ pub fn ribbon(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt) {
         && let Some(to) = times.iter().position(|&t| t == motion.to_t)
     {
         paint_transition(
-            &painter,
+            &board_painter,
             game,
             art,
             motion,
@@ -245,7 +253,11 @@ pub fn ribbon(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt) {
     {
         game.navigate_active(true);
     }
-    if game.transition.is_some() || game.viewport.scroll.is_some() || game.jump_to.is_some() {
+    if game.transition.is_some()
+        || game.facing.animating()
+        || game.viewport.scroll.is_some()
+        || game.jump_to.is_some()
+    {
         ui.ctx().request_repaint();
     }
 }
@@ -339,7 +351,7 @@ fn paint_transition(
     for x in 0..8 {
         for y in 0..8 {
             let rect = Rect::from_min_size(
-                board.min + Vec2::new(x as f32 * cell, (7 - y) as f32 * cell),
+                square_rect(board, cell, Sq(x, y), game.facing.black_bottom).min,
                 Vec2::splat(cell),
             );
             painter.rect_filled(
@@ -380,11 +392,8 @@ fn paint_transition(
         } else {
             0.0
         };
-        let center = board.min
-            + Vec2::new(
-                (piece.sq.0 as f32 + 0.5) * cell + shift,
-                (7.5 - piece.sq.1 as f32) * cell - shift,
-            );
+        let center = square_rect(board, cell, piece.sq, game.facing.black_bottom).center()
+            + Vec2::new(shift, -shift);
         (center, cell * if count > 1 { 0.82 } else { 0.98 })
     };
     {
@@ -455,7 +464,13 @@ fn paint_transition(
         painter.text(
             board.min + Vec2::new((index + 1) as f32 * cell - 3.0, board.height() - 1.0),
             Align2::RIGHT_BOTTOM,
-            char::from(b'a' + index as u8),
+            char::from(
+                b'a' + if game.facing.black_bottom {
+                    7 - index
+                } else {
+                    index
+                } as u8,
+            ),
             FontId::proportional((cell * 0.20).max(9.0)),
             file_color.gamma_multiply(opacity),
         );
@@ -463,18 +478,38 @@ fn paint_transition(
         painter.text(
             board.min + Vec2::new(3.0, index as f32 * cell + 3.0),
             Align2::LEFT_TOP,
-            8 - index,
+            if game.facing.black_bottom {
+                index + 1
+            } else {
+                8 - index
+            },
             FontId::proportional((cell * 0.20).max(9.0)),
             rank_color.gamma_multiply(opacity),
         );
     }
 }
 
-fn square_at(board: Rect, cell: f32, pos: Pos2) -> Sq {
-    Sq(
-        (((pos.x - board.left()) / cell) as usize).min(7),
-        7 - (((pos.y - board.top()) / cell) as usize).min(7),
+/// Board-local mapping is shared by pieces, arrows, hints and pointer input.
+fn square_rect(board: Rect, cell: f32, sq: Sq, flipped: bool) -> Rect {
+    let (column, row) = if flipped {
+        (7 - sq.0, sq.1)
+    } else {
+        (sq.0, 7 - sq.1)
+    };
+    Rect::from_min_size(
+        board.min + Vec2::new(column as f32 * cell, row as f32 * cell),
+        Vec2::splat(cell),
     )
+}
+
+fn square_at(board: Rect, cell: f32, pos: Pos2, flipped: bool) -> Sq {
+    let column = (((pos.x - board.left()) / cell) as usize).min(7);
+    let row = (((pos.y - board.top()) / cell) as usize).min(7);
+    if flipped {
+        Sq(7 - column, row)
+    } else {
+        Sq(column, 7 - row)
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -528,7 +563,7 @@ fn paint_board(
         for y in 0..8 {
             let sq = Sq(x, y);
             let rect = Rect::from_min_size(
-                board.min + Vec2::new(x as f32 * cell, (7 - y) as f32 * cell),
+                square_rect(board, cell, Sq(x, y), game.facing.black_bottom).min,
                 Vec2::splat(cell),
             );
             let dark = (x + y) % 2 == 0;
@@ -650,7 +685,7 @@ fn paint_board(
                 );
             }
             let coordinate_color = if dark { LIGHT } else { DARK }.gamma_multiply(alpha);
-            if x == 0 {
+            if x == if game.facing.black_bottom { 7 } else { 0 } {
                 painter.text(
                     rect.left_top() + Vec2::splat(3.0),
                     Align2::LEFT_TOP,
@@ -659,7 +694,7 @@ fn paint_board(
                     coordinate_color,
                 );
             }
-            if y == 0 {
+            if y == if game.facing.black_bottom { 7 } else { 0 } {
                 painter.text(
                     rect.right_bottom() - Vec2::new(3.0, 1.0),
                     Align2::RIGHT_BOTTOM,
@@ -692,6 +727,7 @@ fn paint_board(
             cell,
             from,
             mv.sq,
+            game.facing.black_bottom,
             direction_color(mv.direction)
                 .gamma_multiply(alpha * if highlighted { 0.95 } else { 0.78 }),
         );
@@ -719,10 +755,10 @@ fn paint_move_arrow(
     cell: f32,
     from: Sq,
     to: Sq,
+    flipped: bool,
     color: Color32,
 ) {
-    let center =
-        |sq: Sq| board.min + Vec2::new((sq.0 as f32 + 0.5) * cell, (7.5 - sq.1 as f32) * cell);
+    let center = |sq: Sq| square_rect(board, cell, sq, flipped).center();
     let start = center(from);
     let end = center(to);
     let delta = end - start;

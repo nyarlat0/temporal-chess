@@ -276,7 +276,7 @@ pub fn poll(
     if game.online.synchronizing || game.replay_job.is_some() {
         return;
     }
-    if game.transition.is_none() {
+    if game.transition.is_none() && !game.facing.animating() {
         if let Some((revision, text)) = client.accepted.pop_front() {
             if revision != game.online.revision + 1 {
                 client.resync(&mut game);
