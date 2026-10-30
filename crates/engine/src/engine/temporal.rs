@@ -162,9 +162,7 @@ impl Engine {
                 // Discard the old causal suffix in either turning direction.
                 // No preserved tail means no gap and no borrowed states.
                 self.prune_route(piece, self.history.worldlines[piece.origin].len())?;
-            }
-            if self.history.causal_gaps
-                && connected
+            } else if connected
                 && line.get(piece.age + 1).is_some_and(|st| st.t < piece.t)
                 && mv.direction == TimeDirection::Future
             {

@@ -419,6 +419,30 @@ fn details_panel(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, a
                                         ..Default::default()
                                     },
                                 );
+                                if let temporal_chess_engine::record::Command::Move { mv, .. } =
+                                    commands[index]
+                                    && mv.to_past() != piece.inverted
+                                {
+                                    let (arrow, response) = ui.allocate_exact_size(
+                                        Vec2::splat(18.0),
+                                        egui::Sense::hover(),
+                                    );
+                                    crate::icons::paint(
+                                        ui.painter(),
+                                        if mv.to_past() {
+                                            Icon::Past
+                                        } else {
+                                            Icon::Future
+                                        },
+                                        arrow.shrink(2.0),
+                                        egui::Stroke::new(1.5, TEXT),
+                                    );
+                                    response.on_hover_text(if mv.to_past() {
+                                        "Поворот в прошлое"
+                                    } else {
+                                        "Поворот в будущее"
+                                    });
+                                }
                             } else {
                                 crate::icons::paint(
                                     ui.painter(),

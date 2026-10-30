@@ -111,7 +111,7 @@ impl GameRecord {
                 engine.piece_state(mv.source()).map(|state| RecordedPiece {
                     kind: state.kind,
                     color: state.color,
-                    inverted: mv.to_past(),
+                    inverted: state.inverted,
                 })
             }
             Command::Advance { source, .. } => {
