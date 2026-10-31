@@ -191,6 +191,7 @@ impl Engine {
         let line = &self.history.worldlines[piece.origin];
         if Color::from_board(line[age].t) != piece.color
             && (age + 1 == line.len() || line.gap_after(age).is_some())
+            && !(line[age].inverted && line[age].t <= piece.color.first_board())
         {
             let waiting = line[age].prolongate().ok_or(EngineErr::WrongMove)?;
             if waiting.t <= horizon {

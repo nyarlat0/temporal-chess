@@ -390,6 +390,26 @@ move 5 17:5:0 c6 d4 - normal
     }
 
     #[test]
+    fn knight_can_return_to_future_after_waiting_to_zero() {
+        let text = "NOLAN-CHESS 2\ncausal_gaps off\nmove 0 12:0:0 e2 e4 + normal\nmove 1 27:1:0 d7 d5 + normal\nmove 2 6:2:0 g1 f3 + normal\nmove 3 18:3:0 c8 f5 - normal\nmove 4 6:4:0 f3 e5 - normal\nmove 1 18:3:1 f5 h3 + normal\nadvance 2 6:4:1 e5 0";
+        let (mut engine, mut record) = GameRecord::load(text).unwrap();
+        let piece = *engine.board(0).unwrap().get_piece(4, 4).unwrap();
+        let mv = engine
+            .possible_moves(piece.origin, piece.age)
+            .unwrap()
+            .into_iter()
+            .find(|mv| mv.sq == Sq(6, 3) && mv.direction == TimeDirection::Future)
+            .expect("e5 to g4 must be offered");
+        record
+            .apply(&mut engine, Command::Move { mv, from: Sq(4, 4) })
+            .unwrap();
+        let bishop = engine.history().worldlines()[18].last().unwrap();
+        assert_eq!(bishop.t, 1);
+        assert!(bishop.inverted && bishop.rights.cancelled_move);
+        assert_eq!(GameRecord::load(&record.to_text()).unwrap().0, engine);
+    }
+
+    #[test]
     fn replay_inversion_and_then_continue_playing() {
         let mut engine = Engine::default().with_interactive_calculation().unwrap();
         let mut record = GameRecord::default();

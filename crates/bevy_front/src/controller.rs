@@ -79,6 +79,7 @@ pub struct GameUi {
     pub remote_focus: Option<u64>,
     pub returning_camera: bool,
     pub playback_turn: Option<Color>,
+    pub playback_destination: Option<usize>,
     pub facing: crate::animation::BoardFacing,
     pub local_auto_flip: bool,
     pub record: GameRecord,
@@ -154,6 +155,7 @@ impl Default for GameUi {
             remote_focus: None,
             returning_camera: false,
             playback_turn: None,
+            playback_destination: None,
             facing: Default::default(),
             local_auto_flip: true,
             record: GameRecord::default(),
@@ -185,24 +187,19 @@ impl GameUi {
         } else {
             self.engine.turn()
         };
-        let target = if side == self.engine.turn() {
-            self.active_times().first().copied()
-        } else {
-            self.times().into_iter().find(|&t| {
-                self.engine.board(t).is_some()
-                    && self
-                        .pieces(t)
-                        .iter()
-                        .any(|piece| piece.color == side && piece.can_move() && piece.is_movable())
-            })
-        };
-        self.jump_to = target
-            .or_else(|| {
-                self.times()
-                    .into_iter()
-                    .find(|&t| Color::from_board(t) == side)
-            })
-            .or(Some(fallback));
+        let destination = self.playback_destination.take().unwrap_or(fallback);
+        let target =
+            self.times()
+                .into_iter()
+                .filter(|&t| {
+                    self.engine.board(t).is_some()
+                        && self.pieces(t).iter().any(|piece| {
+                            piece.color == side && piece.can_move() && piece.is_movable()
+                        })
+                })
+                // Equal distances prefer the newer board.
+                .min_by_key(|&t| (t.abs_diff(destination), std::cmp::Reverse(t)));
+        self.jump_to = Some(target.unwrap_or(destination));
         self.returning_camera = true;
     }
 
@@ -212,6 +209,7 @@ impl GameUi {
         self.remote_focus = None;
         self.returning_camera = false;
         self.playback_turn = None;
+        self.playback_destination = None;
     }
 
     pub fn new(causal_gaps: bool) -> Self {
@@ -490,6 +488,7 @@ impl GameUi {
                 BoardTransition::new(&before, &self.engine, mv)
             };
             self.playback_turn = Some(before.turn());
+            self.playback_destination = mv.direction.step(mv.t);
             self.remote_focus = None;
             self.transition_queue.clear();
             if let Some(first) = &self.transition
@@ -696,6 +695,38 @@ impl GameUi {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn camera_prefers_active_move_arrival_after_both_transitions() {
+        let (engine, record) = GameRecord::load("NOLAN-CHESS 2\ncausal_gaps off\nmove 0 12:0:0 e2 e4 + normal\nmove 1 27:1:0 d7 d5 + normal\nmove 2 6:2:0 g1 f3 + normal\nmove 3 18:3:0 c8 f5 - normal\nmove 4 6:4:0 f3 e5 - normal\nmove 1 18:3:1 f5 h3 + normal\nadvance 2 6:4:1 e5 0").unwrap();
+        let mut game = GameUi {
+            engine,
+            record,
+            ..Default::default()
+        };
+        let piece = *game.engine.board(0).unwrap().get_piece(4, 4).unwrap();
+        let mv = game
+            .engine
+            .possible_moves(piece.origin, piece.age)
+            .unwrap()
+            .into_iter()
+            .find(|mv| mv.sq == Sq(6, 3) && !mv.to_past())
+            .unwrap();
+        game.apply_confirmed(Command::Move { mv, from: Sq(4, 4) })
+            .unwrap();
+        assert_eq!(game.playback_destination, Some(1));
+        assert!(game.active_times().contains(&1));
+        assert!(game.active_times().iter().any(|&t| t > 1));
+        game.finish_travel(2);
+        assert_eq!(game.jump_to, Some(1));
+        // An inactive arrival chooses the nearest active board, not the newest.
+        game.playback_destination = Some(0);
+        game.finish_travel(2);
+        assert_eq!(game.jump_to, Some(1));
+        game.playback_destination = game.active_times().first().copied();
+        game.finish_travel(0);
+        assert_eq!(game.jump_to, game.active_times().first().copied());
+    }
 
     #[test]
     fn selecting_playing_and_cancelling_use_stable_occurrences() {

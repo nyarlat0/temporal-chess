@@ -7,6 +7,14 @@ pub enum Color {
 }
 
 impl Color {
+    /// Earliest board on which this side can act, including a temporal return.
+    pub fn first_board(self) -> usize {
+        match self {
+            Self::White => 0,
+            Self::Black => 1,
+        }
+    }
+
     pub fn opposite(&self) -> Self {
         match self {
             Self::White => Self::Black,

@@ -77,9 +77,9 @@ impl Engine {
                 effect: super::MoveEffect::Normal,
                 ..mv
             };
-            // At t=0 an inverted endpoint has no passive predecessor board.
-            // Undo the return without inventing a negative-time state.
-            if wait.direction.step(bf_piv.t).is_some() {
+            // Keep the endpoint on its earliest own-color board so the
+            // player can still react and turn it back towards the future.
+            if !(bf_piv.inverted && bf_piv.t <= bf_piv.color.first_board()) {
                 self.apply_route(bf_piv, wait, horizon)?;
                 let source = self.history.worldlines[bf_piv.origin][bf_piv.age].clone();
                 self.relocate_from(bf_piv.origin, bf_piv.age + 1, &source);
