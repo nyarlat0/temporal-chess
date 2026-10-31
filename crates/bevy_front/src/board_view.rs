@@ -29,18 +29,22 @@ pub fn ribbon(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt) {
     let frame = ui.ctx().cumulative_frame_nr();
     if game.viewport.frame != Some(frame) {
         let mut offset = game.viewport.anchored_offset(&times, height);
-        let raw = game
+        let mut raw = game
             .transition
             .as_ref()
             .map_or(0.0, BoardTransition::progress);
-        if raw >= 1.0 {
-            if let Some(motion) = game.transition.take() {
-                // Finish at exactly the same camera position as the last
-                // animation frame before starting the active-board navigation.
-                if let Some(row) = times.iter().position(|&t| t == motion.to_t) {
-                    offset = (row as f32 * height).min(max_offset);
-                }
-                game.jump_to = game.active_times().first().copied().or(Some(motion.to_t));
+        if raw >= 1.0
+            && let Some(motion) = game.transition.take()
+        {
+            // Finish at exactly the same camera position as the last
+            // animation frame before starting the active-board navigation.
+            if let Some(row) = times.iter().position(|&t| t == motion.to_t) {
+                offset = (row as f32 * height).min(max_offset);
+            }
+            game.transition = game.transition_queue.pop_front();
+            raw = 0.0;
+            if game.transition.is_none() {
+                game.finish_travel(motion.to_t);
             }
         }
         if let Some(motion) = &mut game.transition {
@@ -55,6 +59,7 @@ pub fn ribbon(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt) {
         } else {
             offset = offset.clamp(0.0, max_offset);
             let wheel = if ui.is_enabled()
+                && !game.playback_busy()
                 && ui.ctx().pointer_hover_pos().is_some_and(|pos| {
                     viewport.contains(pos)
                         && ui
@@ -102,6 +107,10 @@ pub fn ribbon(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt) {
                 }
             }
         }
+        if game.returning_camera && game.jump_to.is_none() && game.viewport.scroll.is_none() {
+            game.returning_camera = false;
+            game.playback_turn = None;
+        }
         game.viewport.times = times.clone();
         game.viewport.stride = height;
         game.viewport.offset = offset;
@@ -109,13 +118,19 @@ pub fn ribbon(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt) {
         game.viewport.frame = Some(frame);
     }
     game.facing.update(
-        game.engine.turn() == Color::Black,
-        game.transition.is_some(),
+        if game.online.enabled {
+            game.online.side == Some(Color::Black)
+        } else if game.local_auto_flip {
+            game.displayed_turn() == Color::Black
+        } else {
+            game.facing.black_bottom
+        },
+        game.playback_busy(),
         frame,
     );
     let flipped = game.facing.black_bottom;
     let offset = game.viewport.offset;
-    let moving = game.transition.is_some() || game.facing.animating();
+    let moving = game.playback_busy() || game.facing.animating();
     let painter = ui
         .painter()
         .with_clip_rect(viewport.intersect(ui.clip_rect()));
@@ -144,8 +159,7 @@ pub fn ribbon(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt) {
     let last = ((offset + viewport.height()) / height).ceil() as usize;
     let mut rows = Vec::new();
     let mut hovered = None;
-    for index in first..last.min(times.len()) {
-        let t = times[index];
+    for (index, &t) in times.iter().enumerate().take(last).skip(first) {
         let board = board_at(index);
         let response = ui.interact(
             board.intersect(viewport),
@@ -253,7 +267,7 @@ pub fn ribbon(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt) {
     {
         game.navigate_active(true);
     }
-    if game.transition.is_some()
+    if game.playback_busy()
         || game.facing.animating()
         || game.viewport.scroll.is_some()
         || game.jump_to.is_some()
@@ -359,6 +373,21 @@ fn paint_transition(
                 0.0,
                 (if (x + y) % 2 == 0 { DARK } else { LIGHT }).gamma_multiply(opacity),
             );
+            let activity = |pieces: &[temporal_chess_engine::model::PieceView], horizon| {
+                pieces
+                    .iter()
+                    .any(|p| p.sq == Sq(x, y) && ordinary_activity(*p, horizon))
+                    as u8 as f32
+            };
+            let strength = activity(&motion.source, motion.source_horizon) * (1.0 - progress)
+                + activity(&motion.target, motion.target_horizon) * progress;
+            if strength > 0.0 {
+                painter.rect_filled(
+                    rect,
+                    0.0,
+                    crate::theme::ORDINARY.gamma_multiply(opacity * strength * 0.55),
+                );
+            }
         }
     }
     // Match the static renderer's placement of overlapping incarnations at
@@ -396,6 +425,7 @@ fn paint_transition(
             + Vec2::new(shift, -shift);
         (center, cell * if count > 1 { 0.82 } else { 0.98 })
     };
+    let mut reaction_badges = Vec::new();
     {
         // Moving pieces draw last, above stationary pieces and fading victims.
         for moving in [false, true] {
@@ -425,6 +455,8 @@ fn paint_transition(
                     Vec2::splat(from_size + (to_size - from_size) * progress),
                 );
                 let alpha = opacity * visibility;
+                reaction_badges.push((track.from, rect, alpha * (1.0 - progress)));
+                reaction_badges.push((track.to, rect, alpha * progress));
                 let style = |piece: temporal_chess_engine::model::PieceView| {
                     piece_style(game, piece, &game.checks, None)
                 };
@@ -458,6 +490,9 @@ fn paint_transition(
                 }
             }
         }
+    }
+    for (piece, rect, alpha) in reaction_badges {
+        paint_reactions(painter, game, piece, rect, alpha, false);
     }
     for index in 0..8 {
         let file_color = if index % 2 == 0 { LIGHT } else { DARK };
@@ -571,6 +606,17 @@ fn paint_board(
             painter.rect_filled(rect, 0.0, base.gamma_multiply(alpha));
             let hovering = hovered == Some((t, sq));
             let occupants: Vec<_> = pieces.iter().filter(|p| p.sq == sq).collect();
+            if occupants
+                .iter()
+                .any(|piece| ordinary_activity(**piece, game.engine.history().horizon()))
+            {
+                painter.rect_filled(
+                    rect,
+                    0.0,
+                    crate::theme::ORDINARY
+                        .gamma_multiply(alpha * if hovering { 0.90 } else { 0.75 }),
+                );
+            }
             let mut marker = None;
             let fatal = game.selected.as_ref().is_some_and(|selection| {
                 selection.piece.t == t
@@ -734,6 +780,14 @@ fn paint_board(
     }
     // Badges are drawn after all pieces so neighboring artwork cannot cover them.
     for (piece, rect) in artwork {
+        paint_reactions(
+            painter,
+            game,
+            piece,
+            rect,
+            alpha,
+            hovered == Some((piece.t, piece.sq)),
+        );
         if let Some(selection) = &game.selected {
             let (fatal, emphasized) =
                 target_marker(selection, &selection.fatal_captures, piece, hovered);
@@ -810,6 +864,60 @@ fn target_marker(
     (marked, emphasized)
 }
 
+fn ordinary_activity(piece: temporal_chess_engine::model::PieceView, horizon: usize) -> bool {
+    piece.can_move() && piece.t != horizon && piece.rights.ordinary
+}
+
+fn paint_reactions(
+    painter: &egui::Painter,
+    game: &GameUi,
+    piece: temporal_chess_engine::model::PieceView,
+    piece_rect: Rect,
+    alpha: f32,
+    hovered: bool,
+) {
+    if alpha <= 0.0 || !piece.can_move() || piece.t == game.engine.history().horizon() {
+        return;
+    }
+    let icons = [
+        (
+            piece.rights.new_information,
+            Icon::Information,
+            crate::theme::INFORMATION,
+        ),
+        (
+            piece.rights.cancelled_move,
+            Icon::CancelledMove,
+            crate::theme::REACTION,
+        ),
+    ];
+    let count = icons.iter().filter(|(visible, _, _)| *visible).count();
+    let size = (piece_rect.width() * if hovered { 0.33 } else { 0.29 }).clamp(12.0, 25.0);
+    let mut index = 0;
+    for (visible, icon, color) in icons {
+        if !visible {
+            continue;
+        }
+        let center = Pos2::new(
+            piece_rect.center().x + (index as f32 - (count as f32 - 1.0) * 0.5) * (size + 3.0),
+            piece_rect.top() + size * 0.12,
+        );
+        let rect = Rect::from_center_size(center, Vec2::splat(size));
+        painter.rect_filled(
+            rect.expand(2.0),
+            size * 0.3,
+            BACKGROUND.gamma_multiply(alpha * 0.95),
+        );
+        crate::icons::paint(
+            painter,
+            icon,
+            rect.shrink(1.0),
+            Stroke::new(2.0, color.gamma_multiply(alpha)),
+        );
+        index += 1;
+    }
+}
+
 fn paint_skull(painter: &egui::Painter, piece_rect: Rect, alpha: f32, hovered: bool) {
     let size = (piece_rect.width() * if hovered { 0.36 } else { 0.31 }).clamp(13.0, 28.0);
     let rect = Rect::from_min_size(
@@ -844,14 +952,6 @@ fn piece_style(
         Outline::Check
     } else if checked.inverted.contains(&identity(piece)) {
         Outline::InvertedCheck
-    } else if !piece.can_move() || piece.t == game.engine.history().horizon() {
-        Outline::None
-    } else if piece.rights.cancelled_move {
-        Outline::Cancelled
-    } else if piece.rights.new_information {
-        Outline::Information
-    } else if piece.rights.ordinary {
-        Outline::Ordinary
     } else {
         Outline::None
     };

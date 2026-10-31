@@ -77,6 +77,9 @@ pub struct PieceMotion {
 pub struct BoardTransition {
     pub from_t: usize,
     pub to_t: usize,
+    // Activity markers must use each snapshot's own latest board.
+    pub source_horizon: usize,
+    pub target_horizon: usize,
     pub tracks: Vec<PieceMotion>,
     pub source: Vec<PieceView>,
     pub target: Vec<PieceView>,
@@ -86,8 +89,23 @@ pub struct BoardTransition {
 
 impl BoardTransition {
     pub fn new(before: &Engine, after: &Engine, played: Move) -> Option<Self> {
-        let from_t = played.t;
-        let to_t = played.direction.step(from_t)?;
+        Self::between(
+            before,
+            after,
+            played.t,
+            played.direction.step(played.t)?,
+            Some(played),
+        )
+    }
+
+    pub fn between(
+        before: &Engine,
+        after: &Engine,
+        from_t: usize,
+        to_t: usize,
+        played: Option<Move>,
+    ) -> Option<Self> {
+        before.preboard(from_t)?;
         after.preboard(to_t)?;
         let source = pieces(before, from_t);
         let target = pieces(after, to_t);
@@ -125,7 +143,7 @@ impl BoardTransition {
                         continue;
                     }
                     let command = recorded_edge(engine, a, b);
-                    let rank = if command == Some(played) {
+                    let rank = if played.is_some() && command == played {
                         0
                     } else if command.is_some() {
                         1
@@ -194,6 +212,8 @@ impl BoardTransition {
         Some(Self {
             from_t,
             to_t,
+            source_horizon: before.history().horizon(),
+            target_horizon: after.history().horizon(),
             tracks,
             source,
             target,

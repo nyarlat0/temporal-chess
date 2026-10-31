@@ -204,6 +204,7 @@ pub fn draw(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState, art:
                 {
                     *game = GameUi {
                         cell_size: game.cell_size,
+                        local_auto_flip: game.local_auto_flip,
                         ..GameUi::new(game.new_game_causal_gaps)
                     };
                 }
@@ -238,8 +239,8 @@ pub fn draw(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState, art:
                 ui.add_space(12.0); ui.separator(); ui.add_space(8.0);
                 for (color, text) in [
                     (FUTURE, "Ход в будущее"), (PAST, "Ход в прошлое"),
-                    (ORDINARY, "Обычная активность"), (INFORMATION, "Новая информация"),
-                    (REACTION, "Отменённый ход"), (CAPTURE, "Взятие / видимый шах"),
+                    (ORDINARY, "Зелёная клетка — обычная активность"), (INFORMATION, "Глаз над фигурой — новая информация"),
+                    (REACTION, "Перечёркнутая стрелка — отменённый ход"), (CAPTURE, "Взятие / видимый шах"),
                     (egui::Color32::from_rgb(239,137,185), "Угроза только из будущего"),
                     (FUTURE, "Стрелка: сыгранный ход в будущее"), (PAST, "Стрелка: сыгранный ход в прошлое"),
                 ] { ui.horizontal(|ui| { let (rect, _) = ui.allocate_exact_size(Vec2::splat(10.0), egui::Sense::hover()); ui.painter().circle_filled(rect.center(), 4.0, color); ui.label(text); }); }

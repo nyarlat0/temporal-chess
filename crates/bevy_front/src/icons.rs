@@ -8,8 +8,6 @@ pub enum Icon {
     Undo,
     Copy,
     Import,
-    History,
-    Inspect,
     Help,
     Up,
     Down,
@@ -22,6 +20,8 @@ pub enum Icon {
     Check,
     ResetZoom,
     Skull,
+    Information,
+    CancelledMove,
 }
 
 pub struct IconResponse(Response);
@@ -87,6 +87,25 @@ pub fn paint(painter: &egui::Painter, icon: Icon, rect: Rect, stroke: Stroke) {
         painter.rect_stroke(Rect::from_min_max(a, b), 2.0, stroke, StrokeKind::Inside);
     };
     match icon {
+        Icon::Information => {
+            line(&[
+                (0.05, 0.5),
+                (0.25, 0.28),
+                (0.5, 0.2),
+                (0.75, 0.28),
+                (0.95, 0.5),
+                (0.75, 0.72),
+                (0.5, 0.8),
+                (0.25, 0.72),
+                (0.05, 0.5),
+            ]);
+            painter.circle_stroke(p(0.5, 0.5), rect.width() * 0.16, stroke);
+        }
+        Icon::CancelledMove => {
+            line(&[(0.5, 0.9), (0.5, 0.1)]);
+            line(&[(0.15, 0.45), (0.5, 0.1), (0.85, 0.45)]);
+            line(&[(0.08, 0.85), (0.92, 0.15)]);
+        }
         Icon::Skull => {
             let dark = crate::theme::BACKGROUND;
             painter.circle_filled(p(0.5, 0.37), rect.width() * 0.36, stroke.color);
@@ -144,14 +163,6 @@ pub fn paint(painter: &egui::Painter, icon: Icon, rect: Rect, stroke: Stroke) {
             line(&[(0.5, 0.05), (0.5, 0.65)]);
             line(&[(0.25, 0.4), (0.5, 0.65), (0.75, 0.4)]);
             line(&[(0.1, 0.65), (0.1, 0.95), (0.9, 0.95), (0.9, 0.65)]);
-        }
-        Icon::History => {
-            painter.circle_stroke(p(0.5, 0.5), rect.width() * 0.43, stroke);
-            line(&[(0.5, 0.22), (0.5, 0.5), (0.72, 0.62)]);
-        }
-        Icon::Inspect => {
-            painter.circle_stroke(p(0.4, 0.4), rect.width() * 0.32, stroke);
-            line(&[(0.65, 0.65), (0.95, 0.95)]);
         }
         Icon::Help => {
             painter.circle_stroke(p(0.5, 0.5), rect.width() * 0.46, stroke);

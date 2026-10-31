@@ -75,7 +75,12 @@ pub struct GameUi {
     pub new_game_causal_gaps: bool,
     pub viewport: TimelineViewport,
     pub transition: Option<BoardTransition>,
+    pub transition_queue: std::collections::VecDeque<BoardTransition>,
+    pub remote_focus: Option<u64>,
+    pub returning_camera: bool,
+    pub playback_turn: Option<Color>,
     pub facing: crate::animation::BoardFacing,
+    pub local_auto_flip: bool,
     pub record: GameRecord,
     pub import_open: bool,
     pub import_text: String,
@@ -145,7 +150,12 @@ impl Default for GameUi {
             new_game_causal_gaps: false,
             viewport: TimelineViewport::default(),
             transition: None,
+            transition_queue: Default::default(),
+            remote_focus: None,
+            returning_camera: false,
+            playback_turn: None,
             facing: Default::default(),
+            local_auto_flip: true,
             record: GameRecord::default(),
             import_open: false,
             import_text: String::new(),
@@ -158,6 +168,52 @@ impl Default for GameUi {
 }
 
 impl GameUi {
+    pub fn playback_busy(&self) -> bool {
+        self.transition.is_some()
+            || !self.transition_queue.is_empty()
+            || self.remote_focus.is_some()
+            || self.returning_camera
+    }
+
+    pub fn displayed_turn(&self) -> Color {
+        self.playback_turn.unwrap_or_else(|| self.engine.turn())
+    }
+
+    pub fn finish_travel(&mut self, fallback: usize) {
+        let side = if self.online.enabled {
+            self.online.side.unwrap_or(self.engine.turn())
+        } else {
+            self.engine.turn()
+        };
+        let target = if side == self.engine.turn() {
+            self.active_times().first().copied()
+        } else {
+            self.times().into_iter().find(|&t| {
+                self.engine.board(t).is_some()
+                    && self
+                        .pieces(t)
+                        .iter()
+                        .any(|piece| piece.color == side && piece.can_move() && piece.is_movable())
+            })
+        };
+        self.jump_to = target
+            .or_else(|| {
+                self.times()
+                    .into_iter()
+                    .find(|&t| Color::from_board(t) == side)
+            })
+            .or(Some(fallback));
+        self.returning_camera = true;
+    }
+
+    pub fn reset_playback(&mut self) {
+        self.transition = None;
+        self.transition_queue.clear();
+        self.remote_focus = None;
+        self.returning_camera = false;
+        self.playback_turn = None;
+    }
+
     pub fn new(causal_gaps: bool) -> Self {
         Self {
             engine: Engine::new(causal_gaps)
@@ -206,7 +262,7 @@ impl GameUi {
     }
 
     pub fn navigate_active(&mut self, next: bool) {
-        if self.transition.is_some() {
+        if self.playback_busy() {
             return;
         }
         let active = self.active_times();
@@ -340,7 +396,7 @@ impl GameUi {
             || !self.overlapping.is_empty()
             || self.import_open
             || self.replay_job.is_some()
-            || self.transition.is_some()
+            || self.playback_busy()
             || self.facing.animating()
         {
             return;
@@ -384,7 +440,8 @@ impl GameUi {
     }
 
     pub fn can_submit(&self) -> bool {
-        !self.facing.animating()
+        !self.playback_busy()
+            && !self.facing.animating()
             && (!self.online.enabled
                 || (self.online.ready
                     && !self.online.waiting
@@ -393,7 +450,7 @@ impl GameUi {
     }
 
     fn submit(&mut self, command: Command) {
-        if !self.can_submit() || self.replay_job.is_some() || self.transition.is_some() {
+        if !self.can_submit() || self.replay_job.is_some() || self.playback_busy() {
             return;
         }
         if self.online.enabled {
@@ -432,12 +489,21 @@ impl GameUi {
             } else {
                 BoardTransition::new(&before, &self.engine, mv)
             };
+            self.playback_turn = Some(before.turn());
+            self.remote_focus = None;
+            self.transition_queue.clear();
+            if let Some(first) = &self.transition
+                && let Some(next_t) = mv.direction.step(first.to_t)
+                && let Some(second) =
+                    BoardTransition::between(&self.engine, &self.engine, first.to_t, next_t, None)
+            {
+                self.transition_queue.push_back(second);
+            }
             self.viewport.scroll = None;
-            self.jump_to = if self.transition.is_none() {
-                self.active_times().first().copied()
-            } else {
-                None
-            };
+            self.jump_to = None;
+            if self.transition.is_none() {
+                self.finish_travel(mv.t);
+            }
         }
         self.after_command(result, command.to_string());
         error.map_or(Ok(()), Err)
@@ -482,7 +548,7 @@ impl GameUi {
     }
 
     pub fn begin_import(&mut self) {
-        if self.online.enabled || self.replay_job.is_some() || self.transition.is_some() {
+        if self.online.enabled || self.replay_job.is_some() || self.playback_busy() {
             return;
         }
         self.import_error = None;
@@ -493,7 +559,7 @@ impl GameUi {
         !self.online.enabled
             && !self.facing.animating()
             && self.replay_job.is_none()
-            && self.transition.is_none()
+            && !self.playback_busy()
             && !self.import_open
             && !self.confirm_restart
             && self
@@ -526,7 +592,7 @@ impl GameUi {
     }
 
     fn begin_replay(&mut self, text: String, kind: ReplayKind) {
-        self.transition = None;
+        self.reset_playback();
         self.viewport.scroll = None;
         let task = AsyncComputeTaskPool::get_or_init(TaskPool::new).spawn(async move {
             // A failed replay must leave the live game intact, including a panic
@@ -599,6 +665,9 @@ impl GameUi {
     }
 
     pub fn status_text(&self) -> String {
+        if self.playback_busy() {
+            return format!("Ход: {}", side_name(self.displayed_turn()));
+        }
         match self.engine.status() {
             GameStatus::Ongoing => format!("Ход: {}", side_name(self.engine.turn())),
             GameStatus::Waiting {

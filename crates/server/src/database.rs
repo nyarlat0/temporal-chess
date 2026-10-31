@@ -263,17 +263,16 @@ impl Repository {
                 }
                 Command::Continue => None,
             };
-            if let Some(source) = source {
-                if source.t > horizon
+            if let Some(source) = source
+                && (source.t > horizon
                     || source.piece.wid >= 32
                     || source.piece.fut_seen > horizon
-                    || source.piece.loop_turn > MAX_COMMANDS
-                {
-                    return Err(client_error(
-                        "invalid_command",
-                        "Нет такого состояния фигуры.",
-                    ));
-                }
+                    || source.piece.loop_turn > MAX_COMMANDS)
+            {
+                return Err(client_error(
+                    "invalid_command",
+                    "Нет такого состояния фигуры.",
+                ));
             }
             record
                 .apply(&mut engine, command)

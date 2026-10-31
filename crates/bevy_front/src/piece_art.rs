@@ -1,4 +1,4 @@
-use crate::theme::{CAPTURE, INFORMATION, ORDINARY, REACTION};
+use crate::theme::CAPTURE;
 use bevy_egui::egui::{self, Color32, Pos2, Rect, TextureHandle, Vec2};
 use std::{collections::HashMap, sync::Mutex};
 use temporal_chess_engine::model::{Color, PieceKind};
@@ -7,9 +7,6 @@ use temporal_chess_engine::model::{Color, PieceKind};
 pub enum Outline {
     #[default]
     None,
-    Ordinary,
-    Information,
-    Cancelled,
     Check,
     InvertedCheck,
     Capture,
@@ -26,9 +23,6 @@ impl Outline {
     fn color(self) -> Color32 {
         match self {
             Self::None => Color32::TRANSPARENT,
-            Self::Ordinary => ORDINARY,
-            Self::Information => INFORMATION,
-            Self::Cancelled => REACTION,
             Self::Check | Self::Capture => CAPTURE,
             Self::InvertedCheck => Color32::from_rgb(239, 137, 185),
         }
@@ -218,7 +212,7 @@ fn raster(svg: &[u8], size: usize, side: Color, style: PieceStyle) -> egui::Colo
     // RGB values and compositing order from render_amethyst.py (styled_piece).
     // Both inverted sides use the white source SVG: white areas are the body,
     // dark engravings are the ink, independently of the original piece color.
-    let palette = style.inverted.then(|| match side {
+    let palette = style.inverted.then_some(match side {
         Color::White => (
             [251_u32, 247, 255], // clean near-white body
             [103_u32, 48, 158],  // purple ink
@@ -289,22 +283,21 @@ fn raster(svg: &[u8], size: usize, side: Color, style: PieceStyle) -> egui::Colo
             let mut light_alpha = 0_u32;
             if let (Some((_, _, glow, stroke)), Some((soft, rim, exterior))) =
                 (palette, &inverted_glow)
+                && exterior[i]
             {
-                if exterior[i] {
-                    // Pillow uses 0.55 opacity on the soft glow, 0.83 on
-                    // the thin outside rim. Keep both behind the artwork.
-                    light_alpha = (soft[i] as u32 * 140) / 255;
-                    for channel in 0..3 {
-                        light_rgb[channel] = glow[channel] * light_alpha / 255;
-                    }
-                    let rim_alpha = (rim[i].saturating_sub(alpha[i]) as u32 * 212) / 255;
-                    for channel in 0..3 {
-                        light_rgb[channel] = (stroke[channel] * rim_alpha
-                            + light_rgb[channel] * (255 - rim_alpha))
-                            / 255;
-                    }
-                    light_alpha += rim_alpha * (255 - light_alpha) / 255;
+                // Pillow uses 0.55 opacity on the soft glow, 0.83 on
+                // the thin outside rim. Keep both behind the artwork.
+                light_alpha = (soft[i] as u32 * 140) / 255;
+                for channel in 0..3 {
+                    light_rgb[channel] = glow[channel] * light_alpha / 255;
                 }
+                let rim_alpha = (rim[i].saturating_sub(alpha[i]) as u32 * 212) / 255;
+                for channel in 0..3 {
+                    light_rgb[channel] = (stroke[channel] * rim_alpha
+                        + light_rgb[channel] * (255 - rim_alpha))
+                        / 255;
+                }
+                light_alpha += rim_alpha * (255 - light_alpha) / 255;
             }
             // Move highlights (including red checks and captures) override the halo.
             let outline_alpha = outer.as_ref().map_or(0, |mask| mask[i] as u32);
@@ -646,7 +639,7 @@ mod tests {
                 .all(|(_, p)| p.a() == 0),
             "canvas must not clip the glow"
         );
-        for outline in [Outline::Ordinary, Outline::Information, Outline::Cancelled] {
+        for outline in [Outline::Check, Outline::InvertedCheck] {
             let styled = raster(
                 svg,
                 64,

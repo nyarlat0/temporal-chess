@@ -158,19 +158,18 @@ async fn handle_client_message(
             _ => String::new(),
         });
     let _ordering = state.ordering.lock(&key).await;
-    if let Some(auth) = authenticated.as_ref() {
-        if !state
+    if let Some(auth) = authenticated.as_ref()
+        && !state
             .hub
             .is_current(&auth.game_id, auth.side, connection_id)
             .await
-        {
-            send_error(
-                sender,
-                "connection_replaced",
-                "Подключение заменено другим клиентом.",
-            );
-            return;
-        }
+    {
+        send_error(
+            sender,
+            "connection_replaced",
+            "Подключение заменено другим клиентом.",
+        );
+        return;
     }
     match message {
         ClientMessage::CreateGame {

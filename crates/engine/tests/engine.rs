@@ -1,7 +1,7 @@
-use nolan_chess::board::{Board, PreBoard};
-use nolan_chess::engine::{Engine, EngineErr};
-use nolan_chess::model::{Castling, Move, PieceId, State};
-use nolan_chess::pieces::{Color, PieceKind, PieceView, Sq};
+use temporal_chess_engine::board::{Board, PreBoard};
+use temporal_chess_engine::engine::{Engine, EngineErr};
+use temporal_chess_engine::model::{Castling, Move, PieceId, State};
+use temporal_chess_engine::pieces::{Color, PieceKind, PieceView, Sq};
 
 fn play(engine: &mut Engine, from: Sq, to: Sq) {
     let t = engine.move_sources().map(|piece| piece.t).max().unwrap();
@@ -177,8 +177,8 @@ fn an_occupied_future_square_is_rejected_before_applying_a_move() {
         pid: PieceId::from_piv(engine.get_piv(0, 0).unwrap()),
         t: 0,
         sq: Sq(0, 1),
-        direction: nolan_chess::model::TimeDirection::Future,
-        effect: nolan_chess::model::MoveEffect::Normal,
+        direction: temporal_chess_engine::model::TimeDirection::Future,
+        effect: temporal_chess_engine::model::MoveEffect::Normal,
     };
     assert_eq!(engine.apply_new_mv(mv), Err(EngineErr::WrongMove));
     assert_eq!(engine, snapshot);
@@ -374,8 +374,8 @@ fn temporal_lookup_distinguishes_occurrences_with_the_same_piece_id() {
             pid,
             t,
             sq: Sq(1, 2),
-            direction: nolan_chess::model::TimeDirection::Past,
-            effect: nolan_chess::model::MoveEffect::Normal,
+            direction: temporal_chess_engine::model::TimeDirection::Past,
+            effect: temporal_chess_engine::model::MoveEffect::Normal,
         };
         assert_eq!(engine.get_piv_from_mv(mv).unwrap().age, age);
     }

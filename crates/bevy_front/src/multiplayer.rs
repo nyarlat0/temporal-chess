@@ -125,6 +125,11 @@ impl MultiplayerClient {
         game.pending_move = None;
         game.pending_square = None;
         game.clear_selection();
+        if game.remote_focus.take().is_some() {
+            game.playback_turn = None;
+            game.jump_to = None;
+            game.viewport.scroll = None;
+        }
         if game.online.fatal {
             return;
         }
@@ -138,6 +143,9 @@ impl MultiplayerClient {
         }
     }
     fn resync(&mut self, game: &mut GameUi) {
+        game.reset_playback();
+        game.jump_to = None;
+        game.viewport.scroll = None;
         game.online.synchronizing = true;
         game.online.waiting = true;
         game.online.outgoing = None;
@@ -165,6 +173,9 @@ pub fn poll(
                 client.retry_at = None;
                 client.accepted.clear();
                 game.replay_job = None;
+                game.reset_playback();
+                game.viewport.scroll = None;
+                game.jump_to = None;
                 game.clear_selection();
                 game.pending_move = None;
                 game.pending_square = None;
@@ -231,6 +242,11 @@ pub fn poll(
     // Also wakes reactive Bevy windows while waiting for retries/timeouts.
     ctx.request_repaint_after(Duration::from_millis(100));
     if game.online.fatal {
+        if game.remote_focus.take().is_some() {
+            game.playback_turn = None;
+            game.jump_to = None;
+            game.viewport.scroll = None;
+        }
         client.close();
         client.retry_at = None;
         return;
@@ -279,7 +295,26 @@ pub fn poll(
     if game.online.synchronizing || game.replay_job.is_some() {
         return;
     }
-    if game.transition.is_none() && !game.facing.animating() {
+    if game.transition.is_none()
+        && game.transition_queue.is_empty()
+        && !game.returning_camera
+        && !game.facing.animating()
+    {
+        if let Some((revision, text)) = client.accepted.front()
+            && let Ok(Command::Move { mv, .. }) = text.parse::<Command>()
+            && game.online.side != Some(game.engine.turn())
+        {
+            if game.remote_focus != Some(*revision) {
+                game.remote_focus = Some(*revision);
+                game.playback_turn = Some(game.engine.turn());
+                game.viewport.scroll = None;
+                game.jump_to = Some(mv.t);
+                return;
+            }
+            if game.jump_to.is_some() || game.viewport.scroll.is_some() {
+                return;
+            }
+        }
         if let Some((revision, text)) = client.accepted.pop_front() {
             if revision != game.online.revision + 1 {
                 client.resync(&mut game);
@@ -410,7 +445,7 @@ fn snapshot(
 }
 
 pub fn panel(ui: &mut egui::Ui, game: &mut GameUi) {
-    let idle = game.replay_job.is_none() && game.transition.is_none();
+    let idle = game.replay_job.is_none() && !game.playback_busy();
     ui.add_space(8.0);
     if game.online.enabled {
         ui.strong("Игра по сети");
@@ -431,6 +466,8 @@ pub fn panel(ui: &mut egui::Ui, game: &mut GameUi) {
         if game.online.ready {
             ui.label(if game.online.synchronizing {
                 "Восстановление партии…"
+            } else if game.playback_busy() {
+                "Воспроизведение хода…"
             } else if game.online.waiting {
                 "Ожидание подтверждения…"
             } else if game.online.opponent {

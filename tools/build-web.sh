@@ -32,10 +32,11 @@ trap 'rm -rf -- "$stage"' EXIT
     --enable-sign-ext --enable-nontrapping-float-to-int --enable-bulk-memory \
     -o "$stage/optimized.wasm"
 mv "$stage/optimized.wasm" "$stage/nolan_bg.wasm"
-release_id=$(cat "$stage/nolan.js" "$stage/nolan_bg.wasm" | sha256sum | cut -c 1-16)
+install -m 0644 crates/bevy_front/web/favicon.svg "$stage/favicon.svg"
+release_id=$(cat "$stage/nolan.js" "$stage/nolan_bg.wasm" "$stage/favicon.svg" | sha256sum | cut -c 1-16)
 release_dir="$repo_root/dist/web/releases/$release_id"
 mkdir -p "$release_dir"
-for name in nolan.js nolan_bg.wasm; do
+for name in nolan.js nolan_bg.wasm favicon.svg; do
     gzip -9 -n -c "$stage/$name" > "$stage/$name.gz"
     "$brotli_command" --quality=11 --force --output="$stage/$name.br" "$stage/$name"
     install -m 0644 "$stage/$name" "$stage/$name.gz" "$stage/$name.br" "$release_dir/"

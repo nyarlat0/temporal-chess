@@ -72,7 +72,7 @@ pub fn draw(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState, art:
     if game.replay_job.is_some() {
         ctx.request_repaint_after(std::time::Duration::from_millis(80));
     }
-    if game.transition.is_some()
+    if game.playback_busy()
         || game.viewport.scroll.is_some()
         || game.jump_to.is_some()
         || game.pending_square.is_some()
@@ -83,7 +83,7 @@ pub fn draw(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState, art:
 }
 
 fn sidebar(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, art: &PieceArt) {
-    let idle = game.replay_job.is_none() && game.transition.is_none() && !game.facing.animating();
+    let idle = game.replay_job.is_none() && !game.playback_busy() && !game.facing.animating();
     ui.horizontal(|ui| {
         ui.heading("Temporal Chess");
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -111,7 +111,7 @@ fn sidebar(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, art: &P
                 art.paint(
                     ui.painter(),
                     PieceKind::K { moved: false },
-                    game.engine.turn(),
+                    game.displayed_turn(),
                     rect,
                     1.0,
                 );
@@ -210,6 +210,13 @@ fn sidebar(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, art: &P
         ui.label(format!("{:.0}%", game.cell_size / 64.0 * 100.0));
     });
     ui.colored_label(SUBTLE, egui::RichText::new("Масштаб: ПКМ + колесо").small());
+    if !game.online.enabled {
+        ui.add_enabled(
+            idle,
+            egui::Checkbox::new(&mut game.local_auto_flip, "Переворачивать доски"),
+        )
+        .on_hover_text("Если выключено, доски сохраняют текущую ориентацию.");
+    }
     if let CalculationStatus::Paused { t, .. } = game.engine.calculation_status() {
         ui.horizontal(|ui| {
             if icon_button(
@@ -353,7 +360,7 @@ fn details_panel(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, a
         let inspect = ui
             .selectable_label(game.inspect_mode, "Инспекция")
             .on_hover_text("I · вся информация движка о фигуре");
-        if crate::input::clicked(&inspect) && game.transition.is_none() {
+        if crate::input::clicked(&inspect) && !game.playback_busy() {
             game.clear_selection();
             game.inspect_mode = true;
         }
@@ -367,6 +374,7 @@ fn details_panel(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, a
         ui.add_space(20.0);
         ui.colored_label(SUBTLE, "Здесь появятся ходы партии");
     } else {
+        let playback_busy = game.playback_busy();
         let commands = game.record.commands();
         egui::ScrollArea::both()
             .id_salt("history_scroll")
@@ -460,7 +468,7 @@ fn details_panel(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, a
                         egui::Sense::click(),
                     );
                     if crate::input::clicked(&response.on_hover_text("Перейти к исходной доске"))
-                        && game.transition.is_none()
+                        && !playback_busy
                     {
                         game.jump_to = Some(t);
                     }
