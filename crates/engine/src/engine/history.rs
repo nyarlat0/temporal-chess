@@ -87,6 +87,9 @@ impl Engine {
             self.history.worldlines[bf_piv.origin][bf_piv.age]
                 .rights
                 .cancelled_move = true;
+            self.history.worldlines[bf_piv.origin][bf_piv.age]
+                .rights
+                .new_information = false;
             self.update_bufs()?;
             return Ok(());
         }
@@ -107,6 +110,7 @@ impl Engine {
         {
             let mv_st = wl.get_mut(bf_piv.age).ok_or(EngineErr::WrongPiece)?;
             mv_st.rights.cancelled_move = true;
+            mv_st.rights.new_information = false;
         }
 
         let end = wl.segment_end(bf_piv.age);

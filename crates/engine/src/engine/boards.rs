@@ -71,7 +71,7 @@ impl Engine {
                 .moves
                 .get(&MoveId::from_state(state))
                 .is_some_and(|mv| mv.pid == PieceId::from_state(state, id.wid));
-            if has_own_move {
+            if has_own_move || state.rights.cancelled_move {
                 state.rights.new_information = false;
             } else if !state.rights.ordinary && !info.is_subset(&state.informed) {
                 state.rights.new_information = true;

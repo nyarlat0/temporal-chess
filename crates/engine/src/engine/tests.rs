@@ -118,6 +118,26 @@ fn castling_undo_restores_rook_position_and_rights() {
 }
 
 #[test]
+fn cancelled_move_reaction_suppresses_new_information() {
+    let mut rook = State::new(PieceKind::R { moved: true }, Color::White, Sq(0, 0));
+    rook.rights.ordinary = false;
+    rook.rights.cancelled_move = true;
+    rook.rights.new_information = true;
+    let engine = super::legacy_from_worldlines(
+        vec![
+            vec![rook],
+            vec![State::new(PieceKind::N, Color::Black, Sq(0, 4))],
+        ],
+        Color::White,
+    )
+    .unwrap();
+    let piece = engine.get_piv(0, 0).unwrap();
+    assert!(piece.rights.cancelled_move);
+    assert!(!piece.rights.new_information);
+    assert!(!engine.history.worldlines[0][0].informed.is_empty());
+}
+
+#[test]
 fn new_information_grants_an_optional_reaction_without_granting_an_ordinary_move() {
     let mut rook = State::new(PieceKind::R { moved: true }, Color::White, Sq(0, 0));
     rook.rights.ordinary = false;

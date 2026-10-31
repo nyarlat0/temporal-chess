@@ -29,6 +29,10 @@ fn main() {
             canvas: Some("#game".into()),
             #[cfg(target_arch = "wasm32")]
             fit_canvas_to_parent: true,
+            // Let browser clipboard shortcuts produce copy/cut/paste events.
+            // The page suppresses other canvas shortcuts selectively.
+            #[cfg(target_arch = "wasm32")]
+            prevent_default_event_handling: false,
             #[cfg(not(target_arch = "wasm32"))]
             resize_constraints: WindowResizeConstraints {
                 min_width: 720.0,

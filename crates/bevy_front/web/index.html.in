@@ -23,6 +23,14 @@
     const loading = document.getElementById('loading');
     const status = document.getElementById('status');
     canvas.addEventListener('contextmenu', event => event.preventDefault());
+    canvas.addEventListener('keydown', event => {
+      const clipboard = !event.altKey && (
+        ((event.ctrlKey || event.metaKey) && ['KeyC', 'KeyX', 'KeyV'].includes(event.code)) ||
+        (event.shiftKey && ['Insert', 'Delete'].includes(event.code)) ||
+        (event.ctrlKey && event.code === 'Insert')
+      );
+      if (!clipboard) event.preventDefault();
+    });
     canvas.addEventListener('wheel', event => event.preventDefault(), { passive: false });
     canvas.addEventListener('webglcontextlost', () => {
       loading.hidden = false;
