@@ -25,7 +25,7 @@ pub struct OnlineState {
     pub side: Option<Color>,
     pub revision: u64,
     pub outgoing: Option<Command>,
-    pub status: String,
+    pub status: crate::i18n::Message,
     endpoint: String,
     room_input: String,
     room: Option<String>,
@@ -45,7 +45,7 @@ impl Default for OnlineState {
             side: None,
             revision: 0,
             outgoing: None,
-            status: String::new(),
+            status: Default::default(),
             endpoint: default_endpoint(),
             room_input: invite_room(),
             room: None,
@@ -136,10 +136,16 @@ impl MultiplayerClient {
         if game.online.room.is_some() && self.token.is_some() {
             self.retry_delay = (self.retry_delay.max(1) * 2).min(20);
             self.retry_at = Some(Instant::now() + Duration::from_secs(self.retry_delay));
-            game.online.status = "Связь потеряна. Переподключение…".into();
+            game.online.status = crate::message!(
+                "Связь потеряна. Переподключение…",
+                "Connection lost. Reconnecting…"
+            );
         } else {
             game.online.fatal = true;
-            game.online.status = "Не удалось подключиться. Проверьте адрес сервера.".into();
+            game.online.status = crate::message!(
+                "Не удалось подключиться. Проверьте адрес сервера.",
+                "Connection failed. Check the server address."
+            );
         }
     }
     fn resync(&mut self, game: &mut GameUi) {
@@ -223,14 +229,14 @@ pub fn poll(
                 game.online.synchronizing = true;
                 game.online.fatal = false;
                 game.online.outgoing = None;
-                game.online.status = "Подключение…".into();
+                game.online.status = crate::message!("Подключение…", "Connecting…");
                 game.pending_square = None;
                 game.pending_move = None;
                 game.clear_selection();
                 if let Err(error) = client.connect(&game.online.endpoint, handshake, ctx) {
                     client.disconnected(&mut game);
                     if game.online.fatal {
-                        game.online.status = error;
+                        game.online.status = error.into();
                     }
                 }
             }
@@ -277,8 +283,10 @@ pub fn poll(
                     Err(_) => {
                         game.online.fatal = true;
                         game.online.ready = false;
-                        game.online.status =
-                            "Неподдерживаемый ответ сервера. Обновите клиент.".into();
+                        game.online.status = crate::message!(
+                            "Неподдерживаемый ответ сервера. Обновите клиент.",
+                            "Unsupported server response. Update the client."
+                        );
                     }
                 }
             }
@@ -398,7 +406,7 @@ fn receive(client: &mut MultiplayerClient, game: &mut GameUi, message: ServerMes
             game.online.outgoing = None;
             game.online.waiting = !client.accepted.is_empty();
             client.deadline = None;
-            game.online.status = message;
+            game.online.status = crate::i18n::server_error(&code, &message);
             if !game.online.ready
                 || matches!(
                     code.as_str(),
@@ -430,7 +438,10 @@ fn snapshot(
     {
         game.online.fatal = true;
         game.online.ready = false;
-        game.online.status = "Некорректный журнал сервера.".into();
+        game.online.status = crate::message!(
+            "Некорректный журнал сервера.",
+            "Invalid server game record."
+        );
         return;
     }
     client.deadline = None;
@@ -448,92 +459,121 @@ pub fn panel(ui: &mut egui::Ui, game: &mut GameUi) {
     let idle = game.replay_job.is_none() && !game.playback_busy();
     ui.add_space(8.0);
     if game.online.enabled {
-        ui.strong("Игра по сети");
+        ui.strong(crate::tr!("Игра по сети", "Online game"));
         if let Some(room) = &game.online.room {
             ui.horizontal(|ui| {
                 ui.monospace(room);
-                if ui.small_button("Копировать код").clicked() {
+                if ui
+                    .small_button(crate::tr!("Копировать код", "Copy code"))
+                    .clicked()
+                {
                     ui.ctx().copy_text(room.clone());
                 }
             });
         }
         if let Some(side) = game.online.side {
-            ui.label(format!("Вы играете: {}", side_name(side)));
+            ui.label(crate::tr_format!(
+                "Вы играете: {}",
+                "You are playing: {}",
+                side_name(side)
+            ));
         }
         if !game.online.status.is_empty() {
-            ui.label(&game.online.status);
+            ui.label(game.online.status.text());
         }
         if game.online.ready {
             ui.label(if game.online.synchronizing {
-                "Восстановление партии…"
+                crate::tr!("Восстановление партии…", "Restoring game…")
             } else if game.playback_busy() {
-                "Воспроизведение хода…"
+                crate::tr!("Воспроизведение хода…", "Playing move animation…")
             } else if game.online.waiting {
-                "Ожидание подтверждения…"
+                crate::tr!("Ожидание подтверждения…", "Waiting for confirmation…")
             } else if game.online.opponent {
-                "Соперник подключён"
+                crate::tr!("Соперник подключён", "Opponent connected")
             } else {
-                "Ожидание соперника"
+                crate::tr!("Ожидание соперника", "Waiting for opponent")
             });
         }
         ui.horizontal(|ui| {
-            if game.online.fatal && ui.button("Подключиться снова").clicked() {
+            if game.online.fatal
+                && ui
+                    .button(crate::tr!("Подключиться снова", "Reconnect"))
+                    .clicked()
+            {
                 game.online.action = Some(Action::Retry);
             }
-            if ui.button("Выйти в локальный режим").clicked() {
+            if ui
+                .button(crate::tr!(
+                    "Выйти в локальный режим",
+                    "Return to local play"
+                ))
+                .clicked()
+            {
                 game.online.action = Some(Action::Leave);
             }
         });
-        ui.small("Отмена и импорт доступны в локальном режиме.");
+        ui.small(crate::tr!(
+            "Отмена и импорт доступны в локальном режиме.",
+            "Undo and import are available in local mode."
+        ));
     } else {
-        egui::CollapsingHeader::new("Играть по сети")
+        egui::CollapsingHeader::new(crate::tr!("Играть по сети", "Play online"))
             .default_open(!game.online.room_input.is_empty())
             .show(ui, |ui| {
                 ui.add_enabled_ui(idle, |ui| {
-                    ui.label("Создать новую комнату");
-                    ui.checkbox(&mut game.online.causal_gaps, "С причинными разрывами");
+                    ui.label(crate::tr!("Создать новую комнату", "Create a new room"));
+                    ui.checkbox(
+                        &mut game.online.causal_gaps,
+                        crate::tr!("С причинными разрывами", "Allow causal gaps"),
+                    );
                     ui.horizontal(|ui| {
                         ui.selectable_value(
                             &mut game.online.preference,
                             SidePreference::Random,
-                            "Случайно",
+                            crate::tr!("Случайно", "Random"),
                         );
                         ui.selectable_value(
                             &mut game.online.preference,
                             SidePreference::White,
-                            "Белые",
+                            crate::tr!("Белые", "White"),
                         );
                         ui.selectable_value(
                             &mut game.online.preference,
                             SidePreference::Black,
-                            "Чёрные",
+                            crate::tr!("Чёрные", "Black"),
                         );
                     });
-                    if ui.button("Создать комнату").clicked() {
+                    if ui
+                        .button(crate::tr!("Создать комнату", "Create room"))
+                        .clicked()
+                    {
                         game.online.action = Some(Action::Create);
                     }
                     ui.separator();
                     ui.add(
                         egui::TextEdit::singleline(&mut game.online.room_input)
-                            .hint_text("Код комнаты")
+                            .hint_text(crate::tr!("Код комнаты", "Room code"))
                             .char_limit(12),
                     );
                     if ui
                         .add_enabled(
                             !game.online.room_input.trim().is_empty(),
-                            egui::Button::new("Присоединиться"),
+                            egui::Button::new(crate::tr!("Присоединиться", "Join")),
                         )
                         .clicked()
                     {
                         game.online.action = Some(Action::Join);
                     }
-                    egui::CollapsingHeader::new("Сервер").show(ui, |ui| {
+                    egui::CollapsingHeader::new(crate::tr!("Сервер", "Server")).show(ui, |ui| {
                         ui.add(
                             egui::TextEdit::singleline(&mut game.online.endpoint)
                                 .hint_text("wss://example.com/ws"),
                         );
                     });
-                    ui.small("При подключении текущую позицию заменит сетевая партия.");
+                    ui.small(crate::tr!(
+                        "При подключении текущую позицию заменит сетевая партия.",
+                        "Connecting will replace the current position with the online game."
+                    ));
                 });
             });
     }

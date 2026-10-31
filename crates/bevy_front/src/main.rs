@@ -3,6 +3,7 @@ mod board_view;
 mod controller;
 mod dialogs;
 mod frontend;
+mod i18n;
 mod icons;
 mod input;
 mod multiplayer;
@@ -16,6 +17,7 @@ use bevy::window::WindowResizeConstraints;
 use bevy::{app::AppExit, prelude::*, window::WindowResolution};
 
 fn main() {
+    i18n::initialize();
     #[cfg(not(target_arch = "wasm32"))]
     let smoke = std::env::args().any(|arg| arg == "--smoke-test");
     #[cfg(target_arch = "wasm32")]
@@ -23,7 +25,7 @@ fn main() {
     let mut app = App::new();
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
         primary_window: Some(Window {
-            title: "Temporal Chess · Темпоральные Шахматы".into(),
+            title: crate::tr!("Temporal Chess · Темпоральные Шахматы", "Temporal Chess").into(),
             resolution: WindowResolution::new(1260, 900),
             #[cfg(target_arch = "wasm32")]
             canvas: Some("#game".into()),

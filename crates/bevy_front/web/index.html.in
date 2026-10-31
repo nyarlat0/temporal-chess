@@ -1,10 +1,24 @@
 <!doctype html>
-<html lang="ru">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#16181d">
   <title>Temporal Chess</title>
+  <script>
+    function resolveLanguage(saved, preferred) {
+      if (saved === 'ru' || saved === 'en') return saved;
+      for (const tag of preferred) {
+        const base = String(tag).toLowerCase().split(/[-_]/)[0];
+        if (base === 'ru' || base === 'en') return base;
+      }
+      return 'en';
+    }
+    let savedLanguage = null;
+    try { savedLanguage = localStorage.getItem('temporal-chess.language'); } catch (_) {}
+    document.documentElement.lang = resolveLanguage(savedLanguage, navigator.languages?.length ? navigator.languages : [navigator.language]);
+    function pageText(ru, en) { return document.documentElement.lang === 'ru' ? ru : en; }
+  </script>
   <link rel="icon" type="image/svg+xml" sizes="any" href="./releases/__NOLAN_RELEASE__/favicon.svg">
   <style>
     html, body { width:100%; height:100%; margin:0; overflow:hidden; background:#16181d; color:#e7eaf1; font:16px system-ui,sans-serif; }
@@ -15,9 +29,10 @@
   </style>
 </head>
 <body>
-  <canvas id="game" tabindex="0" aria-label="Темпоральные шахматы"></canvas>
-  <div id="loading"><strong>Temporal Chess</strong><small id="status">Загрузка игры…</small></div>
-  <noscript>Для игры нужен JavaScript и браузер с поддержкой WebGL2.</noscript>
+  <canvas id="game" tabindex="0" aria-label="Temporal Chess"></canvas>
+  <div id="loading"><strong>Temporal Chess</strong><small id="status">Loading game…</small></div>
+  <noscript>JavaScript and WebGL2 are required. Для игры необходимы JavaScript и WebGL2.</noscript>
+  <script>document.getElementById('status').textContent = pageText('Загрузка игры…', 'Loading game…');</script>
   <script type="module">
     const canvas = document.getElementById('game');
     const loading = document.getElementById('loading');
@@ -34,10 +49,10 @@
     canvas.addEventListener('wheel', event => event.preventDefault(), { passive: false });
     canvas.addEventListener('webglcontextlost', () => {
       loading.hidden = false;
-      status.textContent = 'Графический контекст потерян. Перезагрузите страницу; к сетевой партии можно подключиться снова по коду.';
+      status.textContent = pageText('Графический контекст потерян. Перезагрузите страницу; к сетевой партии можно подключиться снова по коду.', 'Graphics context lost. Reload the page; you can rejoin an online game using its code.');
     });
     try {
-      if (!document.createElement('canvas').getContext('webgl2')) throw new Error('Браузер не поддерживает WebGL2.');
+      if (!document.createElement('canvas').getContext('webgl2')) throw new Error(pageText('Браузер не поддерживает WebGL2.', 'Your browser does not support WebGL2.'));
       const { default: init } = await import('./releases/__NOLAN_RELEASE__/nolan.js');
       await init();
     } catch (error) {
@@ -45,7 +60,7 @@
       if (!String(error).includes("Using exceptions for control flow")) {
         console.error(error);
         loading.hidden = false;
-        status.textContent = `Не удалось запустить игру: ${error.message || error}`;
+        status.textContent = pageText('Не удалось запустить игру: ', 'Could not start the game: ') + (error.message || error);
       }
     }
   </script>

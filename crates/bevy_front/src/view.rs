@@ -84,13 +84,31 @@ pub fn draw(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState, art:
 
 fn sidebar(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, art: &PieceArt) {
     let idle = game.replay_job.is_none() && !game.playback_busy() && !game.facing.animating();
+    let mut language = crate::i18n::Language::current();
+    ui.horizontal(|ui| {
+        ui.label(crate::tr!("Язык", "Language"));
+        egui::ComboBox::from_id_salt("interface_language")
+            .selected_text(language.name())
+            .show_ui(ui, |ui| {
+                for choice in [
+                    crate::i18n::Language::Russian,
+                    crate::i18n::Language::English,
+                ] {
+                    ui.selectable_value(&mut language, choice, choice.name());
+                }
+            });
+    });
+    if language != crate::i18n::Language::current() {
+        language.set();
+        ui.ctx().request_repaint();
+    }
     ui.horizontal(|ui| {
         ui.heading("Temporal Chess");
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if icon_button(
                 ui,
                 Icon::Help,
-                "Управление и обозначения",
+                crate::tr!("Управление и обозначения", "Controls and legend"),
                 shell.help_open,
                 true,
             )
@@ -119,22 +137,29 @@ fn sidebar(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, art: &P
                     ui.strong(game.status_text());
                     ui.colored_label(
                         SUBTLE,
-                        format!("Активных досок: {}", game.active_times().len()),
+                        crate::tr_format!(
+                            "Активных досок: {}",
+                            "Active boards: {}",
+                            game.active_times().len()
+                        ),
                     );
                 });
             });
         });
     ui.small(if game.engine.history().causal_gaps() {
-        "Режим: с причинными разрывами"
+        crate::tr!("Режим: с причинными разрывами", "Mode: causal gaps enabled")
     } else {
-        "Режим: без причинных разрывов"
+        crate::tr!(
+            "Режим: без причинных разрывов",
+            "Mode: causal gaps disabled"
+        )
     });
     crate::multiplayer::panel(ui, game);
     ui.horizontal(|ui| {
         if icon_button(
             ui,
             Icon::Undo,
-            "Отменить последний ход · Ctrl+Z",
+            crate::tr!("Отменить последний ход · Ctrl+Z", "Undo last move · Ctrl+Z"),
             false,
             game.can_undo(),
         )
@@ -146,7 +171,7 @@ fn sidebar(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, art: &P
         if icon_button(
             ui,
             if copied { Icon::Check } else { Icon::Copy },
-            "Копировать партию",
+            crate::tr!("Копировать партию", "Copy game"),
             copied,
             true,
         )
@@ -160,7 +185,7 @@ fn sidebar(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, art: &P
         if icon_button(
             ui,
             Icon::Import,
-            "Загрузить партию из записи",
+            crate::tr!("Загрузить партию из записи", "Import game record"),
             false,
             idle && !game.online.enabled,
         )
@@ -173,7 +198,7 @@ fn sidebar(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, art: &P
         if icon_button(
             ui,
             Icon::New,
-            "Новая партия",
+            crate::tr!("Новая партия", "New game"),
             false,
             idle && !game.online.enabled,
         )
@@ -184,45 +209,88 @@ fn sidebar(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, art: &P
     });
     if game.is_error {
         ui.horizontal_wrapped(|ui| {
-            if icon_button(ui, Icon::Close, "Скрыть сообщение", false, true).clicked()
+            if icon_button(
+                ui,
+                Icon::Close,
+                crate::tr!("Скрыть сообщение", "Dismiss message"),
+                false,
+                true,
+            )
+            .clicked()
             {
                 game.is_error = false;
             }
-            ui.colored_label(CAPTURE, &game.notice);
+            ui.colored_label(CAPTURE, game.notice.text());
         });
     }
     ui.separator();
     ui.horizontal(|ui| {
-        ui.strong("Лента времени");
+        ui.strong(crate::tr!("Лента времени", "Timeline"));
         ui.colored_label(SUBTLE, format!("0 — {}", game.engine.history().horizon()));
     });
     ui.horizontal(|ui| {
-        if icon_button(ui, Icon::First, "Последняя доска", false, idle).clicked() {
+        if icon_button(
+            ui,
+            Icon::First,
+            crate::tr!("Последняя доска", "Latest board"),
+            false,
+            idle,
+        )
+        .clicked()
+        {
             game.jump_to = game.times().first().copied();
         }
-        if icon_button(ui, Icon::Last, "Начало истории", false, idle).clicked() {
+        if icon_button(
+            ui,
+            Icon::Last,
+            crate::tr!("Начало истории", "Beginning of history"),
+            false,
+            idle,
+        )
+        .clicked()
+        {
             game.jump_to = Some(0);
         }
-        if icon_button(ui, Icon::ResetZoom, "Сбросить масштаб", false, idle).clicked()
+        if icon_button(
+            ui,
+            Icon::ResetZoom,
+            crate::tr!("Сбросить масштаб", "Reset zoom"),
+            false,
+            idle,
+        )
+        .clicked()
         {
             game.cell_size = 64.0;
         }
         ui.label(format!("{:.0}%", game.cell_size / 64.0 * 100.0));
     });
-    ui.colored_label(SUBTLE, egui::RichText::new("Масштаб: ПКМ + колесо").small());
+    ui.colored_label(
+        SUBTLE,
+        egui::RichText::new(crate::tr!(
+            "Масштаб: ПКМ + колесо",
+            "Zoom: right mouse button + wheel"
+        ))
+        .small(),
+    );
     if !game.online.enabled {
         ui.add_enabled(
             idle,
-            egui::Checkbox::new(&mut game.local_auto_flip, "Переворачивать доски"),
+            egui::Checkbox::new(
+                &mut game.local_auto_flip,
+                crate::tr!("Переворачивать доски", "Flip boards"),
+            ),
         )
-        .on_hover_text("Если выключено, доски сохраняют текущую ориентацию.");
+        .on_hover_text(crate::tr!(
+            "Если выключено, доски сохраняют текущую ориентацию.",
+            "When disabled, boards keep their current orientation."
+        ));
     }
     if let CalculationStatus::Paused { t, .. } = game.engine.calculation_status() {
         ui.horizontal(|ui| {
             if icon_button(
                 ui,
                 Icon::Continue,
-                "Продолжить просчёт · C",
+                crate::tr!("Продолжить просчёт · C", "Continue calculation · C"),
                 false,
                 idle && game.can_submit(),
             )
@@ -230,9 +298,15 @@ fn sidebar(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, art: &P
             {
                 game.continue_calculation();
             }
-            ui.colored_label(REACTION, format!("Конфликт на доске {t}"));
+            ui.colored_label(
+                REACTION,
+                crate::tr_format!("Конфликт на доске {t}", "Conflict on board {t}"),
+            );
         });
-        ui.small("Продолжение просчёта не расходует ход.");
+        ui.small(crate::tr!(
+            "Продолжение просчёта не расходует ход.",
+            "Continuing calculation does not use a turn."
+        ));
     }
     ui.separator();
     if let Some(selection) = &game.selected {
@@ -287,11 +361,12 @@ fn sidebar(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, art: &P
                 ));
                 ui.colored_label(
                     SUBTLE,
-                    format!(
+                    crate::tr_format!(
                         "Доска {}{}",
+                        "Board {}{}",
                         piece.t,
                         if piece.inverted {
-                            " · инверсия"
+                            crate::tr!(" · инверсия", " · inverted")
                         } else {
                             ""
                         }
@@ -307,7 +382,10 @@ fn sidebar(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, art: &P
                 } else {
                     Icon::Past
                 },
-                "Сменить направление · СКМ",
+                crate::tr!(
+                    "Сменить направление · СКМ",
+                    "Change direction · middle mouse button"
+                ),
                 false,
                 idle,
             )
@@ -317,9 +395,18 @@ fn sidebar(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, art: &P
             }
             ui.label(crate::controller::direction_name(direction));
         });
-        ui.label(format!("Клеток для хода: {moves} · взятий: {captures}"));
+        ui.label(crate::tr_format!(
+            "Клеток для хода: {moves} · взятий: {captures}",
+            "Move destinations: {moves} · captures: {captures}"
+        ));
         if skips > 0 {
-            ui.colored_label(SUBTLE, format!("Ожидание доступно на {skips} досках"));
+            ui.colored_label(
+                SUBTLE,
+                crate::tr_format!(
+                    "Ожидание доступно на {skips} досках",
+                    "Waiting available on {skips} boards"
+                ),
+            );
         }
         if fatal > 0 {
             ui.horizontal_wrapped(|ui| {
@@ -332,7 +419,10 @@ fn sidebar(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, art: &P
                 );
                 ui.colored_label(
                     CAPTURE,
-                    format!("Опасных клеток: {fatal} — ваша фигура погибнет"),
+                    crate::tr_format!(
+                        "Опасных клеток: {fatal} — ваша фигура погибнет",
+                        "Deadly destinations: {fatal} — your piece will die"
+                    ),
                 );
             });
         }
@@ -340,9 +430,12 @@ fn sidebar(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, art: &P
         ui.colored_label(
             SUBTLE,
             if game.inspect_mode {
-                "Выберите фигуру для инспекции"
+                crate::tr!("Выберите фигуру для инспекции", "Select a piece to inspect")
             } else {
-                "Выберите свою активную фигуру"
+                crate::tr!(
+                    "Выберите свою активную фигуру",
+                    "Select one of your active pieces"
+                )
             },
         );
     }
@@ -352,14 +445,20 @@ fn sidebar(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, art: &P
 
 fn details_panel(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, art: &PieceArt) {
     ui.horizontal(|ui| {
-        let history = ui.selectable_label(!game.inspect_mode, "Ходы партии");
+        let history = ui.selectable_label(
+            !game.inspect_mode,
+            crate::tr!("Ходы партии", "Move history"),
+        );
         if crate::input::clicked(&history) {
             game.inspect_mode = false;
             shell.history_open = true;
         }
         let inspect = ui
-            .selectable_label(game.inspect_mode, "Инспекция")
-            .on_hover_text("I · вся информация движка о фигуре");
+            .selectable_label(game.inspect_mode, crate::tr!("Инспекция", "Inspect"))
+            .on_hover_text(crate::tr!(
+                "I · вся информация движка о фигуре",
+                "I · all engine data for a piece"
+            ));
         if crate::input::clicked(&inspect) && !game.playback_busy() {
             game.clear_selection();
             game.inspect_mode = true;
@@ -372,7 +471,10 @@ fn details_panel(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, a
             .show(ui, |ui| crate::dialogs::inspector(ui, game));
     } else if game.record.commands().is_empty() {
         ui.add_space(20.0);
-        ui.colored_label(SUBTLE, "Здесь появятся ходы партии");
+        ui.colored_label(
+            SUBTLE,
+            crate::tr!("Здесь появятся ходы партии", "Moves will appear here"),
+        );
     } else {
         let playback_busy = game.playback_busy();
         let commands = game.record.commands();
@@ -405,7 +507,7 @@ fn details_panel(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, a
                             source.t,
                         ),
                         temporal_chess_engine::record::Command::Continue => (
-                            "Продолжение просчёта".into(),
+                            crate::tr!("Продолжение просчёта", "Continue calculation").into(),
                             game.engine.history().horizon(),
                         ),
                     };
@@ -446,9 +548,9 @@ fn details_panel(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, a
                                         egui::Stroke::new(1.5, TEXT),
                                     );
                                     response.on_hover_text(if mv.to_past() {
-                                        "Поворот в прошлое"
+                                        crate::tr!("Поворот в прошлое", "Turn towards the past")
                                     } else {
-                                        "Поворот в будущее"
+                                        crate::tr!("Поворот в будущее", "Turn towards the future")
                                     });
                                 }
                             } else {
@@ -467,8 +569,10 @@ fn details_panel(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, a
                         ui.make_persistent_id(("record_row", index)),
                         egui::Sense::click(),
                     );
-                    if crate::input::clicked(&response.on_hover_text("Перейти к исходной доске"))
-                        && !playback_busy
+                    if crate::input::clicked(&response.on_hover_text(crate::tr!(
+                        "Перейти к исходной доске",
+                        "Go to the source board"
+                    ))) && !playback_busy
                     {
                         game.jump_to = Some(t);
                     }
@@ -479,12 +583,12 @@ fn details_panel(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, a
 
 pub fn piece_name(kind: PieceKind) -> &'static str {
     match kind {
-        PieceKind::K { .. } => "Король",
-        PieceKind::Q => "Ферзь",
-        PieceKind::R { .. } => "Ладья",
-        PieceKind::B => "Слон",
-        PieceKind::N => "Конь",
-        PieceKind::P { .. } => "Пешка",
+        PieceKind::K { .. } => crate::tr!("Король", "King"),
+        PieceKind::Q => crate::tr!("Ферзь", "Queen"),
+        PieceKind::R { .. } => crate::tr!("Ладья", "Rook"),
+        PieceKind::B => crate::tr!("Слон", "Bishop"),
+        PieceKind::N => crate::tr!("Конь", "Knight"),
+        PieceKind::P { .. } => crate::tr!("Пешка", "Pawn"),
     }
 }
 

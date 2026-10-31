@@ -20,15 +20,15 @@ pub fn identity(piece: PieceView) -> PieceAt {
 
 pub fn side_name(side: Color) -> &'static str {
     match side {
-        Color::White => "Белые",
-        Color::Black => "Чёрные",
+        Color::White => crate::tr!("Белые", "White"),
+        Color::Black => crate::tr!("Чёрные", "Black"),
     }
 }
 
 pub fn direction_name(direction: TimeDirection) -> &'static str {
     match direction {
-        TimeDirection::Future => "В будущее",
-        TimeDirection::Past => "В прошлое",
+        TimeDirection::Future => crate::tr!("В будущее", "Into the future"),
+        TimeDirection::Past => crate::tr!("В прошлое", "Into the past"),
     }
 }
 
@@ -67,7 +67,7 @@ pub struct GameUi {
     pub inspected: Option<PieceAt>,
     pub promotion: Vec<Move>,
     pub overlapping: Vec<PieceView>,
-    pub notice: String,
+    pub notice: crate::i18n::Message,
     pub is_error: bool,
     pub cell_size: f32,
     pub jump_to: Option<usize>,
@@ -85,7 +85,7 @@ pub struct GameUi {
     pub record: GameRecord,
     pub import_open: bool,
     pub import_text: String,
-    pub import_error: Option<String>,
+    pub import_error: Option<crate::i18n::Message>,
     pub replay_job: Option<ReplayJob>,
     pub pending_square: Option<(usize, Sq)>,
     pub pending_move: Option<Move>,
@@ -143,7 +143,10 @@ impl Default for GameUi {
             inspected: None,
             promotion: Vec::new(),
             overlapping: Vec::new(),
-            notice: "Выберите фигуру. Здесь играют вдвоём за одним компьютером.".into(),
+            notice: crate::message!(
+                "Выберите фигуру. Здесь играют вдвоём за одним компьютером.",
+                "Select a piece. Two players share this computer."
+            ),
             is_error: false,
             cell_size: 64.0,
             jump_to: Some(0),
@@ -380,11 +383,18 @@ impl GameUi {
                     skips,
                 });
                 self.message(
-                    "ЛКМ — ход или ожидание. СКМ — направление. ПКМ — снять выделение.",
+                    crate::message!("ЛКМ — ход или ожидание. СКМ — направление. ПКМ — снять выделение.", "Left click: move or wait. Middle click: direction. Right click: clear selection."),
                     false,
                 );
             }
-            Err(error) => self.message(format!("Не удалось получить ходы: {error}"), true),
+            Err(error) => self.message(
+                crate::i18n::Message::with_error(
+                    "Не удалось получить ходы: ",
+                    "Could not get moves: ",
+                    error.to_string(),
+                ),
+                true,
+            ),
         }
     }
 
@@ -521,7 +531,14 @@ impl GameUi {
             }
             Err(error) => {
                 self.promotion.clear();
-                self.message(format!("Ход не принят: {error}"), true);
+                self.message(
+                    crate::i18n::Message::with_error(
+                        "Ход не принят: ",
+                        "Move rejected: ",
+                        error.to_string(),
+                    ),
+                    true,
+                );
             }
         }
     }
@@ -597,7 +614,7 @@ impl GameUi {
             // A failed replay must leave the live game intact, including a panic
             // in historical validation. The task owns only the imported text.
             std::panic::catch_unwind(|| GameRecord::load(&text))
-                .map_err(|_| "Не удалось завершить восстановление партии".to_owned())?
+                .map_err(|_| "Could not finish restoring the game".to_owned())?
                 .map_err(|error| error.to_string())
         });
         self.replay_job = Some(ReplayJob { kind, task });
@@ -609,10 +626,21 @@ impl GameUi {
             ReplayKind::Network => {
                 self.online.ready = false;
                 self.online.fatal = true;
-                self.online.status = format!("Не удалось восстановить сетевую партию: {error}");
+                self.online.status = crate::i18n::Message::with_error(
+                    "Не удалось восстановить сетевую партию: ",
+                    "Could not restore the online game: ",
+                    error.to_string(),
+                );
             }
-            ReplayKind::Import => self.import_error = Some(error),
-            ReplayKind::Undo { .. } => self.message(format!("Отмена не выполнена: {error}"), true),
+            ReplayKind::Import => self.import_error = Some(error.into()),
+            ReplayKind::Undo { .. } => self.message(
+                crate::i18n::Message::with_error(
+                    "Отмена не выполнена: ",
+                    "Undo failed: ",
+                    error.to_string(),
+                ),
+                true,
+            ),
         }
     }
 
@@ -646,9 +674,18 @@ impl GameUi {
                 self.inspect_mode = false;
                 self.message(
                     match kind {
-                        ReplayKind::Network => "Сетевая партия синхронизирована.",
-                        ReplayKind::Import => "Партия загружена. Можно продолжать игру.",
-                        ReplayKind::Undo { .. } => "Последний ход отменён. История восстановлена.",
+                        ReplayKind::Network => crate::message!(
+                            "Сетевая партия синхронизирована.",
+                            "Online game synchronized."
+                        ),
+                        ReplayKind::Import => crate::message!(
+                            "Партия загружена. Можно продолжать игру.",
+                            "Game loaded. You can continue playing."
+                        ),
+                        ReplayKind::Undo { .. } => crate::message!(
+                            "Последний ход отменён. История восстановлена.",
+                            "Last move undone. History restored."
+                        ),
                     },
                     false,
                 );
@@ -658,34 +695,44 @@ impl GameUi {
         }
     }
 
-    pub fn message(&mut self, text: impl Into<String>, error: bool) {
+    pub fn message(&mut self, text: impl Into<crate::i18n::Message>, error: bool) {
         self.notice = text.into();
         self.is_error = error;
     }
 
     pub fn status_text(&self) -> String {
         if self.playback_busy() {
-            return format!("Ход: {}", side_name(self.displayed_turn()));
+            return crate::tr_format!("Ход: {}", "To move: {}", side_name(self.displayed_turn()));
         }
         match self.engine.status() {
-            GameStatus::Ongoing => format!("Ход: {}", side_name(self.engine.turn())),
+            GameStatus::Ongoing => {
+                crate::tr_format!("Ход: {}", "To move: {}", side_name(self.engine.turn()))
+            }
             GameStatus::Waiting {
                 reason: WaitingReason::NoActivePieces,
                 ..
-            } => "Ожидание · нет активных фигур".into(),
-            GameStatus::Waiting { player, .. } => format!(
+            } => crate::tr!(
+                "Ожидание · нет активных фигур",
+                "Waiting · no active pieces"
+            )
+            .into(),
+            GameStatus::Waiting { player, .. } => crate::tr_format!(
                 "{} ожидают · ходят {}",
+                "{} waiting · {} to move",
                 side_name(player),
                 side_name(self.engine.turn())
             ),
-            GameStatus::Finished(GameOutcome::Stalemate) => "Ничья — пат".into(),
-            GameStatus::Finished(GameOutcome::Victory { winner, reason }) => format!(
+            GameStatus::Finished(GameOutcome::Stalemate) => {
+                crate::tr!("Ничья — пат", "Draw — stalemate").into()
+            }
+            GameStatus::Finished(GameOutcome::Victory { winner, reason }) => crate::tr_format!(
                 "Победа: {} · {}",
+                "Winner: {} · {}",
                 side_name(winner),
                 match reason {
-                    WinReason::Checkmate => "мат",
-                    WinReason::KingCaptured => "король взят",
-                    WinReason::Paradox => "парадокс",
+                    WinReason::Checkmate => crate::tr!("мат", "checkmate"),
+                    WinReason::KingCaptured => crate::tr!("король взят", "king captured"),
+                    WinReason::Paradox => crate::tr!("парадокс", "paradox"),
                 }
             ),
         }
@@ -833,7 +880,7 @@ mod tests {
         finish_import(&mut game);
         assert_eq!(game.engine, before);
         assert_eq!(game.record, record);
-        assert!(game.import_error.as_ref().unwrap().contains("2"));
+        assert!(game.import_error.as_ref().unwrap().text().contains("2"));
         assert!(game.import_open);
         game.import_text = record.to_text();
         game.begin_import();

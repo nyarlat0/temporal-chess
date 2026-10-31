@@ -248,7 +248,7 @@ pub fn ribbon(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt) {
     if icon_button(
         &mut nav,
         Icon::Up,
-        "Предыдущая активная доска",
+        crate::tr!("Предыдущая активная доска", "Previous active board"),
         false,
         enabled,
     )
@@ -259,7 +259,7 @@ pub fn ribbon(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt) {
     if icon_button(
         &mut nav,
         Icon::Down,
-        "Следующая активная доска",
+        crate::tr!("Следующая активная доска", "Next active board"),
         false,
         enabled,
     )
