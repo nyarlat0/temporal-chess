@@ -51,12 +51,16 @@ impl Engine {
             if Color::from_board(t) != self.turn {
                 continue;
             }
-            // Knowledge belongs to this occurrence's own board. Legal temporal
-            // moves may use adjacent boards, but must never feed future or past
-            // targets back into this state's informed set.
+            // Observe targets on this board. Adjacent boards only supply the
+            // double-step evidence for ordinary or inverted en passant.
+            let adjacent: Vec<_> = [t.checked_sub(1), t.checked_add(1)]
+                .into_iter()
+                .flatten()
+                .filter_map(|time| self.projection.preboards.get(&time))
+                .collect();
             updates.extend(
                 board
-                    .calc_info()
+                    .calc_info_with_en_passant(&adjacent)
                     .into_iter()
                     .filter(|(id, _)| !self.history.worldlines[id.wid].is_borrowed(id.age)),
             );

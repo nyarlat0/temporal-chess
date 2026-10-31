@@ -42,6 +42,68 @@ fn cancelling_an_earlier_move_revalidates_later_moves_and_revives_the_victim() {
 }
 
 #[test]
+fn en_passant_information_reacts_in_both_time_directions() {
+    for inverted_victim in [false, true] {
+        for inverted_observer in [false, true] {
+            let mut observer = State::new(PieceKind::P { moved: true }, Color::White, Sq(4, 4));
+            observer.t = 2;
+            observer.fut_seen = 4;
+            observer.inverted = inverted_observer;
+            observer.loop_turn = usize::from(inverted_observer);
+            observer.rights.ordinary = false;
+            let mut victim = State::new(PieceKind::P { moved: false }, Color::Black, Sq(3, 6));
+            victim.t = if inverted_victim { 3 } else { 1 };
+            victim.fut_seen = 4;
+            victim.inverted = inverted_victim;
+            victim.loop_turn = usize::from(inverted_victim);
+            let mut arrived = victim.prolongate().unwrap();
+            arrived.y = 4;
+            arrived.kind = PieceKind::P { moved: true };
+            let waiting = arrived.prolongate().unwrap();
+            let mut engine = Engine::from_worldlines(
+                vec![vec![observer], vec![victim, arrived, waiting]],
+                Color::White,
+            )
+            .unwrap();
+            let pawn = engine.get_piv(0, 0).unwrap();
+            assert!(pawn.rights.new_information);
+            let victim_id = PieceId::from_piv(engine.get_piv(1, 1).unwrap());
+            assert!(
+                engine.history.worldlines[0][0]
+                    .informed
+                    .contains(&victim_id)
+            );
+            let direction = TimeDirection::from_inverted(inverted_victim);
+            let capture = engine
+                .possible_moves(0, 0)
+                .unwrap()
+                .into_iter()
+                .find(|mv| mv.direction == direction && mv.en_passant() == Some(Sq(3, 4)))
+                .expect("the observed en passant is a playable move");
+            let mut played = engine.clone();
+            played.apply_new_mv(capture).unwrap();
+            assert!(!played.history.worldlines[1].last().unwrap().alive);
+            // A blocked landing square removes the opportunity without creating a reaction.
+            engine.history.worldlines[0][0].rights.new_information = false;
+            let mut blocker = State::new(PieceKind::N, Color::White, Sq(3, 5));
+            blocker.t = 2;
+            blocker.fut_seen = 2;
+            engine.history.worldlines.push(vec![blocker].into());
+            engine.update_bufs().unwrap();
+            engine.build_boards(4).unwrap();
+            engine.update_infos().unwrap();
+            assert!(
+                !engine.history.worldlines[0][0]
+                    .informed
+                    .contains(&victim_id)
+            );
+            assert!(!engine.history.worldlines[0][0].rights.new_information);
+            assert_eq!(capture.sq, Sq(3, 5));
+        }
+    }
+}
+
+#[test]
 fn undoing_en_passant_removes_its_capture_cause() {
     let mut engine = Engine::new(true);
     play(&mut engine, Sq(4, 1), Sq(4, 3));

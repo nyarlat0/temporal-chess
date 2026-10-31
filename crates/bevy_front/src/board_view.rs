@@ -573,26 +573,7 @@ fn paint_board(
         alpha,
     );
     let checked = &game.checks;
-    // Mark the latest retained move originating on this board only. A terminal
-    // paradox is accepted in the journal even though its timeline cannot settle.
-    let previous = game.record.commands().iter().rev().find_map(|command| {
-        if let Command::Move { mv, from } = command
-            && mv.t == t
-            && (game.engine.history().moves().get(&mv.id()) == Some(mv)
-                || (game.record.commands().last() == Some(command)
-                    && matches!(
-                        game.engine.outcome(),
-                        Some(temporal_chess_engine::engine::GameOutcome::Victory {
-                            reason: temporal_chess_engine::engine::WinReason::Paradox,
-                            ..
-                        })
-                    )))
-        {
-            Some((*mv, *from))
-        } else {
-            None
-        }
-    });
+    let previous = last_visible_move(game, t);
     let mut artwork = Vec::new();
     for x in 0..8 {
         for y in 0..8 {
@@ -803,6 +784,32 @@ fn paint_board(
     }
 }
 
+/// Retained commands only have an arrow while their source incarnation is alive.
+fn last_visible_move(game: &GameUi, t: usize) -> Option<(temporal_chess_engine::model::Move, Sq)> {
+    game.record.commands().iter().rev().find_map(|command| {
+        if let Command::Move { mv, from } = command
+            && mv.t == t
+            && game
+                .engine
+                .piece_state(mv.source())
+                .is_some_and(|state| state.alive)
+            && (game.engine.history().moves().get(&mv.id()) == Some(mv)
+                || (game.record.commands().last() == Some(command)
+                    && matches!(
+                        game.engine.outcome(),
+                        Some(temporal_chess_engine::engine::GameOutcome::Victory {
+                            reason: temporal_chess_engine::engine::WinReason::Paradox,
+                            ..
+                        })
+                    )))
+        {
+            Some((*mv, *from))
+        } else {
+            None
+        }
+    })
+}
+
 fn paint_move_arrow(
     painter: &egui::Painter,
     board: Rect,
@@ -964,6 +971,66 @@ fn piece_style(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn inverted_en_passant_hides_a_dead_sources_retained_arrow() {
+        use temporal_chess_engine::{
+            engine::Engine,
+            model::{PieceKind, State, TimeDirection},
+        };
+        let mut white = State::new(PieceKind::P { moved: true }, Color::White, Sq(4, 4));
+        white.t = 2;
+        white.fut_seen = 4;
+        let mut black = State::new(PieceKind::P { moved: false }, Color::Black, Sq(3, 6));
+        black.t = 3;
+        black.fut_seen = 4;
+        black.inverted = true;
+        black.loop_turn = 1;
+        let mut arrived = black.prolongate().unwrap();
+        arrived.y = 4;
+        arrived.kind = PieceKind::P { moved: true };
+        let waiting = arrived.prolongate().unwrap();
+        let mut game = GameUi {
+            engine: Engine::from_worldlines(
+                vec![vec![white], vec![black, arrived, waiting]],
+                Color::Black,
+            )
+            .unwrap(),
+            ..Default::default()
+        };
+        let mv = game
+            .engine
+            .possible_moves(1, 2)
+            .unwrap()
+            .into_iter()
+            .find(|mv| mv.direction == TimeDirection::Future && mv.sq == Sq(3, 3))
+            .unwrap();
+        game.record
+            .apply(&mut game.engine, Command::Move { mv, from: Sq(3, 4) })
+            .unwrap();
+        assert_eq!(last_visible_move(&game, 1), Some((mv, Sq(3, 4))));
+        let capture = game
+            .engine
+            .possible_moves(0, 0)
+            .unwrap()
+            .into_iter()
+            .find(|mv| mv.to_past() && mv.en_passant() == Some(Sq(3, 4)))
+            .unwrap();
+        game.record
+            .apply(
+                &mut game.engine,
+                Command::Move {
+                    mv: capture,
+                    from: Sq(4, 4),
+                },
+            )
+            .unwrap();
+        assert!(!game.engine.piece_state(mv.source()).unwrap().alive);
+        assert_eq!(game.engine.history().moves().get(&mv.id()), Some(&mv));
+        assert_eq!(last_visible_move(&game, 1), None);
+        assert_eq!(last_visible_move(&game, 2), Some((capture, Sq(4, 4))));
+        assert_eq!(game.record.commands().len(), 2);
+    }
+
     use super::*;
 
     #[test]
