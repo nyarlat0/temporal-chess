@@ -120,10 +120,18 @@ fn preboards_preserve_all_overlapping_live_pieces_and_reject_uncomputed_sources(
         Color::White,
     )
     .unwrap();
-    engine.history.worldlines[0][2].rights.cancelled_move = true;
+    let mv = engine
+        .possible_moves(0, 2)
+        .unwrap()
+        .into_iter()
+        .find(|mv| !mv.to_past() && mv.sq == Sq(2, 2))
+        .unwrap();
+    engine.apply_move_inner(mv).unwrap();
     for state in &mut engine.history.worldlines[1][3..] {
         state.x = 1;
     }
+    engine.update_bufs().unwrap();
+    engine.undo_mv(mv.id()).unwrap();
     engine = engine.with_interactive_calculation().unwrap();
     assert_eq!(engine.preboard(3).unwrap().space[1][0].len(), 2);
     assert!(engine.preboard(3).unwrap().space[1][0].iter().all(|p| {

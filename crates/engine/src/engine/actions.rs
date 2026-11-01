@@ -2,6 +2,46 @@ use super::{Castling, Engine, EngineErr, Move};
 use crate::pieces::{Color, PieceView};
 
 impl Engine {
+    /// Reactions are optional, but ordinary reserves cannot be passed over.
+    pub fn can_decline_reactions(&self) -> bool {
+        self.outcome().is_none()
+            && self.move_sources().any(|p| p.rights.is_reaction())
+            && !self
+                .history
+                .worldlines
+                .iter()
+                .flat_map(|line| line.iter())
+                .any(|s| {
+                    s.alive
+                        && s.color == self.turn
+                        && Color::from_board(s.t) == self.turn
+                        && s.rights.ordinary
+                })
+    }
+
+    /// Accept the current continuations, retire all own reactions and hand over.
+    /// This is a journaled turn action; it never creates a spatial move or board.
+    pub fn decline_reactions(&mut self) -> Result<(), EngineErr> {
+        self.transaction(|candidate| {
+            if !candidate.can_decline_reactions() {
+                return Err(EngineErr::WrongMove);
+            }
+            candidate.update_infos()?;
+            for state in candidate
+                .history
+                .worldlines
+                .iter_mut()
+                .flat_map(|line| line.iter_mut())
+            {
+                if state.color == candidate.turn {
+                    state.expire_reactions();
+                }
+            }
+            candidate.turn = candidate.turn.opposite();
+            candidate.reconcile()
+        })
+    }
+
     /// Commit the move, temporal edits, reconciliation and turn change atomically.
     pub fn apply_new_mv(&mut self, mv: Move) -> Result<(), EngineErr> {
         self.transaction(|candidate| {

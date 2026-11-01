@@ -285,6 +285,20 @@ fn sidebar(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, art: &P
             "When disabled, boards keep their current orientation."
         ));
     }
+    if game.engine.can_decline_reactions()
+        && ui
+            .add_enabled(
+                idle && game.can_submit(),
+                egui::Button::new(crate::tr!("Не реагировать", "Decline reactions")),
+            )
+            .on_hover_text(crate::tr!(
+                "Деактивировать все свои реакции и передать ход сопернику.",
+                "Deactivate all your reactions and hand the turn to your opponent."
+            ))
+            .clicked()
+    {
+        game.decline_reactions();
+    }
     if let CalculationStatus::Paused { t, .. } = game.engine.calculation_status() {
         ui.horizontal(|ui| {
             if icon_button(
@@ -508,6 +522,10 @@ fn details_panel(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, a
                         ),
                         temporal_chess_engine::record::Command::Continue => (
                             crate::tr!("Продолжение просчёта", "Continue calculation").into(),
+                            game.engine.history().horizon(),
+                        ),
+                        temporal_chess_engine::record::Command::DeclineReactions => (
+                            crate::tr!("Не реагировать", "Decline reactions").into(),
                             game.engine.history().horizon(),
                         ),
                     };

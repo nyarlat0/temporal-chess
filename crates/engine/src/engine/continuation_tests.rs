@@ -223,17 +223,24 @@ fn dependent_move_is_not_cancelled_before_confirmation() {
 
 #[test]
 fn cancellation_pauses_before_opponent_information_is_activated() {
-    let mut white = state(Color::White, Sq(3, 3), 2, false);
-    white.rights.ordinary = false;
-    white.rights.cancelled_move = true;
+    let white = state(Color::White, Sq(3, 3), 2, false);
     let future = white.prolongate().unwrap();
     let mut black = state(Color::Black, Sq(3, 7), 3, false);
     black.kind = PieceKind::R { moved: true };
     black.rights.ordinary = false;
-    let mut engine = Engine::from_worldlines(vec![vec![white, future], vec![black]], Color::White)
+    let mut engine =
+        Engine::from_worldlines(vec![vec![white, future], vec![black]], Color::White).unwrap();
+    let mv = engine
+        .possible_moves(0, 0)
         .unwrap()
-        .with_interactive_calculation()
+        .into_iter()
+        .find(|m| !m.to_past() && m.sq == Sq(5, 4))
         .unwrap();
+    engine.apply_move_inner(mv).unwrap();
+    engine.reconcile().unwrap();
+    engine.history.calculation.interactive = true;
+    engine.undo_mv(mv.id()).unwrap();
+    engine.reconcile().unwrap();
     assert_eq!(
         engine.calculation_status(),
         CalculationStatus::Paused {
@@ -246,4 +253,206 @@ fn cancellation_pauses_before_opponent_information_is_activated() {
     engine.continue_calculation().unwrap();
     assert_eq!(engine.calculation_status(), CalculationStatus::Complete);
     assert_eq!(engine.turn(), Color::White);
+}
+
+fn harmless_cancellation() -> Engine {
+    let start = state(Color::White, Sq(1, 0), 0, false);
+    let mut line = vec![start];
+    for _ in 0..4 {
+        line.push(line.last().unwrap().prolongate().unwrap());
+    }
+    let mut engine = Engine::from_worldlines(vec![line], Color::White).unwrap();
+    let mv = engine
+        .possible_moves(0, 0)
+        .unwrap()
+        .into_iter()
+        .find(|m| !m.to_past() && m.sq == Sq(2, 2))
+        .unwrap();
+    engine.apply_move_inner(mv).unwrap();
+    engine.reconcile().unwrap();
+    engine.history.calculation.interactive = true;
+    engine.undo_mv(mv.id()).unwrap();
+    engine
+}
+
+#[test]
+fn unrelated_information_and_conflicts_do_not_pause_a_cancelled_piece() {
+    let mut engine = harmless_cancellation();
+    let mut observer = state(Color::Black, Sq(7, 7), 3, false);
+    observer.kind = PieceKind::R { moved: true };
+    observer.rights.ordinary = false;
+    let target = state(Color::White, Sq(7, 3), 3, false);
+    engine
+        .history
+        .worldlines
+        .extend([vec![observer].into(), vec![target].into()]);
+    engine.update_bufs().unwrap();
+    assert_eq!(
+        engine.calculation_barrier(),
+        None,
+        "independent new information"
+    );
+    let collision = state(Color::White, Sq(7, 3), 3, false);
+    engine.history.worldlines.push(vec![collision].into());
+    engine.update_bufs().unwrap();
+    assert_eq!(engine.calculation_barrier(), None, "independent conflict");
+    // Moving that conflict onto a state introduced by the cancellation makes it causal.
+    for wid in [2, 3] {
+        engine.history.worldlines[wid][0].x = 1;
+        engine.history.worldlines[wid][0].y = 0;
+    }
+    engine.update_bufs().unwrap();
+    assert_eq!(engine.calculation_barrier(), Some(0));
+}
+
+#[test]
+fn unrelated_invalid_move_does_not_pause_a_cancelled_piece() {
+    let mut engine = harmless_cancellation();
+    let source = state(Color::White, Sq(4, 3), 2, false);
+    engine
+        .history
+        .worldlines
+        .push(vec![source.clone(), source.prolongate().unwrap()].into());
+    engine.update_bufs().unwrap();
+    engine.reconcile().unwrap();
+    let mv = engine
+        .possible_moves(1, 0)
+        .unwrap()
+        .into_iter()
+        .find(|m| !m.to_past() && m.sq == Sq(6, 4))
+        .unwrap();
+    engine.apply_move_inner(mv).unwrap();
+    // Reactivate the original cancellation: playing a later move had expired it.
+    engine.history.worldlines[0][0].rights.cancelled_move = true;
+    engine.history.worldlines[1][0].y = 2;
+    engine.update_bufs().unwrap();
+    assert_eq!(engine.calculation_barrier(), None);
+    engine.reconcile().unwrap();
+    assert!(!engine.history.moves.contains_key(&mv.id()));
+    assert_eq!(engine.calculation_barrier(), None);
+}
+
+#[test]
+fn decline_reactions_requires_only_reactions_and_preserves_states() {
+    use crate::record::{Command, GameRecord};
+    for color in [Color::White, Color::Black] {
+        let t = color.first_board();
+        let mut cancelled = state(color, Sq(1, 0), t, false);
+        cancelled.rights.ordinary = false;
+        cancelled.rights.cancelled_move = true;
+        let mut informed = state(color, Sq(2, 0), t, false);
+        informed.rights.ordinary = false;
+        informed.rights.new_information = true;
+        let opponent = state(
+            color.opposite(),
+            Sq(7, 7),
+            color.opposite().first_board(),
+            false,
+        );
+        let mut engine =
+            Engine::from_worldlines(vec![vec![cancelled], vec![informed], vec![opponent]], color)
+                .unwrap();
+        let initial = engine.clone();
+        assert!(engine.can_decline_reactions());
+        let mut record = GameRecord::default();
+        record
+            .apply(&mut engine, Command::DeclineReactions)
+            .unwrap();
+        assert_eq!(engine.turn(), color.opposite());
+        assert_eq!(engine.history.moves, initial.history.moves);
+        assert_eq!(engine.history.horizon, initial.history.horizon);
+        for wid in [0, 1] {
+            assert!(!engine.history.worldlines[wid][0].rights.is_movable());
+            assert!(engine.history.worldlines[wid][0].alive);
+        }
+        assert_eq!(engine.history.worldlines[2], initial.history.worldlines[2]);
+        assert_eq!(record.commands(), &[Command::DeclineReactions]);
+        let mut replayed = initial.clone();
+        for command in record.commands() {
+            GameRecord::default()
+                .apply(&mut replayed, command.to_string().parse().unwrap())
+                .unwrap();
+        }
+        assert_eq!(replayed, engine);
+        for ordinary in [false, true] {
+            let mut rejected = initial.clone();
+            for line in &mut rejected.history.worldlines {
+                if line[0].color == color {
+                    line[0].rights.expire_reactions();
+                    line[0].rights.ordinary = ordinary;
+                }
+            }
+            if ordinary {
+                rejected.history.worldlines[0][0].rights.cancelled_move = true;
+            }
+            rejected.reconcile().unwrap();
+            let before = rejected.clone();
+            assert!(!rejected.can_decline_reactions());
+            assert_eq!(rejected.decline_reactions(), Err(EngineErr::WrongMove));
+            assert_eq!(rejected, before);
+        }
+    }
+}
+
+#[test]
+fn barrier_belongs_to_the_causal_cancellation_not_an_earlier_harmless_one() {
+    let mut engine = harmless_cancellation();
+    let source = state(Color::White, Sq(3, 3), 2, false);
+    let mut observer = state(Color::Black, Sq(3, 7), 3, false);
+    observer.kind = PieceKind::R { moved: true };
+    observer.rights.ordinary = false;
+    engine.history.worldlines.extend([
+        vec![source.clone(), source.prolongate().unwrap()].into(),
+        vec![observer].into(),
+    ]);
+    engine.update_bufs().unwrap();
+    engine.reconcile().unwrap();
+    let mv = engine
+        .possible_moves(1, 0)
+        .unwrap()
+        .into_iter()
+        .find(|m| !m.to_past() && m.sq == Sq(5, 4))
+        .unwrap();
+    engine.apply_move_inner(mv).unwrap();
+    engine.history.worldlines[0][0].rights.cancelled_move = true;
+    engine.undo_mv(mv.id()).unwrap();
+    assert_eq!(engine.calculation_barrier(), Some(2));
+}
+
+#[test]
+fn decline_reactions_accepts_a_paused_continuation_and_does_not_reactivate_it() {
+    let source = state(Color::White, Sq(3, 3), 2, false);
+    let mut observer = state(Color::Black, Sq(3, 7), 3, false);
+    observer.kind = PieceKind::R { moved: true };
+    observer.rights.ordinary = false;
+    let mut engine = Engine::from_worldlines(
+        vec![
+            vec![source.clone(), source.prolongate().unwrap()],
+            vec![observer],
+        ],
+        Color::White,
+    )
+    .unwrap();
+    let mv = engine
+        .possible_moves(0, 0)
+        .unwrap()
+        .into_iter()
+        .find(|m| !m.to_past() && m.sq == Sq(5, 4))
+        .unwrap();
+    engine.apply_move_inner(mv).unwrap();
+    engine.reconcile().unwrap();
+    engine.history.calculation.interactive = true;
+    engine.undo_mv(mv.id()).unwrap();
+    engine.reconcile().unwrap();
+    assert_eq!(engine.calculation_barrier(), Some(2));
+    assert!(engine.can_decline_reactions());
+    engine.decline_reactions().unwrap();
+    assert_eq!(engine.turn(), Color::Black);
+    assert_eq!(engine.calculation_status(), CalculationStatus::Complete);
+    assert!(engine.board(3).is_some());
+    assert!(engine.history.worldlines[1][0].rights.new_information);
+    assert!(!engine.history.worldlines[0][0].rights.is_movable());
+    engine.turn = Color::White;
+    engine.reconcile().unwrap();
+    assert!(!engine.history.worldlines[0][0].rights.is_movable());
 }

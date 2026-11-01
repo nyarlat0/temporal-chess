@@ -547,6 +547,10 @@ impl GameUi {
         self.submit(Command::Continue);
     }
 
+    pub fn decline_reactions(&mut self) {
+        self.submit(Command::DeclineReactions);
+    }
+
     pub fn begin_network_replay(&mut self, history: &[String]) {
         self.clear_selection();
         self.pending_square = None;

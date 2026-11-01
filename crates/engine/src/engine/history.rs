@@ -48,6 +48,33 @@ impl Engine {
     /// undoes position change of the piece
     /// and grants a reaction at its source. Rebuilds lookup indexes afterwards.
     pub(super) fn undo_mv(&mut self, mv_id: MoveId) -> Result<(), EngineErr> {
+        let before = self.history.worldlines.clone();
+        let source = self
+            .history
+            .moves
+            .get(&mv_id)
+            .ok_or(EngineErr::WrongMove)?
+            .source();
+        self.undo_mv_inner(mv_id)?;
+        let lines = before
+            .into_iter()
+            .zip(&self.history.worldlines)
+            .enumerate()
+            .filter(|(_, (before, after))| before != *after)
+            .map(|(wid, (before, after))| (wid, before, after.clone()))
+            .collect();
+        self.history
+            .calculation
+            .cancellations
+            .retain(|c| c.source != source);
+        self.history
+            .calculation
+            .cancellations
+            .push(super::types::Cancellation { source, lines });
+        Ok(())
+    }
+
+    fn undo_mv_inner(&mut self, mv_id: MoveId) -> Result<(), EngineErr> {
         // Remove old move
         let mv = self
             .history

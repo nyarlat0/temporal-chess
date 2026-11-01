@@ -261,7 +261,7 @@ impl Repository {
                     }
                     Some(source)
                 }
-                Command::Continue => None,
+                Command::Continue | Command::DeclineReactions => None,
             };
             if let Some(source) = source
                 && (source.t > horizon

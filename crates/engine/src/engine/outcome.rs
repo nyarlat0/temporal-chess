@@ -97,8 +97,11 @@ impl Engine {
     /// Successful reconciliation counts even if it cancels the initiating move.
     fn can_act(&self, side: Color) -> Result<bool, EngineErr> {
         let mut prepared = self.clone();
-        prepared.history.calculation.interactive = false;
         prepared.turn = side;
+        if prepared.can_decline_reactions() {
+            return Ok(true);
+        }
+        prepared.history.calculation.interactive = false;
         prepared.history.status = GameStatus::Ongoing;
         prepared.reconcile()?;
         let sources: Vec<_> = prepared.move_sources().collect();

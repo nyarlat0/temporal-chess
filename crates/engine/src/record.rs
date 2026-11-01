@@ -23,6 +23,7 @@ pub enum Command {
         to_t: usize,
     },
     Continue,
+    DeclineReactions,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -121,9 +122,10 @@ impl GameRecord {
                     inverted: state.inverted,
                 })
             }
-            Command::Continue => None,
+            Command::Continue | Command::DeclineReactions => None,
         };
         match command {
+            Command::DeclineReactions => engine.decline_reactions()?,
             Command::Move { mv, from } => {
                 check_source(engine, mv.source(), from)?;
                 engine.apply_new_mv(mv)?;
@@ -266,6 +268,7 @@ impl fmt::Display for Command {
                 to_t
             ),
             Command::Continue => f.write_str("continue"),
+            Command::DeclineReactions => f.write_str("decline"),
         }
     }
 }
@@ -342,6 +345,7 @@ fn parse(text: &str) -> Result<Command, String> {
             to_t: number(to)?,
         }),
         ["continue"] => Ok(Command::Continue),
+        ["decline"] => Ok(Command::DeclineReactions),
         _ => Err("Неизвестная команда или неверное количество полей".into()),
     }
 }

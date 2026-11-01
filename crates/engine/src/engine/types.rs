@@ -68,6 +68,15 @@ pub(super) struct Calculation {
     pub interactive: bool,
     pub acknowledged: Vec<PieceAt>,
     pub responsible: Option<Color>,
+    pub cancellations: Vec<Cancellation>,
+}
+
+/// Physical worldline edits caused by one cancellation, including a castling rook.
+/// Reaction flags alone are not evidence that a continuation affects history.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Cancellation {
+    pub source: PieceAt,
+    pub lines: Vec<(usize, Worldline, Worldline)>,
 }
 
 /// Authoritative state. Board projections and lookup tables are never stored here.

@@ -42,44 +42,12 @@ impl Engine {
     /// Later collisions will be resolved on the next pass, from fresh boards.
     fn resurrect(&mut self) -> Result<ValidRes, EngineErr> {
         let barrier = self.calculation_barrier();
-        for line in &mut self.history.worldlines {
-            let Some(age) = line.iter().position(|state| !state.alive) else {
+        for wid in 0..self.history.worldlines.len() {
+            let Some(age) = self.revival_age(wid) else {
                 continue;
             };
-            if line.is_borrowed(age) {
-                continue;
-            }
-            let state = &line[age];
-            if barrier.is_some_and(|limit| state.t > limit) {
-                continue;
-            }
-            if !self.projection.boards.contains_key(&state.t) {
-                continue;
-            }
-            let board = self
-                .projection
-                .preboards
-                .get(&state.t)
-                .ok_or(EngineErr::AbsentBoard)?;
-            if !board.space[state.x][state.y].is_empty() {
-                continue;
-            }
-            // En passant leaves the victim's square empty, so retain its recorded cause.
-            let en_passant = self.history.moves.values().any(|mv| {
-                let arrival = mv.direction.step(mv.t);
-                mv.en_passant() == Some(Sq(state.x, state.y))
-                    && arrival == Some(state.t)
-                    && self.projection.pieces.get(&mv.source()).is_some_and(|id| {
-                        // Worldlines are mutably borrowed above; the alive mover's
-                        // source is also available in the preboard projection.
-                        self.projection
-                            .preboards
-                            .get(&mv.t)
-                            .and_then(|pb| pb.find_piv(id.wid, id.age))
-                            .is_some_and(|piece| piece.color != state.color)
-                    })
-            });
-            if en_passant {
+            let line = &mut self.history.worldlines[wid];
+            if barrier.is_some_and(|limit| line[age].t > limit) {
                 continue;
             }
             let end = line.segment_end(age);
@@ -89,6 +57,28 @@ impl Engine {
             return Ok(ValidRes::HistChanged);
         }
         Ok(ValidRes::Unchanged)
+    }
+
+    /// Shared by reconciliation and causal lookahead, including en passant's
+    /// off-square capture cause. An empty cell alone does not imply resurrection.
+    pub(super) fn revival_age(&self, wid: usize) -> Option<usize> {
+        let line = self.history.worldlines.get(wid)?;
+        let age = line.iter().position(|s| !s.alive)?;
+        let state = &line[age];
+        if line.is_borrowed(age)
+            || self.board(state.t).is_none()
+            || !self.preboard(state.t)?.space[state.x][state.y].is_empty()
+        {
+            return None;
+        }
+        let en_passant = self.history.moves.values().any(|mv| {
+            mv.en_passant() == Some(Sq(state.x, state.y))
+                && mv.direction.step(mv.t) == Some(state.t)
+                && self
+                    .piece_state(mv.source())
+                    .is_some_and(|source| source.alive && source.color != state.color)
+        });
+        (!en_passant).then_some(age)
     }
 
     /// Reach a fixed point of collision resolution, move validation and revival.
