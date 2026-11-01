@@ -101,6 +101,17 @@ impl Engine {
             }
             seen.push(self.history.clone());
             self.update_bufs()?;
+            if let Some(limit) = self.calculation_barrier() {
+                // Publish only conflict-free snapshots. Do not let an inverted
+                // continuation resolve collisions or cancel moves at earlier t
+                // before the player has accepted this checkpoint.
+                self.projection.boards = self
+                    .timeline_times()
+                    .filter(|&t| t <= limit)
+                    .filter_map(|t| self.make_board(t).ok().map(|board| (t, board)))
+                    .collect();
+                return Ok(());
+            }
             if self.reconcile_boards()? == ValidRes::HistChanged {
                 continue;
             }

@@ -44,3 +44,6 @@ fn legacy_from_worldlines(
 
 #[cfg(test)]
 mod mode_tests;
+
+#[cfg(test)]
+mod continuation_tests;

@@ -66,6 +66,29 @@ impl Engine {
             let next = state
                 .step(TimeDirection::from_inverted(piece.inverted))
                 .ok_or(EngineErr::WrongMove)?;
+            // Only the exact existing causal successor is our own waiting
+            // continuation. Other incarnations, even of this worldline, block.
+            let successor = (line.gap_after(age).is_none())
+                .then(|| line.get(age + 1))
+                .flatten()
+                .filter(|existing| MoveId::from_state(existing) == MoveId::from_state(&next));
+            if self
+                .history
+                .worldlines
+                .iter()
+                .enumerate()
+                .any(|(other_wid, other)| {
+                    other.iter().enumerate().any(|(other_age, occupant)| {
+                        occupant.alive
+                            && occupant.t == next.t
+                            && occupant.x == next.x
+                            && occupant.y == next.y
+                            && !(other_wid == wid && other_age == age + 1 && successor.is_some())
+                    })
+                })
+            {
+                return Err(EngineErr::WrongMove);
+            }
             if line.gap_after(age).is_none()
                 && let Some(existing) = line.get(age + 1)
             {

@@ -90,6 +90,9 @@ impl Engine {
             self.history.worldlines[bf_piv.origin][bf_piv.age]
                 .rights
                 .new_information = false;
+            if bf_piv.inverted {
+                self.extend_cancelled_return(bf_piv)?;
+            }
             self.update_bufs()?;
             return Ok(());
         }
@@ -126,6 +129,32 @@ impl Engine {
 
         self.update_bufs()?;
 
+        Ok(())
+    }
+
+    /// Automatic restoration is not a player-issued wait. Reconciliation still
+    /// resolves collisions along this path; only its endpoint gets a new turn.
+    fn extend_cancelled_return(&mut self, piece: PieceView) -> Result<(), EngineErr> {
+        let boundary = piece.color.first_board();
+        let mut age = piece.age;
+        loop {
+            let line = &mut self.history.worldlines[piece.origin];
+            let state = &mut line[age];
+            state.rights.ordinary = state.alive && state.t == boundary;
+            if state.t == boundary {
+                break;
+            }
+            let next = state.prolongate().ok_or(EngineErr::WrongMove)?;
+            if line.gap_after(age).is_none()
+                && line
+                    .get(age + 1)
+                    .is_some_and(|existing| existing.inverted && existing.t == next.t)
+            {
+                age += 1;
+            } else {
+                age = self.advance_route(piece.origin, age, next)?.0;
+            }
+        }
         Ok(())
     }
 

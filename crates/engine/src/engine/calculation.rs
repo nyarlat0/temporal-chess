@@ -23,42 +23,69 @@ impl Engine {
         if !self.history.calculation.interactive || self.outcome().is_some() {
             return None;
         }
-        let mut barrier: Option<usize> = None;
-        for (wid, line) in self.history.worldlines.iter().enumerate() {
-            for (age, state) in line.iter().enumerate() {
-                if !state.alive
-                    || state.color != self.turn
-                    || Color::from_board(state.t) != self.turn
-                    || !state.rights.cancelled_move
-                {
-                    continue;
-                }
+        let barrier = self
+            .history
+            .worldlines
+            .iter()
+            .enumerate()
+            .flat_map(|(wid, line)| {
+                line.iter().filter_map(move |state| {
+                    let id = PieceAt {
+                        piece: PieceId::from_state(state, wid),
+                        t: state.t,
+                    };
+                    (state.alive
+                        && state.color == self.turn
+                        && Color::from_board(state.t) == self.turn
+                        && state.rights.cancelled_move
+                        && !self.history.calculation.acknowledged.contains(&id))
+                    .then_some(state.t)
+                })
+            })
+            .min()?;
+        self.has_deferred_consequences().then_some(barrier)
+    }
+
+    /// Look ahead without committing secondary effects. A cancelled checkpoint
+    /// needs consent if resolving it affects moves, lives or reaction rights.
+    fn has_deferred_consequences(&self) -> bool {
+        if self
+            .projection
+            .preboards
+            .values()
+            .any(|board| board.space.iter().flatten().any(|cell| cell.len() > 1))
+        {
+            return true;
+        }
+        let mut probe = self.clone();
+        probe.history.calculation.interactive = false;
+        if probe.reconcile().is_err() || probe.history.moves != self.history.moves {
+            return true;
+        }
+        // Information belongs to each side's boards, even when it is not that
+        // side's turn yet. Detect opponent activation before publishing it.
+        for side in [Color::White, Color::Black] {
+            probe.turn = side;
+            if probe.update_infos().is_err() {
+                return true;
+            }
+        }
+        for (wid, line) in probe.history.worldlines.iter().enumerate() {
+            for state in line.iter() {
                 let id = PieceAt {
                     piece: PieceId::from_state(state, wid),
                     t: state.t,
                 };
-                if self.history.calculation.acknowledged.contains(&id) {
-                    continue;
-                }
-                // A cancelled move is only a checkpoint when its affected
-                // causal continuation overlaps another live occurrence later
-                // in the board ribbon. Do not inspect the borrowed future on
-                // the far side of a causal gap: cancellation cannot change it.
-                let conflicts = line[age + 1..line.segment_end(age)].iter().any(|next| {
-                    next.alive
-                        && next.t > state.t
-                        && self
-                            .projection
-                            .preboards
-                            .get(&next.t)
-                            .is_some_and(|board| board.space[next.x][next.y].len() > 1)
-                });
-                if conflicts {
-                    barrier = Some(barrier.map_or(state.t, |t| t.min(state.t)));
+                if let Some(old) = self.piece_state(id)
+                    && (state.alive != old.alive
+                        || (state.rights.cancelled_move && !old.rights.cancelled_move)
+                        || (state.rights.new_information && !old.rights.new_information))
+                {
+                    return true;
                 }
             }
         }
-        barrier
+        false
     }
 
     /// Accept the current conflicting continuation, stopping at the next one.

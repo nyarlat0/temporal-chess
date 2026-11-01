@@ -1,5 +1,5 @@
 //! Pure collision policy. Tracking a collision and mutating history are separate.
-use crate::pieces::{Color, PieceView};
+use crate::pieces::{Color, PieceKind, PieceView};
 
 use super::{PieceCollision, ShortPieceId};
 
@@ -41,6 +41,12 @@ pub(super) fn collision_effects(collision: PieceCollision) -> Vec<CollisionEffec
         } else {
             vec![kill(collider)]
         }
+    } else if matches!(bf_collider.kind, PieceKind::P { .. })
+        && (bf_collider.sq.0.abs_diff(collider.sq.0) != 1
+            || collider.sq.1 as isize - bf_collider.sq.1 as isize
+                != bf_collider.color.pawn_dir() as isize)
+    {
+        vec![CancelLastMove(collider)]
     } else {
         vec![kill(collided)]
     }

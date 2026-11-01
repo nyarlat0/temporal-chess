@@ -300,7 +300,7 @@ fn sidebar(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, art: &P
             }
             ui.colored_label(
                 REACTION,
-                crate::tr_format!("Конфликт на доске {t}", "Conflict on board {t}"),
+                crate::tr_format!("Отменённый ход на доске {t}", "Cancelled move on board {t}"),
             );
         });
         ui.small(crate::tr!(
