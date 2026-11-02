@@ -767,21 +767,18 @@ fn paint_board(
             let start = square_rect(board, cell, from, game.facing.black_bottom).center();
             let end = square_rect(board, cell, mv.sq, game.facing.black_bottom).center();
             let direction = (end - start).normalized();
-            let across = Vec2::new(-direction.y, direction.x) * cell * 0.25;
+            let across = (direction + Vec2::new(-direction.y, direction.x))
+                * std::f32::consts::FRAC_1_SQRT_2
+                * cell
+                * 0.25;
             let center = start.lerp(end, 0.5);
-            painter.line_segment(
-                [center - across, center + across],
-                Stroke::new(
-                    cell * 0.12,
-                    Color32::from_black_alpha((alpha * 210.0) as u8),
-                ),
-            );
-            painter.line_segment(
-                [center - across, center + across],
-                Stroke::new(
-                    cell * 0.065,
-                    Color32::from_rgb(255, 35, 55).gamma_multiply(alpha),
-                ),
+            paint_round_line(
+                painter,
+                center - across,
+                center + across,
+                cell * 0.058,
+                Color32::from_rgb(255, 35, 55).gamma_multiply(alpha),
+                true,
             );
         }
     }
@@ -848,6 +845,35 @@ fn last_visible_move(game: &GameUi, t: usize) -> Option<(temporal_chess_engine::
         .or_else(|| visible.into_iter().next())
 }
 
+/// A single filled shape avoids darker overlaps at translucent rounded caps.
+fn paint_round_line(
+    painter: &egui::Painter,
+    from: Pos2,
+    to: Pos2,
+    width: f32,
+    color: Color32,
+    round_end: bool,
+) {
+    let direction = (to - from).normalized();
+    let normal = Vec2::new(-direction.y, direction.x);
+    let radius = width * 0.5;
+    let mut points = Vec::with_capacity(18);
+    for (center, offset, steps) in [
+        (
+            to,
+            -std::f32::consts::FRAC_PI_2,
+            if round_end { 8 } else { 1 },
+        ),
+        (from, std::f32::consts::FRAC_PI_2, 8),
+    ] {
+        for i in 0..=steps {
+            let angle = offset + std::f32::consts::PI * i as f32 / steps as f32;
+            points.push(center + (direction * angle.cos() + normal * angle.sin()) * radius);
+        }
+    }
+    painter.add(egui::Shape::convex_polygon(points, color, Stroke::NONE));
+}
+
 fn paint_move_arrow(
     painter: &egui::Painter,
     board: Rect,
@@ -868,9 +894,13 @@ fn paint_move_arrow(
     let normal = Vec2::new(-direction.y, direction.x);
     let tip = end - direction * cell * 0.06;
     let neck = tip - direction * cell * 0.30;
-    painter.line_segment(
-        [start + direction * cell * 0.10, neck],
-        Stroke::new(cell * 0.11, color),
+    paint_round_line(
+        painter,
+        start + direction * cell * 0.10,
+        neck,
+        cell * 0.11,
+        color,
+        false,
     );
     painter.add(egui::Shape::convex_polygon(
         vec![
