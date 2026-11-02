@@ -16,7 +16,7 @@ fn state(color: Color, sq: Sq, t: usize, inverted: bool) -> State {
 }
 
 #[test]
-fn cancelled_return_grants_only_one_boundary_reserve_for_either_color() {
+fn cancelled_return_leaves_an_ordinary_endpoint_for_either_color() {
     for color in [Color::White, Color::Black] {
         for gaps in [false, true] {
             let first = color.first_board();
@@ -32,10 +32,11 @@ fn cancelled_return_grants_only_one_boundary_reserve_for_either_color() {
             engine.apply_move_inner(mv).unwrap();
             engine.undo_mv(mv.id()).unwrap();
             let line = &engine.history.worldlines[0];
-            assert!(line[0].rights.cancelled_move);
+            assert!(!line[0].rights.cancelled_move);
+            assert_eq!(line.len(), 1);
             let active: Vec<_> = line.iter().filter(|s| s.rights.ordinary).collect();
             assert_eq!(active.len(), 1);
-            assert_eq!(active[0].t, first);
+            assert_eq!(active[0].t, first + 4);
             assert!(
                 line.iter()
                     .all(|s| s.alive && s.inverted && s.x == 1 && s.y == 0)
@@ -455,4 +456,92 @@ fn decline_reactions_accepts_a_paused_continuation_and_does_not_reactivate_it() 
     engine.turn = Color::White;
     engine.reconcile().unwrap();
     assert!(!engine.history.worldlines[0][0].rights.is_movable());
+}
+
+#[test]
+fn cancelling_closed_loop_preserves_connected_future_in_both_modes() {
+    for gaps in [false, true] {
+        let mut source = State::new(PieceKind::R { moved: true }, Color::White, Sq(0, 0));
+        source.t = 4;
+        source.fut_seen = 4;
+        source.rights.ordinary = false;
+        let mut states = vec![source];
+        for direction in [
+            TimeDirection::Past,
+            TimeDirection::Past,
+            TimeDirection::Future,
+            TimeDirection::Future,
+            TimeDirection::Future,
+            TimeDirection::Future,
+            TimeDirection::Future,
+        ] {
+            let mut next = states.last().unwrap().step(direction).unwrap();
+            next.x = 1;
+            states.push(next);
+        }
+        states[7].x = 2;
+        let begin = Move {
+            pid: PieceId::from_state(&states[0], 0),
+            t: 4,
+            direction: TimeDirection::Past,
+            sq: Sq(1, 0),
+            effect: MoveEffect::Normal,
+        };
+        let later = Move {
+            pid: PieceId::from_state(&states[6], 0),
+            t: 6,
+            direction: TimeDirection::Future,
+            sq: Sq(2, 0),
+            effect: MoveEffect::Normal,
+        };
+        let mut engine =
+            Engine::from_worldlines(vec![vec![states[0].clone()]], Color::White).unwrap();
+        engine.history.worldlines[0] = states.into();
+        engine.history.horizon = 7;
+        engine.update_bufs().unwrap();
+        engine.history.causal_gaps = gaps;
+        engine.history.moves.insert(begin.id(), begin);
+        engine.history.moves.insert(later.id(), later);
+        engine.undo_mv(begin.id()).unwrap();
+        let line = &engine.history.worldlines[0];
+        assert_eq!(line.iter().map(|s| s.t).collect::<Vec<_>>(), [4, 5, 6, 7]);
+        assert_eq!(line.iter().map(|s| s.x).collect::<Vec<_>>(), [0, 0, 0, 2]);
+        assert!(line.gaps().is_empty());
+        assert!(line[0].rights.cancelled_move);
+        assert!(!line[0].rights.ordinary);
+        assert_eq!(engine.history.moves.get(&later.id()), Some(&later));
+        engine.reconcile().unwrap();
+        assert_eq!(engine.history.moves.get(&later.id()), Some(&later));
+        assert_eq!(
+            Engine::from_history(engine.history.clone(), engine.turn()).unwrap(),
+            engine
+        );
+    }
+}
+
+#[test]
+fn cancelling_open_loop_does_not_create_passive_states() {
+    for color in [Color::White, Color::Black] {
+        for gaps in [false, true] {
+            let source = state(color, Sq(1, 0), color.first_board() + 4, false);
+            let anchor = state(color.opposite(), Sq(7, 7), source.t - 1, false);
+            let mut engine =
+                Engine::from_worldlines(vec![vec![source], vec![anchor]], color).unwrap();
+            engine.history.causal_gaps = gaps;
+            let mv = engine
+                .possible_moves(0, 0)
+                .unwrap()
+                .into_iter()
+                .find(|m| m.to_past() && m.sq == Sq(2, 2))
+                .unwrap();
+            engine.apply_move_inner(mv).unwrap();
+            engine.undo_mv(mv.id()).unwrap();
+            engine.reconcile().unwrap();
+            let line = &engine.history.worldlines[0];
+            assert_eq!(line.len(), 1);
+            assert!(line[0].rights.ordinary);
+            assert!(!line[0].rights.is_reaction());
+            assert!(line.gaps().is_empty());
+        }
+    }
 }

@@ -748,6 +748,7 @@ fn paint_board(
     if let Some((mv, from)) = previous {
         let highlighted =
             hovered.is_some_and(|(time, sq)| time == t && (sq == from || sq == mv.sq));
+        let replacing = replaces_selected_move(game, mv);
         paint_move_arrow(
             painter,
             board,
@@ -755,9 +756,34 @@ fn paint_board(
             from,
             mv.sq,
             game.facing.black_bottom,
-            direction_color(mv.direction)
-                .gamma_multiply(alpha * if highlighted { 0.95 } else { 0.78 }),
+            if replacing {
+                Color32::from_rgb(255, 35, 55).gamma_multiply(alpha)
+            } else {
+                direction_color(mv.direction)
+                    .gamma_multiply(alpha * if highlighted { 0.95 } else { 0.78 })
+            },
         );
+        if replacing {
+            let start = square_rect(board, cell, from, game.facing.black_bottom).center();
+            let end = square_rect(board, cell, mv.sq, game.facing.black_bottom).center();
+            let direction = (end - start).normalized();
+            let across = Vec2::new(-direction.y, direction.x) * cell * 0.25;
+            let center = start.lerp(end, 0.5);
+            painter.line_segment(
+                [center - across, center + across],
+                Stroke::new(
+                    cell * 0.12,
+                    Color32::from_black_alpha((alpha * 210.0) as u8),
+                ),
+            );
+            painter.line_segment(
+                [center - across, center + across],
+                Stroke::new(
+                    cell * 0.065,
+                    Color32::from_rgb(255, 35, 55).gamma_multiply(alpha),
+                ),
+            );
+        }
     }
     // Badges are drawn after all pieces so neighboring artwork cannot cover them.
     for (piece, rect) in artwork {
@@ -784,9 +810,17 @@ fn paint_board(
     }
 }
 
+fn replaces_selected_move(game: &GameUi, old: temporal_chess_engine::model::Move) -> bool {
+    game.selected.as_ref().is_some_and(|selection| {
+        selection.moves.iter().any(|candidate| {
+            candidate.direction == selection.direction && candidate.id() == old.id()
+        })
+    })
+}
+
 /// Retained commands only have an arrow while their source incarnation is alive.
 fn last_visible_move(game: &GameUi, t: usize) -> Option<(temporal_chess_engine::model::Move, Sq)> {
-    game.record.commands().iter().rev().find_map(|command| {
+    let visible = game.record.commands().iter().rev().filter_map(|command| {
         if let Command::Move { mv, from } = command
             && mv.t == t
             && game
@@ -807,7 +841,11 @@ fn last_visible_move(game: &GameUi, t: usize) -> Option<(temporal_chess_engine::
         } else {
             None
         }
-    })
+    });
+    visible
+        .clone()
+        .find(|(mv, _)| replaces_selected_move(game, *mv))
+        .or_else(|| visible.into_iter().next())
 }
 
 fn paint_move_arrow(

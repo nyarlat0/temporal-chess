@@ -409,7 +409,8 @@ move 5 17:5:0 c6 d4 - normal
             .unwrap();
         let bishop = engine.history().worldlines()[18].last().unwrap();
         assert_eq!(bishop.t, 1);
-        assert!(bishop.inverted && bishop.rights.cancelled_move);
+        assert!(bishop.inverted && bishop.rights.ordinary);
+        assert!(!bishop.rights.cancelled_move);
         assert!(!bishop.rights.new_information);
         assert_eq!(GameRecord::load(&record.to_text()).unwrap().0, engine);
     }

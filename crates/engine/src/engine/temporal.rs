@@ -17,6 +17,16 @@ impl Engine {
         self.prune_route(piece, end)
     }
 
+    /// Cancellation of a completed loop keeps its causally rejoined future in
+    /// either ruleset. The temporary splice is joined before publishing history.
+    pub(super) fn cancel_past_route(&mut self, piece: PieceView) -> Result<(), EngineErr> {
+        let line = &self.history.worldlines[piece.origin];
+        let end = (piece.age + 1..line.len())
+            .find(|&age| line[age].t > piece.t)
+            .unwrap_or(line.len());
+        self.prune_route(piece, end)
+    }
+
     pub(super) fn remove_return_route(&mut self, piece: PieceView) -> Result<(), EngineErr> {
         if !self.history.causal_gaps {
             return self.prune_route(piece, self.history.worldlines[piece.origin].len());

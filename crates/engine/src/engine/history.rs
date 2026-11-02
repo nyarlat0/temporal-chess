@@ -88,9 +88,28 @@ impl Engine {
         self.undo_castling_rook(mv, bf_piv)?;
         if mv.to_past() != bf_piv.inverted {
             if mv.to_past() {
-                self.remove_past_route(bf_piv)?;
+                self.cancel_past_route(bf_piv)?;
             } else {
                 self.remove_return_route(bf_piv)?;
+            }
+            if bf_piv.age + 1 == self.history.worldlines[bf_piv.origin].len() {
+                let source = &mut self.history.worldlines[bf_piv.origin][bf_piv.age];
+                source.rights = super::MoveRights {
+                    ordinary: source.alive,
+                    ..Default::default()
+                };
+                self.update_bufs()?;
+                return Ok(());
+            }
+            if mv.to_past() {
+                let source = self.history.worldlines[bf_piv.origin][bf_piv.age].clone();
+                let next = source.prolongate().ok_or(EngineErr::WrongMove)?;
+                self.advance_route(bf_piv.origin, bf_piv.age, next)?;
+                let source = &mut self.history.worldlines[bf_piv.origin][bf_piv.age];
+                source.rights.cancelled_move = true;
+                source.rights.new_information = false;
+                self.update_bufs()?;
+                return Ok(());
             }
             let horizon = self
                 .projection
@@ -117,9 +136,6 @@ impl Engine {
             self.history.worldlines[bf_piv.origin][bf_piv.age]
                 .rights
                 .new_information = false;
-            if bf_piv.inverted {
-                self.extend_cancelled_return(bf_piv)?;
-            }
             self.update_bufs()?;
             return Ok(());
         }
@@ -156,32 +172,6 @@ impl Engine {
 
         self.update_bufs()?;
 
-        Ok(())
-    }
-
-    /// Automatic restoration is not a player-issued wait. Reconciliation still
-    /// resolves collisions along this path; only its endpoint gets a new turn.
-    fn extend_cancelled_return(&mut self, piece: PieceView) -> Result<(), EngineErr> {
-        let boundary = piece.color.first_board();
-        let mut age = piece.age;
-        loop {
-            let line = &mut self.history.worldlines[piece.origin];
-            let state = &mut line[age];
-            state.rights.ordinary = state.alive && state.t == boundary;
-            if state.t == boundary {
-                break;
-            }
-            let next = state.prolongate().ok_or(EngineErr::WrongMove)?;
-            if line.gap_after(age).is_none()
-                && line
-                    .get(age + 1)
-                    .is_some_and(|existing| existing.inverted && existing.t == next.t)
-            {
-                age += 1;
-            } else {
-                age = self.advance_route(piece.origin, age, next)?.0;
-            }
-        }
         Ok(())
     }
 
