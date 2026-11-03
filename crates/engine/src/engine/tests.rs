@@ -180,6 +180,84 @@ fn castling_undo_restores_rook_position_and_rights() {
 }
 
 #[test]
+fn cancelling_a_rook_transition_finds_its_castling_command() {
+    for color in [Color::White, Color::Black] {
+        for castling in [Castling::Short, Castling::Long] {
+            let y = if color == Color::White { 0 } else { 7 };
+            let rook_x = if castling == Castling::Short { 7 } else { 0 };
+            let states = [
+                (PieceKind::K { moved: false }, 4),
+                (PieceKind::R { moved: false }, rook_x),
+                (PieceKind::R { moved: false }, 7 - rook_x),
+            ]
+            .into_iter()
+            .map(|(kind, x)| {
+                let mut state = State::new(kind, color, Sq(x, y));
+                state.t = color.first_board();
+                state.fut_seen = state.t;
+                state.rights.ordinary = true;
+                vec![state]
+            })
+            .collect();
+            let mut engine = Engine::from_worldlines(states, color).unwrap();
+            let castle = engine
+                .possible_moves(0, 0)
+                .unwrap()
+                .into_iter()
+                .find(|mv| mv.castling() == Some(castling))
+                .unwrap();
+            engine.apply_new_mv(castle).unwrap();
+            let castled = engine.clone();
+
+            // Sharing the king's MoveId is not enough: only the participating
+            // rook's occurrence is a cause of this castling command.
+            assert_eq!(
+                engine.undo_last_mv(engine.get_piv(2, 1).unwrap()),
+                Err(EngineErr::WrongMove)
+            );
+            assert_eq!(engine, castled);
+            engine.undo_last_mv(engine.get_piv(1, 1).unwrap()).unwrap();
+            engine.reconcile().unwrap();
+            assert!(!engine.history.moves.contains_key(&castle.id()));
+            assert_eq!(engine.get_piv(0, 1).unwrap().sq, Sq(4, y));
+            assert_eq!(engine.get_piv(1, 1).unwrap().sq, Sq(rook_x, y));
+            assert_eq!(
+                engine.get_piv(0, 1).unwrap().kind,
+                PieceKind::K { moved: false }
+            );
+            assert_eq!(
+                engine.get_piv(1, 1).unwrap().kind,
+                PieceKind::R { moved: false }
+            );
+            assert!(engine.get_piv(0, 0).unwrap().rights.cancelled_move);
+
+            // A later independent rook move takes precedence over castling.
+            let mut engine = castled;
+            engine
+                .prolongate_wlines(engine.history.horizon, None)
+                .unwrap();
+            engine.history.horizon += 1;
+            engine.turn = color;
+            engine.reconcile().unwrap();
+            let rook = engine.get_piv(1, 2).unwrap();
+            let target = Sq(rook.sq.0, if color == Color::White { 1 } else { 6 });
+            let later = engine
+                .possible_moves(1, 2)
+                .unwrap()
+                .into_iter()
+                .find(|mv| !mv.to_past() && mv.sq == target)
+                .unwrap();
+            engine.apply_new_mv(later).unwrap();
+            engine.undo_last_mv(engine.get_piv(1, 3).unwrap()).unwrap();
+            engine.reconcile().unwrap();
+            assert!(engine.history.moves.contains_key(&castle.id()));
+            assert!(!engine.history.moves.contains_key(&later.id()));
+            assert_eq!(engine.get_piv(1, 3).unwrap().sq, rook.sq);
+        }
+    }
+}
+
+#[test]
 fn cancelled_move_reaction_suppresses_new_information() {
     let mut rook = State::new(PieceKind::R { moved: true }, Color::White, Sq(0, 0));
     rook.rights.ordinary = false;

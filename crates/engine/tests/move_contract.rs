@@ -67,3 +67,47 @@ fn king_can_invert_into_a_pawns_origin_and_replay_the_result() {
         assert_eq!(GameRecord::load(&record.to_text()).unwrap().0, result);
     }
 }
+
+#[test]
+fn queen_reaction_can_cancel_castling_through_a_rook_collision() {
+    let (mut engine, mut record) =
+        GameRecord::load(include_str!("fixtures/castling_rook_collision.nolan")).unwrap();
+    let queen = engine
+        .move_sources()
+        .find(|piece| piece.origin == 3 && piece.t == 14)
+        .unwrap();
+    let mv = engine
+        .possible_moves(queen.origin, queen.age)
+        .unwrap()
+        .into_iter()
+        .find(|mv| !mv.to_past() && mv.sq == Sq(1, 2))
+        .expect("c4,14 -> b3,15 remains offered");
+    let castling = *engine
+        .history()
+        .moves()
+        .values()
+        .find(|mv| mv.castling().is_some())
+        .unwrap();
+    record
+        .apply(&mut engine, Command::Move { mv, from: queen.sq })
+        .unwrap();
+    assert!(!engine.history().moves().contains_key(&castling.id()));
+    for (wid, square) in [(4, Sq(4, 0)), (7, Sq(7, 0))] {
+        let state = engine.history().worldlines()[wid]
+            .iter()
+            .find(|s| s.t == 19)
+            .unwrap();
+        assert_eq!(Sq(state.x, state.y), square);
+    }
+    // Cancellation changes the reconstructed history, never the replay log.
+    assert!(
+        record
+            .commands()
+            .iter()
+            .any(|command| { matches!(command, Command::Move { mv, .. } if *mv == castling) })
+    );
+    assert!(
+        matches!(record.commands().last(), Some(Command::Move { mv: last, .. }) if *last == mv)
+    );
+    assert_eq!(GameRecord::load(&record.to_text()).unwrap().0, engine);
+}

@@ -1,6 +1,6 @@
-use crate::pieces::PieceView;
+use crate::pieces::{PieceKind, PieceView};
 
-use super::{Engine, EngineErr, MoveId};
+use super::{Castling, Engine, EngineErr, MoveId};
 
 impl Engine {
     pub(super) fn kill_piece(&mut self, wid: usize, age: usize) -> Result<(), EngineErr> {
@@ -28,20 +28,39 @@ impl Engine {
         let start = (0..piv.age)
             .rfind(|&age| wl.gap_after(age).is_some())
             .map_or(0, |age| age + 1);
-        let id = wl
-            .get(start..piv.age)
-            .ok_or(EngineErr::WrongPiece)?
-            .iter()
-            .rev()
-            .map(MoveId::from_state)
-            .find(|id| {
-                self.history
-                    .moves
-                    .get(id)
-                    .is_some_and(|mv| mv.pid.wid == piv.origin)
-            })
-            .ok_or(EngineErr::WrongMove)?;
-        self.undo_mv(id)
+        let states = wl.get(start..piv.age).ok_or(EngineErr::WrongPiece)?;
+        for (offset, state) in states.iter().enumerate().rev() {
+            let id = MoveId::from_state(state);
+            let Some(&mv) = self.history.moves.get(&id) else {
+                continue;
+            };
+            if mv.pid.wid == piv.origin {
+                return self.undo_mv(id);
+            }
+            // Castling is one command recorded on the king, but also causes
+            // a transition in the rook's worldline. A collision involving that
+            // transition must cancel the whole castling, not search for a
+            // nonexistent independent rook command (or cancel an older move).
+            if let Some(castling) = mv.castling()
+                && matches!(state.kind, PieceKind::R { .. })
+            {
+                let king = self.occurrence(mv.source()).ok_or(EngineErr::WrongPiece)?;
+                let rook_x = match castling {
+                    Castling::Long => 0,
+                    Castling::Short => 7,
+                };
+                if state.color != king.color || state.x != rook_x || state.y != king.sq.1 {
+                    continue;
+                }
+                if self
+                    .castling_rook(mv, king)?
+                    .is_some_and(|rook| rook.origin == piv.origin && rook.age == start + offset)
+                {
+                    return self.undo_mv(id);
+                }
+            }
+        }
+        Err(EngineErr::WrongMove)
     }
 
     /// Clears move from move history,
