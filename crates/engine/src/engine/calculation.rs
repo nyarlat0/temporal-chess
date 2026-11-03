@@ -108,6 +108,40 @@ impl Engine {
                 .filter_map(|t| engine.make_board(t).ok().map(|b| (t, b)))
                 .collect();
         }
+        // Restoring the cancelled route may recreate the very collision that
+        // cancelled it. Keep an unmodified occupant when a restored occurrence
+        // overlaps it: this comparison must not erase an entire board because
+        // of that hypothetical overlap. Neither history nor actual preboards
+        // are resolved or changed here. Ambiguous unrelated conflicts stay so.
+        for (&t, preboard) in &before.projection.preboards {
+            if before.projection.boards.contains_key(&t) {
+                continue;
+            }
+            let mut view = preboard.clone();
+            for cell in view
+                .space
+                .iter_mut()
+                .flatten()
+                .filter(|cell| cell.len() > 1)
+            {
+                let unchanged: Vec<_> = cell
+                    .iter()
+                    .copied()
+                    .filter(|piece| {
+                        let id = Self::piece_at(*piece);
+                        self.piece_state(id)
+                            .zip(before.piece_state(id))
+                            .is_some_and(|(a, b)| same_physical_state(a, b))
+                    })
+                    .collect();
+                if unchanged.len() == 1 {
+                    *cell = unchanged;
+                }
+            }
+            if let Some(board) = view.try_into_board() {
+                before.projection.boards.insert(t, board);
+            }
+        }
         // A newly vacated square matters only when it actually removes the
         // death's cause (en passant can keep a piece dead on an empty square).
         for wid in 0..self.history.worldlines.len() {
@@ -118,6 +152,13 @@ impl Engine {
         // Validate each retained command independently. A command already
         // invalid without this cancellation cannot be attributed to it.
         let legal = |engine: &Self, mv: super::Move| -> Option<bool> {
+            engine.board(mv.t)?;
+            if let Some(t) = mv.direction.step(mv.t)
+                && engine.preboard(t).is_some()
+                && engine.board(t).is_none()
+            {
+                return None;
+            }
             let id = engine.projection.pieces.get(&mv.source())?;
             let state = &engine.history.worldlines[id.wid][id.age];
             if !state.alive || engine.history.worldlines[id.wid].is_borrowed(id.age) {

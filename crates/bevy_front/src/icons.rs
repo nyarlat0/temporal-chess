@@ -4,6 +4,7 @@ use bevy_egui::egui::{self, Pos2, Rect, Response, Stroke, StrokeKind, Vec2};
 
 #[derive(Clone, Copy)]
 pub enum Icon {
+    Worldline,
     New,
     Undo,
     Copy,
@@ -53,6 +54,8 @@ pub fn icon_button(
     });
     let color = if !enabled {
         SUBTLE.gamma_multiply(0.35)
+    } else if selected && matches!(icon, Icon::Worldline) {
+        egui::Color32::from_rgb(255, 110, 180)
     } else if selected {
         ACCENT
     } else {
@@ -61,7 +64,11 @@ pub fn icon_button(
     paint(
         ui.painter(),
         icon,
-        response.rect.shrink(10.0),
+        response.rect.shrink(if matches!(icon, Icon::Worldline) {
+            4.5
+        } else {
+            10.0
+        }),
         Stroke::new(1.65, color),
     );
     #[cfg(test)]
@@ -87,6 +94,20 @@ pub fn paint(painter: &egui::Painter, icon: Icon, rect: Rect, stroke: Stroke) {
         painter.rect_stroke(Rect::from_min_max(a, b), 2.0, stroke, StrokeKind::Inside);
     };
     match icon {
+        Icon::Worldline => {
+            let scale = rect.height() * 0.76 / 17.0;
+            for outline in pawn_outline() {
+                let points = outline
+                    .iter()
+                    .map(|&[x, y]| p(0.5, 0.24) + Vec2::new(x - 12.0, y - 3.0) * scale)
+                    .collect();
+                painter.add(egui::Shape::line(points, stroke));
+            }
+            line(&[(0.5, 1.10), (0.5, -0.12)]);
+            // Keep the entire arrowhead above the pawn's circular head.
+            line(&[(0.32, 0.09), (0.5, -0.12), (0.68, 0.09)]);
+        }
+
         Icon::Information => {
             line(&[
                 (0.05, 0.5),
@@ -210,4 +231,68 @@ pub fn paint(painter: &egui::Painter, icon: Icon, rect: Rect, stroke: Stroke) {
             painter.circle_stroke(p(0.5, 0.5), rect.width() * 0.15, stroke);
         }
     }
+}
+
+/// Tabler Icons' original chess SVG, sampled once without redesigning its paths.
+/// Rendering it as a stroked vector keeps the icon crisp at every UI scale.
+fn pawn_outline() -> &'static [Vec<[f32; 2]>] {
+    static OUTLINE: std::sync::OnceLock<Vec<Vec<[f32; 2]>>> = std::sync::OnceLock::new();
+    OUTLINE.get_or_init(|| {
+        use resvg::{tiny_skia::PathSegment, usvg};
+        let tree = usvg::Tree::from_str(
+            include_str!("../assets/icons/tabler/chess.svg"),
+            &usvg::Options::default(),
+        )
+        .expect("embedded pawn SVG");
+        tree.root()
+            .children()
+            .iter()
+            .filter_map(|node| match node {
+                usvg::Node::Path(path) => Some(path),
+                _ => None,
+            })
+            .map(|path| {
+                let mut points = Vec::new();
+                let mut current = Vec2::ZERO;
+                for segment in path.data().segments() {
+                    let v = |p: resvg::tiny_skia::Point| Vec2::new(p.x, p.y);
+                    match segment {
+                        PathSegment::MoveTo(p) | PathSegment::LineTo(p) => {
+                            current = v(p);
+                            points.push([current.x, current.y]);
+                        }
+                        PathSegment::CubicTo(c1, c2, end) => {
+                            for i in 1..=24 {
+                                let t = i as f32 / 24.0;
+                                let u = 1.0 - t;
+                                let p = current * u.powi(3)
+                                    + v(c1) * (3.0 * u * u * t)
+                                    + v(c2) * (3.0 * u * t * t)
+                                    + v(end) * t.powi(3);
+                                points.push([p.x, p.y]);
+                            }
+                            current = v(end);
+                        }
+                        PathSegment::QuadTo(control, end) => {
+                            for i in 1..=24 {
+                                let t = i as f32 / 24.0;
+                                let u = 1.0 - t;
+                                let p = current * (u * u)
+                                    + v(control) * (2.0 * u * t)
+                                    + v(end) * (t * t);
+                                points.push([p.x, p.y]);
+                            }
+                            current = v(end);
+                        }
+                        PathSegment::Close => {
+                            if let Some(&first) = points.first() {
+                                points.push(first);
+                            }
+                        }
+                    }
+                }
+                points
+            })
+            .collect()
+    })
 }

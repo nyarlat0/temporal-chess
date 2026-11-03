@@ -545,3 +545,37 @@ fn cancelling_open_loop_does_not_create_passive_states() {
         }
     }
 }
+
+#[test]
+fn pawn_cancellation_pauses_before_it_blocks_inverted_bishop() {
+    use crate::record::{Command, GameRecord};
+    let text = "NOLAN-CHESS 2\ncausal_gaps off\nmove 0 12:0:0 e2 e4 + normal\nmove 1 28:1:0 e7 e5 + normal\nmove 2 6:2:0 g1 f3 - normal\nmove 3 21:3:0 f8 b4 - normal\nmove 0 6:2:1 f3 e5 + normal\n";
+    let (mut engine, mut record) = GameRecord::load(text).unwrap();
+    let Command::Move { mv: pawn, .. } = record.commands()[1] else {
+        unreachable!()
+    };
+    let Command::Move { mv: bishop, .. } = record.commands()[3] else {
+        unreachable!()
+    };
+    assert_eq!(
+        engine.calculation_status(),
+        CalculationStatus::Paused {
+            t: 1,
+            side: Color::Black
+        }
+    );
+    assert!(!engine.history.moves.contains_key(&pawn.id()));
+    assert!(
+        engine
+            .piece_state(pawn.source())
+            .unwrap()
+            .rights
+            .cancelled_move
+    );
+    assert_eq!(engine.history.moves.get(&bishop.id()), Some(&bishop));
+    assert!(engine.board(1).is_some());
+    assert!(engine.board(2).is_none());
+    record.apply(&mut engine, Command::Continue).unwrap();
+    assert!(!engine.history.moves.contains_key(&bishop.id()));
+    assert_eq!(GameRecord::load(&record.to_text()).unwrap().0, engine);
+}

@@ -42,7 +42,7 @@ pub fn handle(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState) {
             .filter_map(|event| {
                 if let egui::Event::MouseWheel { unit, delta, .. } = event {
                     Some(
-                        delta.y
+                        (if delta.y != 0.0 { delta.y } else { delta.x })
                             * match unit {
                                 egui::MouseWheelUnit::Point => 1.0,
                                 egui::MouseWheelUnit::Line => 32.0,
@@ -55,10 +55,11 @@ pub fn handle(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState) {
             })
             .sum::<f32>()
     });
-    if !down && wheel_delta != 0.0 {
+    let shift = ctx.input(|i| i.modifiers.shift);
+    if !down && !shift && wheel_delta != 0.0 {
         shell.suppress_wheel = false;
     }
-    if !modal && !game.playback_busy() && !game.facing.animating() && down {
+    if !modal && !game.playback_busy() && !game.facing.animating() && (down || shift) {
         let over_boards = ctx.pointer_hover_pos().is_some_and(|pos| {
             shell.ribbon_rect.contains(pos)
                 && ctx
@@ -70,7 +71,7 @@ pub fn handle(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState) {
         if over_boards && wheel_delta != 0.0 {
             shell.zoom_gesture = true;
             shell.suppress_wheel = true;
-            game.cell_size = (game.cell_size * (wheel_delta * 0.0025).exp()).clamp(30.0, 90.0);
+            game.cell_size = (game.cell_size * (wheel_delta * 0.0025).exp()).clamp(9.6, 90.0);
             game.viewport.scroll = None;
             game.jump_to = None;
         }
@@ -91,6 +92,10 @@ pub fn handle(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState) {
             game.toggle_direction();
         }
     }
+    if pressed || escape {
+        game.worldline_mode = false;
+        game.worldline_selected = None;
+    }
     if released {
         shell.zoom_gesture = false;
     }
@@ -101,6 +106,8 @@ pub fn handle(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState) {
         if i.key_pressed(Key::I) && !i.modifiers.command && !i.modifiers.ctrl {
             game.clear_selection();
             game.inspect_mode = !game.inspect_mode;
+            game.worldline_mode = false;
+            game.worldline_selected = None;
         }
         if i.key_pressed(Key::C)
             && !i.modifiers.command
@@ -132,4 +139,61 @@ pub fn clicked(response: &egui::Response) -> bool {
         data.insert_temp(key, frame);
         true
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shift_wheel_reaches_fifteen_percent_and_right_press_exits_worldline() {
+        let ctx = egui::Context::default();
+        let mut game = GameUi {
+            worldline_mode: true,
+            ..Default::default()
+        };
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::splat(500.0));
+        let mut shell = ShellState::default();
+        shell.ribbon_rect = rect;
+        let pos = rect.center();
+        let modifiers = egui::Modifiers {
+            shift: true,
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(rect),
+                events: vec![
+                    egui::Event::ModifiersChanged(modifiers),
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        phase: egui::TouchPhase::Move,
+                        delta: egui::Vec2::new(0.0, -10000.0),
+                        modifiers,
+                    },
+                ],
+                ..Default::default()
+            },
+            |ui| handle(ui.ctx(), &mut game, &mut shell),
+        );
+        output.textures_delta.clear();
+        assert!((game.cell_size / 64.0 - 0.15).abs() < 0.0001);
+        assert!(game.worldline_mode);
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(rect),
+                events: vec![egui::Event::PointerButton {
+                    pos,
+                    button: PointerButton::Secondary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                }],
+                ..Default::default()
+            },
+            |ui| handle(ui.ctx(), &mut game, &mut shell),
+        );
+        output.textures_delta.clear();
+        assert!(!game.worldline_mode);
+    }
 }

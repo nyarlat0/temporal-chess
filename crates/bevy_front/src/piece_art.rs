@@ -91,6 +91,20 @@ impl PieceArt {
         alpha: f32,
         style: PieceStyle,
     ) {
+        self.paint_tinted(painter, kind, side, rect, alpha, style, Color32::WHITE);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn paint_tinted(
+        &self,
+        painter: &egui::Painter,
+        kind: PieceKind,
+        side: Color,
+        rect: Rect,
+        alpha: f32,
+        style: PieceStyle,
+        tint: Color32,
+    ) {
         let kind = match kind {
             PieceKind::K { .. } => 0,
             PieceKind::Q => 1,
@@ -147,7 +161,7 @@ impl PieceArt {
             texture.handle.id(),
             rect.expand(padding(size) as f32 / scale),
             uv,
-            Color32::WHITE.gamma_multiply(alpha),
+            tint.gamma_multiply(alpha),
         );
     }
 }

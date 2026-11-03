@@ -10,6 +10,7 @@ mod multiplayer;
 mod piece_art;
 mod theme;
 mod view;
+mod worldline_view;
 
 #[cfg(not(target_arch = "wasm32"))]
 use bevy::window::WindowResizeConstraints;

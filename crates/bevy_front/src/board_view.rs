@@ -229,14 +229,43 @@ pub fn ribbon(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt) {
             game.viewport.motion_progress,
         );
     }
+    if game.worldline_mode && !moving {
+        crate::worldline_view::paint(&board_painter, game, art, &times, &board_at, cell);
+    }
     // Pinned beside the rail, independent of board scroll and zoom.
     let controls = Rect::from_min_size(
         Pos2::new(
-            (rail_x - 87.0).max(viewport.left() + 2.0),
+            (rail_x - 87.0).max(viewport.left() + 52.0),
             viewport.center().y - 46.0,
         ),
         Vec2::new(46.0, 92.0),
     );
+    let tool_rect = Rect::from_center_size(
+        Pos2::new(controls.left() - 26.0, viewport.center().y),
+        Vec2::splat(46.0),
+    );
+    painter.rect_filled(tool_rect, 8.0, BACKGROUND);
+    let mut tool = ui.new_child(
+        egui::UiBuilder::new()
+            .id_salt("worldline_tool")
+            .max_rect(tool_rect.shrink(4.0)),
+    );
+    tool.style_mut().visuals.selection.bg_fill = Color32::from_rgb(100, 35, 70);
+    tool.style_mut().visuals.selection.stroke.color = Color32::from_rgb(255, 110, 180);
+    if icon_button(
+        &mut tool,
+        Icon::Worldline,
+        crate::tr!("Мировая линия фигуры", "Piece worldline"),
+        game.worldline_mode,
+        !moving && game.replay_job.is_none(),
+    )
+    .clicked()
+    {
+        game.worldline_mode = !game.worldline_mode;
+        game.worldline_selected = None;
+        game.clear_selection();
+        game.inspect_mode = false;
+    }
     painter.rect_filled(controls, 8.0, BACKGROUND);
     let mut nav = ui.new_child(
         egui::UiBuilder::new()
@@ -525,7 +554,7 @@ fn paint_transition(
 }
 
 /// Board-local mapping is shared by pieces, arrows, hints and pointer input.
-fn square_rect(board: Rect, cell: f32, sq: Sq, flipped: bool) -> Rect {
+pub(crate) fn square_rect(board: Rect, cell: f32, sq: Sq, flipped: bool) -> Rect {
     let (column, row) = if flipped {
         (7 - sq.0, sq.1)
     } else {
@@ -732,16 +761,31 @@ fn paint_board(
             }
         }
     }
+    let worldline_visible =
+        game.worldline_mode && !game.playback_busy() && !game.facing.animating();
     // Paint after every square, so neighboring squares cannot crop the glow.
     {
         for &(piece, rect) in &artwork {
-            art.paint_styled(
+            if worldline_visible && game.worldline_selected == Some(piece.origin) {
+                continue;
+            }
+            art.paint_tinted(
                 painter,
                 piece.kind,
                 piece.color,
                 rect,
-                alpha,
+                alpha
+                    * if worldline_visible && game.worldline_selected.is_some() {
+                        0.28
+                    } else {
+                        1.0
+                    },
                 piece_style(game, piece, checked, hovered),
+                if worldline_visible && game.worldline_selected.is_some() {
+                    Color32::from_gray(130)
+                } else {
+                    Color32::WHITE
+                },
             );
         }
     }
@@ -759,8 +803,11 @@ fn paint_board(
             if replacing {
                 Color32::from_rgb(255, 35, 55).gamma_multiply(alpha)
             } else {
-                direction_color(mv.direction)
-                    .gamma_multiply(alpha * if highlighted { 0.95 } else { 0.78 })
+                direction_color(mv.direction).gamma_multiply(
+                    alpha
+                        * if highlighted { 0.95 } else { 0.78 }
+                        * if game.worldline_mode { 0.65 } else { 1.0 },
+                )
             },
         );
         if replacing {

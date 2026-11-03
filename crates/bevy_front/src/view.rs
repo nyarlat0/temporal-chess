@@ -267,8 +267,8 @@ fn sidebar(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, art: &P
     ui.colored_label(
         SUBTLE,
         egui::RichText::new(crate::tr!(
-            "Масштаб: ПКМ + колесо",
-            "Zoom: right mouse button + wheel"
+            "Масштаб: Shift или ПКМ + колесо",
+            "Zoom: Shift or right mouse button + wheel"
         ))
         .small(),
     );
@@ -476,6 +476,8 @@ fn details_panel(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, a
         if crate::input::clicked(&inspect) && !game.playback_busy() {
             game.clear_selection();
             game.inspect_mode = true;
+            game.worldline_mode = false;
+            game.worldline_selected = None;
         }
     });
     if game.inspect_mode {

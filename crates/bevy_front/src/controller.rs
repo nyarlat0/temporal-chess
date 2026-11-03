@@ -64,6 +64,8 @@ pub struct GameUi {
     pub checks: CheckStatus,
     pub selected: Option<Selection>,
     pub inspect_mode: bool,
+    pub worldline_mode: bool,
+    pub worldline_selected: Option<usize>,
     pub inspected: Option<PieceAt>,
     pub promotion: Vec<Move>,
     pub overlapping: Vec<PieceView>,
@@ -140,6 +142,8 @@ impl Default for GameUi {
             checks: CheckStatus::default(),
             selected: None,
             inspect_mode: false,
+            worldline_mode: false,
+            worldline_selected: None,
             inspected: None,
             promotion: Vec::new(),
             overlapping: Vec::new(),
@@ -339,6 +343,11 @@ impl GameUi {
     }
 
     pub fn choose(&mut self, piece: PieceView) {
+        if self.worldline_mode {
+            self.worldline_selected = Some(piece.origin);
+            self.overlapping.clear();
+            return;
+        }
         if !self.inspect_mode && !self.selectable(piece) {
             return;
         }
@@ -407,6 +416,35 @@ impl GameUi {
             || self.playback_busy()
             || self.facing.animating()
         {
+            return;
+        }
+        if self.worldline_mode {
+            let inspected_wid = self.worldline_selected;
+            let mut origins: Vec<_> = self
+                .engine
+                .history()
+                .worldlines()
+                .iter()
+                .enumerate()
+                .filter_map(|(wid, line)| {
+                    line.iter()
+                        .any(|state| {
+                            state.t == t
+                                && Sq(state.x, state.y) == sq
+                                && (state.alive || inspected_wid == Some(wid))
+                        })
+                        .then_some(wid)
+                })
+                .collect();
+            origins.sort_unstable();
+            origins.dedup();
+            if !origins.is_empty() {
+                let next = self
+                    .worldline_selected
+                    .and_then(|wid| origins.iter().position(|&p| p == wid))
+                    .map_or(0, |i| (i + 1) % origins.len());
+                self.worldline_selected = Some(origins[next]);
+            }
             return;
         }
         if !self.inspect_mode
@@ -676,6 +714,8 @@ impl GameUi {
                 }
                 self.import_open = false;
                 self.inspect_mode = false;
+                self.worldline_mode = false;
+                self.worldline_selected = None;
                 self.message(
                     match kind {
                         ReplayKind::Network => crate::message!(
