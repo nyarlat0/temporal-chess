@@ -114,7 +114,7 @@ impl Engine {
             self.history.targets.remove(&old.id());
             piece = self.get_piv_from_mv(mv).ok_or(EngineErr::WrongPiece)?;
         }
-        self.deact_same_order(piece);
+        let idle_endpoints = self.deact_same_order(piece);
         self.deact_prev_reactable(piece.color, piece.t);
 
         let end_t = self
@@ -134,6 +134,9 @@ impl Engine {
         if let Some(rook) = rook {
             // Castling never inserts a backward segment; both source ages remain valid.
             self.apply_route(rook, mv, horizon)?;
+        }
+        for idle in idle_endpoints {
+            self.continue_idle_endpoint(idle, horizon)?;
         }
         self.update_bufs()?;
         if let Some(target) = target {
@@ -190,15 +193,34 @@ impl Engine {
             .ok_or(EngineErr::WrongPiece)
     }
 
-    fn deact_same_order(&mut self, piece: PieceView) {
+    fn deact_same_order(&mut self, piece: PieceView) -> Vec<PieceView> {
+        let mut idle_endpoints = Vec::new();
         for (origin, line) in self.history.worldlines.iter_mut().enumerate() {
+            let last_age = line.len() - 1;
             for (age, state) in line.iter_mut().enumerate() {
                 if state.t == piece.t && PieceView::from_state(state, origin, age).same_order(piece)
                 {
+                    if origin != piece.origin
+                        && age == last_age
+                        && state.alive
+                        && state.rights.ordinary
+                    {
+                        // A cancelled turn can leave a deliberate active
+                        // endpoint. Once another piece takes its shared turn,
+                        // it must wait, not become an inactive stranded end.
+                        if state.inverted && state.t <= state.color.first_board() {
+                            // There is no earlier own board to wait on. Keep
+                            // the boundary reserve available for a future turn.
+                            state.expire_reactions();
+                            continue;
+                        }
+                        idle_endpoints.push(PieceView::from_state(state, origin, age));
+                    }
                     state.make_unmovable();
                 }
             }
         }
+        idle_endpoints
     }
 
     fn deact_prev_reactable(&mut self, side: Color, until_t: usize) {

@@ -233,6 +233,33 @@ impl Engine {
         Ok(())
     }
 
+    /// A different piece consumed this endpoint's shared ordinary turn. Supply
+    /// its passive transition and, inside existing history, the tick to its next
+    /// own board. This does not move it spatially or change pawn/castling rights.
+    pub(super) fn continue_idle_endpoint(
+        &mut self,
+        piece: PieceView,
+        horizon: usize,
+    ) -> Result<(), EngineErr> {
+        let mut age = piece.age;
+        // New-frontier prolongation or castling may already have supplied the
+        // continuation. Never duplicate it or overwrite a recorded route.
+        if self.history.worldlines[piece.origin].get(age + 1).is_some() {
+            return Ok(());
+        }
+        for _ in 0..2 {
+            let source = &self.history.worldlines[piece.origin][age];
+            let next = source.prolongate().ok_or(EngineErr::InvalidHistory(
+                "temporal endpoint cannot continue after its shared turn",
+            ))?;
+            if next.t > horizon {
+                break;
+            }
+            age = self.advance_route(piece.origin, age, next)?.0;
+        }
+        Ok(())
+    }
+
     pub(super) fn occurrence(&self, id: PieceAt) -> Option<PieceView> {
         let location = self.projection.pieces.get(&id)?;
         self.get_piv_necro(location.wid, location.age)

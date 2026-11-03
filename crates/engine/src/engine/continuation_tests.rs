@@ -682,3 +682,60 @@ fn cancelling_a_dead_movers_command_preserves_death_in_both_directions() {
         }
     }
 }
+
+#[test]
+fn shared_turn_continues_idle_endpoints_only_to_their_next_own_board() {
+    for color in [Color::White, Color::Black] {
+        for inverted in [false, true] {
+            let t = color.first_board() + 4;
+            let mover = state(color, Sq(1, 0), t, inverted);
+            let mut idle = state(color, Sq(7, 3), t, inverted);
+            idle.kind = PieceKind::R { moved: false };
+            let anchor = state(color.opposite(), Sq(7, 7), t - 1, false);
+            let future = state(color.opposite(), Sq(0, 7), t + 4, false);
+            let mut engine = Engine::from_worldlines(
+                vec![vec![mover], vec![idle], vec![anchor], vec![future]],
+                color,
+            )
+            .unwrap();
+            assert_eq!(engine.history.worldlines[1].len(), 1);
+            let mv = engine
+                .possible_moves(0, 0)
+                .unwrap()
+                .into_iter()
+                .find(|mv| mv.sq == Sq(2, 2) && mv.to_past() == inverted)
+                .unwrap();
+            engine.apply_new_mv(mv).unwrap();
+            let line = &engine.history.worldlines[1];
+            assert_eq!(line.len(), 3);
+            assert_eq!(line[2].t, if inverted { t - 2 } else { t + 2 });
+            assert!(!line[0].rights.ordinary);
+            assert!(!line[1].rights.ordinary);
+            assert!(line[2].rights.ordinary);
+            assert!(line.iter().all(|s| s.alive
+                && Sq(s.x, s.y) == Sq(7, 3)
+                && s.kind == PieceKind::R { moved: false }));
+            assert!(engine.history.moves.values().all(|mv| mv.pid.wid != 1));
+        }
+    }
+}
+
+#[test]
+fn shared_turn_does_not_discard_an_inverted_reserve_at_the_boundary() {
+    for color in [Color::White, Color::Black] {
+        let t = color.first_board();
+        let mover = state(color, Sq(1, 0), t, true);
+        let reserve = state(color, Sq(7, 3), t, true);
+        let mut engine = Engine::from_worldlines(vec![vec![mover], vec![reserve]], color).unwrap();
+        let mv = engine
+            .possible_moves(0, 0)
+            .unwrap()
+            .into_iter()
+            .find(|mv| mv.sq == Sq(2, 2) && !mv.to_past())
+            .unwrap();
+        engine.apply_new_mv(mv).unwrap();
+        let line = &engine.history.worldlines[1];
+        assert_eq!(line.len(), 1);
+        assert!(line[0].alive && line[0].rights.ordinary && line[0].inverted);
+    }
+}
