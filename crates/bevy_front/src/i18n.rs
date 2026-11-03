@@ -199,6 +199,7 @@ fn error_message(text: &str) -> Message {
         ("Некорректная клетка: ", "Invalid square: "),
         ("Некорректная история: ", "invalid history: "),
         ("Неподдерживаемый ход: ", "unsupported move: "),
+        ("Ошибка движка на этапе ", "engine error at "),
     ] {
         if let Some(detail) = text.strip_prefix(ru).or_else(|| text.strip_prefix(en)) {
             let detail = error_message(detail);
@@ -222,11 +223,8 @@ pub fn server_error(code: &str, detail: &str) -> Message {
         ),
         "not_your_turn" => ("Сейчас ход соперника.", "It is your opponent's turn."),
         "invalid_command" => ("Недопустимая команда.", "Invalid command."),
-        "illegal_command" => ("Ход не принят.", "Move rejected."),
-        "engine_error" => (
-            "Не удалось обработать команду.",
-            "Could not process the command.",
-        ),
+        "illegal_command" => ("Ход не принят:", "Move rejected:"),
+        "engine_error" => ("Ошибка движка:", "Engine error:"),
         "replay_failed" => (
             "Не удалось восстановить партию.",
             "Could not restore the game.",
@@ -269,13 +267,13 @@ pub fn server_error(code: &str, detail: &str) -> Message {
         _ => {
             return Message::new(
                 format!("Ошибка сервера ({code}): {}", error_message(detail).ru),
-                format!("Server error ({code})"),
+                format!("Server error ({code}): {}", error_message(detail).en),
             );
         }
     };
     if matches!(
         code,
-        "invalid_command" | "illegal_command" | "replay_failed"
+        "invalid_command" | "illegal_command" | "engine_error" | "replay_failed"
     ) {
         Message::with_error(&format!("{ru} "), &format!("{en} "), detail)
     } else {
@@ -286,6 +284,24 @@ pub fn server_error(code: &str, detail: &str) -> Message {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn engine_and_unknown_server_errors_preserve_diagnostics_in_both_languages() {
+        let detail = "engine error at collision at t=0, pieces 4:4 and 12:0: missing predecessor";
+        for code in ["illegal_command", "engine_error", "unexpected_failure"] {
+            let message = server_error(code, detail);
+            for text in [message.ru, message.en] {
+                assert!(text.contains("t=0"));
+                assert!(text.contains("4:4 and 12:0"));
+                assert!(text.contains("missing predecessor"));
+            }
+        }
+        assert!(
+            Message::from(detail)
+                .ru
+                .starts_with("Ошибка движка на этапе")
+        );
+    }
+
     #[test]
     fn stored_messages_keep_both_languages_and_localize_nested_errors() {
         let message = Message::with_error(

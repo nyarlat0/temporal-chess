@@ -176,7 +176,11 @@ impl Engine {
         let mut candidate = self.clone();
         candidate.history.calculation.acknowledged.clear();
         candidate.history.calculation.responsible = Some(actor);
-        match command(&mut candidate).and_then(|()| candidate.finish_command(actor)) {
+        match command(&mut candidate).and_then(|()| {
+            candidate
+                .finish_command(actor)
+                .map_err(|e| e.during("adjudicating the resulting position"))
+        }) {
             Ok(()) => {
                 *self = candidate;
                 Ok(())
@@ -212,6 +216,30 @@ pub enum EngineErr {
     InvalidHistory(&'static str),
     UnsupportedMove(&'static str),
     BoardErr(BoardErr),
+    /// An admitted command failed while updating the engine, not because the
+    /// player chose an illegal move. Preserve the stage and the original cause.
+    Internal {
+        operation: String,
+        cause: Box<EngineErr>,
+    },
+}
+
+impl EngineErr {
+    pub(super) fn during(self, operation: impl Into<String>) -> Self {
+        // A causal cycle is a game outcome, never an implementation failure.
+        if matches!(self, Self::InfLoop) {
+            self
+        } else {
+            Self::Internal {
+                operation: operation.into(),
+                cause: Box::new(self),
+            }
+        }
+    }
+
+    pub fn is_internal(&self) -> bool {
+        matches!(self, Self::Internal { .. })
+    }
 }
 
 impl fmt::Display for EngineErr {
@@ -226,6 +254,9 @@ impl fmt::Display for EngineErr {
             Self::InvalidHistory(reason) => write!(f, "invalid history: {reason}"),
             Self::UnsupportedMove(reason) => write!(f, "unsupported move: {reason}"),
             Self::BoardErr(error) => write!(f, "{error}"),
+            Self::Internal { operation, cause } => {
+                write!(f, "engine error at {operation}: {cause}")
+            }
         }
     }
 }
@@ -234,6 +265,7 @@ impl std::error::Error for EngineErr {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::BoardErr(error) => Some(error),
+            Self::Internal { cause, .. } => Some(cause),
             _ => None,
         }
     }

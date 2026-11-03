@@ -569,14 +569,16 @@ impl GameUi {
             }
             Err(error) => {
                 self.promotion.clear();
-                self.message(
+                let message = if error.is_internal() {
+                    crate::i18n::Message::from(error.to_string())
+                } else {
                     crate::i18n::Message::with_error(
                         "Ход не принят: ",
                         "Move rejected: ",
                         error.to_string(),
-                    ),
-                    true,
-                );
+                    )
+                };
+                self.message(message, true);
             }
         }
     }

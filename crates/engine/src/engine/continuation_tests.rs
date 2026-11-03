@@ -579,3 +579,73 @@ fn pawn_cancellation_pauses_before_it_blocks_inverted_bishop() {
     assert!(!engine.history.moves.contains_key(&bishop.id()));
     assert_eq!(GameRecord::load(&record.to_text()).unwrap().0, engine);
 }
+
+#[test]
+fn every_offered_move_is_accepted_in_king_inversion_position() {
+    use crate::record::GameRecord;
+    let (engine, _) = GameRecord::load("NOLAN-CHESS 2\ncausal_gaps off\nmove 0 12:0:0 e2 e3 + normal\nmove 1 25:1:0 b7 b6 + normal\n").unwrap();
+    let king = *engine.board(2).unwrap().get_piece(4, 0).unwrap();
+    let requested = engine
+        .possible_moves(king.origin, king.age)
+        .unwrap()
+        .into_iter()
+        .find(|mv| mv.to_past() && mv.sq == Sq(4, 1))
+        .expect("king move stays offered");
+    let mut probe = engine.clone();
+    probe.apply_new_mv(requested).unwrap();
+    assert!(probe.get_piv(king.origin, king.age + 1).is_some());
+    assert!(!probe.history.worldlines[12][0].alive);
+    for piece in engine.move_sources() {
+        for mv in engine.possible_moves(piece.origin, piece.age).unwrap() {
+            let mut played = engine.clone();
+            assert_eq!(played.apply_new_mv(mv), Ok(()), "offered {mv:?}");
+        }
+    }
+}
+
+#[test]
+fn returning_bishop_can_meet_a_borrowed_pawn() {
+    use crate::record::GameRecord;
+    let (mut engine, _) = GameRecord::load("NOLAN-CHESS 2\ncausal_gaps on\nmove 0 10:0:0 c2 c4 + normal\nmove 1 27:1:0 d7 d5 + normal\nmove 2 3:2:0 d1 c2 - normal\nmove 3 18:3:0 c8 h3 - normal\nmove 2 14:2:0 g2 g4 - normal\n").unwrap();
+    let piece = engine
+        .move_sources()
+        .find(|p| p.origin == 18 && p.t == 1)
+        .unwrap();
+    let mv = engine
+        .possible_moves(piece.origin, piece.age)
+        .unwrap()
+        .into_iter()
+        .find(|mv| !mv.to_past() && mv.sq == Sq(6, 1))
+        .unwrap();
+    engine.apply_new_mv(mv).unwrap();
+    assert!(
+        engine.history.worldlines[14]
+            .iter()
+            .filter(|s| s.t >= 2)
+            .all(|s| !s.alive)
+    );
+    assert!(engine.get_piv(18, 7).is_some());
+}
+
+#[test]
+fn oncoming_contact_at_a_worldline_origin_uses_existing_policy_for_both_colors() {
+    for color in [Color::White, Color::Black] {
+        for other_color in [color, color.opposite()] {
+            let ordinary = state(color, Sq(4, 1), color.first_board(), false);
+            let inverted = state(other_color, Sq(4, 1), ordinary.t, true);
+            let mut engine = Engine::default();
+            engine.history.worldlines = vec![vec![ordinary].into(), vec![inverted].into()];
+            let ordinary = engine.get_piv(0, 0).unwrap();
+            let inverted = engine.get_piv(1, 0).unwrap();
+            for pair in [(ordinary, inverted), (inverted, ordinary)] {
+                let collision = engine.track_collision(pair.0, pair.1).unwrap();
+                assert_eq!(collision.collider, ordinary);
+                assert_eq!(collision.collided, inverted);
+                assert_eq!(
+                    collision_effects(collision),
+                    vec![CollisionEffect::KillFrom(ShortPieceId::from_piv(&ordinary))]
+                );
+            }
+        }
+    }
+}

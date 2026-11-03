@@ -1,5 +1,3 @@
-use std::cmp::min;
-
 use crate::pieces::PieceView;
 
 use super::collision_rules::{CollisionEffect, collision_effects};
@@ -20,15 +18,19 @@ impl Engine {
         let piv = *bc.pivs.first().ok_or(EngineErr::WrongPiece)?;
         let other_piv = *bc.pivs.get(1).ok_or(EngineErr::WrongPiece)?;
 
-        let col = self
-            .track_collision(piv, other_piv)
-            .ok_or(EngineErr::WrongPiece)?;
+        let col = self.track_collision(piv, other_piv).ok_or_else(|| {
+            EngineErr::InvalidHistory("collision has no traceable cause").during(format!(
+                "collision at t={} {:?}, pieces {}:{} and {}:{}",
+                piv.t, piv.sq, piv.origin, piv.age, other_piv.origin, other_piv.age
+            ))
+        })?;
 
         for effect in collision_effects(col) {
             match effect {
-                CollisionEffect::KillFrom(id) => self.kill_piece(id.wid, id.age)?,
-                CollisionEffect::CancelLastMove(piece) => self.undo_last_mv(piece)?,
+                CollisionEffect::KillFrom(id) => self.kill_piece(id.wid, id.age),
+                CollisionEffect::CancelLastMove(piece) => self.undo_last_mv(piece),
             }
+            .map_err(|e| e.during(format!("resolving collision: {effect:?}")))?;
         }
 
         Ok(())
@@ -59,14 +61,11 @@ impl Engine {
             let mut prev_piv = piv;
             let mut prev_other_piv = other_piv;
 
-            for _ in 1..=min(piv.age, other_piv.age) {
-                let piv_bf = self.previous_piece(prev_piv)?;
-                let other_piv_bf = self.previous_piece(prev_other_piv)?;
-                if piv_bf.t != other_piv_bf.t {
-                    return None;
-                }
+            loop {
+                let piv_bf = self.previous_piece(prev_piv);
+                let other_piv_bf = self.previous_piece(prev_other_piv);
 
-                if piv_bf.sq != piv.sq {
+                if let Some(piv_bf) = piv_bf.filter(|bf| bf.sq != piv.sq) {
                     let bf_collider = piv_bf;
                     let collider = prev_piv;
                     let collided = prev_other_piv;
@@ -77,7 +76,7 @@ impl Engine {
                     });
                 }
 
-                if other_piv_bf.sq != other_piv.sq {
+                if let Some(other_piv_bf) = other_piv_bf.filter(|bf| bf.sq != other_piv.sq) {
                     let bf_collider = other_piv_bf;
                     let collider = prev_other_piv;
                     let collided = prev_piv;
@@ -88,8 +87,31 @@ impl Engine {
                     });
                 }
 
-                prev_piv = piv_bf;
-                prev_other_piv = other_piv_bf;
+                match (piv_bf, other_piv_bf) {
+                    (Some(a), Some(b)) if a.t == b.t => {
+                        prev_piv = a;
+                        prev_other_piv = b;
+                    }
+                    _ => {
+                        // A preserved future can begin at a causal gap while
+                        // the other piece is already standing on its square.
+                        // Keep the contact at this boundary; find the arrival
+                        // along each *own* connected line instead of requiring
+                        // the two pieces to have equally long predecessors.
+                        for (collider, collided) in
+                            [(prev_piv, prev_other_piv), (prev_other_piv, prev_piv)]
+                        {
+                            if let Some(bf_collider) = self.before_arrival(collider) {
+                                return Some(PieceCollision {
+                                    bf_collider,
+                                    collider,
+                                    collided,
+                                });
+                            }
+                        }
+                        return None;
+                    }
+                }
             }
         } else {
             let (inv, ord) = if piv.inverted {
@@ -101,8 +123,19 @@ impl Engine {
             let mut prev_inv = inv;
             let mut prev_ord = ord;
 
-            for _ in 1..=ord.age {
-                let ord_bf = self.previous_piece(prev_ord)?;
+            loop {
+                // An overlap can reach the beginning of an ordinary worldline
+                // (or a causal segment). There is no earlier movement there,
+                // but the collision is real: resolve it as a stationary
+                // ordinary piece meeting an inverted one. Do not require a
+                // predecessor before the beginning of history.
+                let Some(ord_bf) = self.previous_piece(prev_ord) else {
+                    return Some(PieceCollision {
+                        bf_collider: prev_ord,
+                        collider: prev_ord,
+                        collided: prev_inv,
+                    });
+                };
                 let mb_inv_aft = self.next_piece(prev_inv).filter(|p| p.t == ord_bf.t);
 
                 if let Some(inv_aft) = mb_inv_aft {
@@ -143,7 +176,16 @@ impl Engine {
                 }
             }
         }
+    }
 
+    fn before_arrival(&self, piece: PieceView) -> Option<PieceView> {
+        let mut cursor = piece;
+        while let Some(previous) = self.previous_piece(cursor) {
+            if previous.sq != piece.sq {
+                return Some(previous);
+            }
+            cursor = previous;
+        }
         None
     }
 }

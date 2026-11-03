@@ -44,25 +44,32 @@ impl Engine {
 
     /// Commit the move, temporal edits, reconciliation and turn change atomically.
     pub fn apply_new_mv(&mut self, mv: Move) -> Result<(), EngineErr> {
+        if self.outcome().is_some() {
+            return Err(EngineErr::GameOver);
+        }
+        let piece = self.move_source(mv)?;
+        // Admission uses the very same list as highlighting, before any edits
+        // (including resetting calculation acknowledgements). Reconciliation
+        // may cancel this move later; that cannot retroactively reject it.
+        if !self.possible_moves(piece.origin, piece.age)?.contains(&mv) {
+            return Err(EngineErr::WrongMove);
+        }
         self.transaction(|candidate| {
-            let piece = candidate.get_piv_from_mv(mv).ok_or(EngineErr::WrongPiece)?;
-            if piece.color != candidate.turn {
-                return Err(EngineErr::WrongTurn);
-            }
-            if !candidate.inverse_safe(mv, piece.color) {
-                return Err(EngineErr::WrongMove);
-            }
-            candidate.apply_move_inner(mv)?;
+            candidate
+                .apply_admitted_move(mv, piece)
+                .map_err(|e| e.during(format!("applying {mv:?}")))?;
             candidate.turn = candidate.turn.opposite();
             // A legal command may rewrite its own cause out of history. Commit
             // the resulting history even when validation cancels this move;
             // GameRecord independently retains the accepted player command.
-            candidate.reconcile()
+            candidate
+                .reconcile()
+                .map_err(|e| e.during(format!("reconciling after {mv:?}")))
         })
     }
 
-    pub(super) fn apply_move_inner(&mut self, mv: Move) -> Result<(), EngineErr> {
-        let mut piece = self.get_piv_from_mv(mv).ok_or(EngineErr::WrongPiece)?;
+    fn move_source(&self, mv: Move) -> Result<PieceView, EngineErr> {
+        let piece = self.get_piv_from_mv(mv).ok_or(EngineErr::WrongPiece)?;
         if self.board(piece.t).is_none() {
             return Err(EngineErr::AbsentBoard);
         }
@@ -72,9 +79,20 @@ impl Engine {
         if !piece.is_movable() {
             return Err(EngineErr::WrongPiece);
         }
+        Ok(piece)
+    }
+
+    /// Internal probes check spatial rules without recursively probing inverse
+    /// safety. Public commands are admitted through `possible_moves` above.
+    pub(super) fn apply_move_inner(&mut self, mv: Move) -> Result<(), EngineErr> {
+        let piece = self.move_source(mv)?;
         if !self.candidate_moves(piece.origin, piece.age)?.contains(&mv) {
             return Err(EngineErr::WrongMove);
         }
+        self.apply_admitted_move(mv, piece)
+    }
+
+    fn apply_admitted_move(&mut self, mv: Move, mut piece: PieceView) -> Result<(), EngineErr> {
         let checking = self.move_board(piece, mv.direction)?;
         let target_sq = mv.en_passant().unwrap_or(mv.sq);
         let target = checking

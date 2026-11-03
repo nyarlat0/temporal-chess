@@ -155,7 +155,9 @@ impl Engine {
         horizon: usize,
     ) -> Result<(), EngineErr> {
         let source = self.history.worldlines[piece.origin][piece.age].clone();
-        let mut next = source.step(mv.direction).ok_or(EngineErr::WrongMove)?;
+        let mut next = source.step(mv.direction).ok_or(EngineErr::InvalidHistory(
+            "time or temporal identity overflow while creating move arrival",
+        ))?;
         next.apply_mv(mv);
         let line = &self.history.worldlines[piece.origin];
         let connected = line.gap_after(piece.age).is_none();

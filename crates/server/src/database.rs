@@ -274,13 +274,18 @@ impl Repository {
                     "Нет такого состояния фигуры.",
                 ));
             }
-            record
-                .apply(&mut engine, command)
-                .map_err(|e| client_error("illegal_command", e.to_string()))?;
+            record.apply(&mut engine, command).map_err(|e| {
+                let code = if e.is_internal() {
+                    "engine_error"
+                } else {
+                    "illegal_command"
+                };
+                client_error(code, e.to_string())
+            })?;
             Ok::<_, RepositoryError>(command.to_string())
         })
         .await
-        .map_err(|_| client_error("engine_error", "Не удалось обработать команду."))??;
+        .map_err(|error| client_error("engine_error", error.to_string()))??;
         let next_revision = revision
             .checked_add(1)
             .ok_or_else(|| client_error("revision_overflow", "Game revision overflow."))?;

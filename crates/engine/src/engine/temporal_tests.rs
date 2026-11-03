@@ -316,7 +316,10 @@ fn counter_overflow_rejects_the_entire_command_even_after_rights_were_consumed()
         .into_iter()
         .find(|mv| !mv.to_past())
         .unwrap();
-    assert_eq!(engine.apply_new_mv(mv), Err(EngineErr::WrongMove));
+    let error = engine.apply_new_mv(mv).unwrap_err();
+    assert!(error.is_internal());
+    assert!(error.to_string().contains("temporal identity overflow"));
+    assert!(error.to_string().contains("applying Move"));
     assert_eq!(engine, before);
 }
 

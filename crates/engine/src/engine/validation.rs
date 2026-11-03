@@ -20,18 +20,22 @@ impl Engine {
             {
                 continue;
             }
-            let ShortPieceId { wid, age } = *self
-                .projection
-                .pieces
-                .get(&mv.source())
-                .ok_or(EngineErr::WrongPiece)?;
+            let ShortPieceId { wid, age } =
+                *self.projection.pieces.get(&mv.source()).ok_or_else(|| {
+                    EngineErr::InvalidHistory("recorded move source is missing")
+                        .during(format!("validating {mv:?}"))
+                })?;
             if self.history.worldlines[wid].is_borrowed(age) {
                 continue;
             }
             if self.history.worldlines[wid][age].alive
-                && !self.recorded_move_candidates(wid, age, mv)?.contains(&mv)
+                && !self
+                    .recorded_move_candidates(wid, age, mv)
+                    .map_err(|e| e.during(format!("validating {mv:?}")))?
+                    .contains(&mv)
             {
-                self.undo_mv(id)?;
+                self.undo_mv(id)
+                    .map_err(|e| e.during(format!("cancelling {mv:?}")))?;
                 return Ok(ValidRes::HistChanged);
             }
         }
