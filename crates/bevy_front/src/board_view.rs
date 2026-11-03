@@ -602,7 +602,7 @@ fn paint_board(
         alpha,
     );
     let checked = &game.checks;
-    let previous = last_visible_move(game, t);
+    let previous = visible_moves(game, t);
     let mut artwork = Vec::new();
     for x in 0..8 {
         for y in 0..8 {
@@ -789,7 +789,7 @@ fn paint_board(
             );
         }
     }
-    if let Some((mv, from)) = previous {
+    for (mv, from) in previous {
         let highlighted =
             hovered.is_some_and(|(time, sq)| time == t && (sq == from || sq == mv.sq));
         let replacing = replaces_selected_move(game, mv);
@@ -868,33 +868,40 @@ fn replaces_selected_move(game: &GameUi, old: temporal_chess_engine::model::Move
 }
 
 /// Retained commands only have an arrow while their source incarnation is alive.
-fn last_visible_move(game: &GameUi, t: usize) -> Option<(temporal_chess_engine::model::Move, Sq)> {
-    let visible = game.record.commands().iter().rev().filter_map(|command| {
-        if let Command::Move { mv, from } = command
-            && mv.t == t
-            && game
-                .engine
-                .piece_state(mv.source())
-                .is_some_and(|state| state.alive)
-            && (game.engine.history().moves().get(&mv.id()) == Some(mv)
-                || (game.record.commands().last() == Some(command)
-                    && matches!(
-                        game.engine.outcome(),
-                        Some(temporal_chess_engine::engine::GameOutcome::Victory {
-                            reason: temporal_chess_engine::engine::WinReason::Paradox,
-                            ..
-                        })
-                    )))
-        {
-            Some((*mv, *from))
-        } else {
-            None
-        }
-    });
+fn visible_moves(game: &GameUi, t: usize) -> Vec<(temporal_chess_engine::model::Move, Sq)> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut visible: Vec<_> = game
+        .record
+        .commands()
+        .iter()
+        .rev()
+        .filter_map(|command| {
+            if let Command::Move { mv, from } = command
+                && mv.t == t
+                && game
+                    .engine
+                    .piece_state(mv.source())
+                    .is_some_and(|state| state.alive)
+                && (game.engine.history().moves().get(&mv.id()) == Some(mv)
+                    || (game.record.commands().last() == Some(command)
+                        && matches!(
+                            game.engine.outcome(),
+                            Some(temporal_chess_engine::engine::GameOutcome::Victory {
+                                reason: temporal_chess_engine::engine::WinReason::Paradox,
+                                ..
+                            })
+                        )))
+            {
+                seen.insert(mv.id()).then_some((*mv, *from))
+            } else {
+                None
+            }
+        })
+        .collect();
+    visible.reverse();
+    // Keep the replacement warning above other arrows, without hiding them.
+    visible.sort_by_key(|(mv, _)| replaces_selected_move(game, *mv));
     visible
-        .clone()
-        .find(|(mv, _)| replaces_selected_move(game, *mv))
-        .or_else(|| visible.into_iter().next())
 }
 
 /// A single filled shape avoids darker overlaps at translucent rounded caps.
@@ -1127,7 +1134,7 @@ mod tests {
         game.record
             .apply(&mut game.engine, Command::Move { mv, from: Sq(3, 4) })
             .unwrap();
-        assert_eq!(last_visible_move(&game, 1), Some((mv, Sq(3, 4))));
+        assert_eq!(visible_moves(&game, 1), vec![(mv, Sq(3, 4))]);
         let capture = game
             .engine
             .possible_moves(0, 0)
@@ -1146,8 +1153,8 @@ mod tests {
             .unwrap();
         assert!(!game.engine.piece_state(mv.source()).unwrap().alive);
         assert_eq!(game.engine.history().moves().get(&mv.id()), Some(&mv));
-        assert_eq!(last_visible_move(&game, 1), None);
-        assert_eq!(last_visible_move(&game, 2), Some((capture, Sq(4, 4))));
+        assert!(visible_moves(&game, 1).is_empty());
+        assert_eq!(visible_moves(&game, 2), vec![(capture, Sq(4, 4))]);
         assert_eq!(game.record.commands().len(), 2);
     }
 

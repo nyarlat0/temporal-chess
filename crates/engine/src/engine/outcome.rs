@@ -94,7 +94,8 @@ impl Engine {
     }
 
     /// Probe commands without recursively adjudicating their resulting turns.
-    /// Successful reconciliation counts even if it cancels the initiating move.
+    /// Only surviving, non-paradoxical continuations count as a defence.
+    /// The initiating move may still cancel itself during reconciliation.
     fn can_act(&self, side: Color) -> Result<bool, EngineErr> {
         let mut prepared = self.clone();
         prepared.turn = side;
@@ -112,7 +113,7 @@ impl Engine {
                     let result = probe
                         .skip_inner(Self::piece_at(piece), t)
                         .and_then(|()| probe.reconcile());
-                    if result.is_ok() || result == Err(EngineErr::InfLoop) {
+                    if result.is_ok() && !probe.king_died(side) {
                         return Ok(true);
                     }
                 }
@@ -126,9 +127,9 @@ impl Engine {
                     probe.turn = side.opposite();
                     probe.reconcile()
                 });
-                if result.is_ok() || result == Err(EngineErr::InfLoop) {
-                    // A player may choose a paradox-causing command and lose;
-                    // it must not be silently reclassified as stalemate.
+                if result.is_ok() && !probe.king_died(side) {
+                    // A paradox is still a playable losing command, but it
+                    // cannot serve as a defence against an otherwise final mate.
                     return Ok(true);
                 }
             }

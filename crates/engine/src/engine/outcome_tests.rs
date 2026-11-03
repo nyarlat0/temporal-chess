@@ -669,3 +669,15 @@ fn an_inverted_wait_inserts_before_the_borrowed_future_without_changing_it() {
     assert_eq!(line.gaps()[0].after, MoveId::from_state(&line[10]));
     roundtrip(&engine);
 }
+
+#[test]
+fn a_paradoxical_knight_reply_does_not_prevent_checkmate() {
+    let (engine, _) = crate::record::GameRecord::load("NOLAN-CHESS 2\ncausal_gaps off\nmove 0 11:0:0 d2 d4 + normal\nmove 1 28:1:0 e7 e5 + normal\nmove 2 6:2:0 g1 f3 + normal\nmove 3 21:3:0 f8 b4 + normal\n").unwrap();
+    assert_eq!(
+        engine.outcome(),
+        Some(GameOutcome::Victory {
+            winner: Color::Black,
+            reason: WinReason::Checkmate,
+        })
+    );
+}
