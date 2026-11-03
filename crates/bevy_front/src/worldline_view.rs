@@ -23,72 +23,97 @@ fn blend(a: Color32, b: Color32, t: f32) -> Color32 {
     Color32::from_rgb(c(a.r(), b.r()), c(a.g(), b.g()), c(a.b(), b.b()))
 }
 
-/// Vertical leads keep bends away from the artwork. Circular fillets have a
-/// radius of at most half a cell, independent of the distance between boards.
-fn rounded_route(a: Pos2, b: Pos2, cell: f32) -> Vec<Pos2> {
-    let lead = cell.min((b.y - a.y).abs() * 0.25);
-    let vertical = Vec2::new(0.0, (b.y - a.y).signum() * lead);
-    let corners = [a, a + vertical, b - vertical, b];
-    let mut route = vec![a];
-    for i in 1..3 {
-        let incoming = corners[i] - corners[i - 1];
-        let outgoing = corners[i + 1] - corners[i];
-        let u = incoming.normalized();
-        let v = outgoing.normalized();
-        let angle = (u.x * v.y - u.y * v.x).atan2(u.dot(v));
-        if angle.abs() < 0.001 {
-            route.push(corners[i]);
-            continue;
-        }
-        let tangent = (angle.abs() * 0.5).tan();
-        let trim = (cell * 0.5 * tangent)
-            .min(incoming.length() * 0.45)
-            .min(outgoing.length() * 0.45);
-        let radius = trim / tangent;
-        let entry = corners[i] - u * trim;
-        let center = entry + Vec2::new(-u.y, u.x) * (radius * angle.signum());
-        let radial = entry - center;
-        for step in 0..=16 {
-            let t = angle * step as f32 / 16.0;
-            route.push(
-                center
-                    + Vec2::new(
-                        radial.x * t.cos() - radial.y * t.sin(),
-                        radial.x * t.sin() + radial.y * t.cos(),
-                    ),
-            );
-        }
+/// Subdivide the actual Bezier curve until its control polygon is flat to a
+/// fraction of a screen point. Tight bends receive more samples than long leads.
+fn append_bezier(control: &[Pos2], output: &mut Vec<Pos2>, depth: usize) {
+    let first = control[0];
+    let last = *control.last().unwrap();
+    let chord = last - first;
+    let length = chord.length();
+    let flat = length > 0.0001
+        && control.iter().all(|point| {
+            let delta = *point - first;
+            let along = delta.dot(chord) / length;
+            (delta.x * chord.y - delta.y * chord.x).abs() / length <= 0.15
+                && along >= 0.0
+                && along <= length
+        });
+    let smooth = length > 0.0001
+        && control.windows(2).all(|pair| {
+            let tangent = pair[1] - pair[0];
+            tangent.length_sq() < 1e-10 || tangent.dot(chord) / (tangent.length() * length) > 0.998
+        });
+    if (flat && smooth) || depth == 14 {
+        output.push(last);
+        return;
     }
+    let mut work = control.to_vec();
+    let mut left = vec![first];
+    let mut right = vec![last];
+    for remaining in (1..control.len()).rev() {
+        for i in 0..remaining {
+            work[i] = work[i].lerp(work[i + 1], 0.5);
+        }
+        left.push(work[0]);
+        right.push(work[remaining - 1]);
+    }
+    right.reverse();
+    append_bezier(&left, output, depth + 1);
+    append_bezier(&right, output, depth + 1);
+}
+
+/// Smooth S-shaped connection, with zero curvature at its vertical endpoints.
+/// There is no straight diagonal section between separately rounded corners.
+fn rounded_route(a: Pos2, b: Pos2, cell: f32) -> Vec<Pos2> {
+    let sign = (b.y - a.y).signum();
+    let lead = cell.min((b.y - a.y).abs() * 0.2) * 0.5;
+    let entry = a + Vec2::new(0.0, sign * lead);
+    let exit = b - Vec2::new(0.0, sign * lead);
+    let handle = Vec2::new(0.0, (exit.y - entry.y) * 0.2);
+    let mut route = vec![a, entry];
+    append_bezier(
+        &[
+            entry,
+            entry + handle,
+            entry + handle * 2.0,
+            exit - handle * 2.0,
+            exit - handle,
+            exit,
+        ],
+        &mut route,
+        0,
+    );
     route.push(b);
     route
 }
 
-/// A temporal reversal is a U-turn beyond the source occurrence, not a cusp
-/// at its center. The outgoing tangent must agree with the incoming worldline.
+/// One degree-seven Bezier carries a reversal all the way to the next state.
+/// Collinear, equally spaced endpoint controls give vertical tangents and zero
+/// endpoint curvature; the inner controls shape a compact, flowing hairpin.
 fn state_route(a: Pos2, b: Pos2, cell: f32, inverted: bool, next_inverted: bool) -> Vec<Pos2> {
     if inverted == next_inverted {
         return rounded_route(a, b, cell);
     }
-    let old_direction = if inverted { 1.0 } else { -1.0 };
-    let side = if b.x < a.x { -1.0 } else { 1.0 };
-    let entry = a + Vec2::new(0.0, old_direction * cell);
-    let radius = cell * 0.5;
-    let steps = ((std::f32::consts::PI * radius / 1.5).ceil() as usize).clamp(32, 192);
+    let old_direction = Vec2::new(0.0, if inverted { 1.0 } else { -1.0 });
+    let side = Vec2::new(if b.x < a.x { -1.0 } else { 1.0 }, 0.0);
+    let entry = a + old_direction * cell * 0.5;
+    let start_handle = old_direction * cell * 0.4;
+    let end_handle = old_direction * (b.y - entry.y).abs() * 0.18;
     let mut route = vec![a, entry];
-    for step in 1..=steps {
-        let angle = std::f32::consts::PI * step as f32 / steps as f32;
-        route.push(
-            entry
-                + Vec2::new(
-                    side * radius * (1.0 - angle.cos()),
-                    old_direction * radius * angle.sin(),
-                ),
-        );
-    }
-    let exit = entry + Vec2::new(side * radius * 2.0, 0.0);
-    // Use the exact semicircle endpoint, avoiding floating point seams.
-    *route.last_mut().unwrap() = exit;
-    route.extend(rounded_route(exit, b, cell).into_iter().skip(1));
+    append_bezier(
+        &[
+            entry,
+            entry + start_handle,
+            entry + start_handle * 2.0,
+            entry + side * cell + start_handle * 2.0,
+            entry + side * cell - old_direction * cell * 0.5,
+            b + end_handle * 2.0,
+            b + end_handle,
+            b,
+        ],
+        &mut route,
+        0,
+    );
     route
 }
 
@@ -240,8 +265,8 @@ mod tests {
                     let route = state_route(a, b, cell, inverted, !inverted);
                     assert_eq!(route[0], a);
                     assert_eq!(*route.last().unwrap(), b);
-                    assert_eq!(route[1], a + Vec2::new(0.0, old_direction * cell));
-                    assert!(route.iter().any(|p| p.y * old_direction > cell * 1.49));
+                    assert_eq!(route[1], a + Vec2::new(0.0, old_direction * cell * 0.5));
+                    assert!(route.iter().any(|p| p.y * old_direction > cell * 0.65));
                     assert!(route.iter().all(|p| p.x.is_finite() && p.y.is_finite()));
                     let directions: Vec<_> = route
                         .windows(2)
