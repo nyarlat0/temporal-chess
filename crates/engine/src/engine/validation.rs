@@ -3,6 +3,26 @@ use crate::pieces::Sq;
 use super::{Engine, EngineErr, ShortPieceId, ValidRes};
 
 impl Engine {
+    /// A collision cycle can prevent the chronological frontier from reaching
+    /// the move which created that collision. Before declaring a paradox, cancel
+    /// a recorded move already impossible from its changed source, regardless
+    /// of blockers. Full board-dependent validation still follows the frontier.
+    fn cancel_impossible_cycle_move(&mut self) -> Result<ValidRes, EngineErr> {
+        for (id, mv) in self.history.moves.clone() {
+            let Some(piece) = self.get_piv_from_mv(mv) else {
+                continue;
+            };
+            if !self.history.worldlines[piece.origin].is_borrowed(piece.age)
+                && !self.recorded_move_has_geometry(piece, mv)
+            {
+                self.undo_mv(id)
+                    .map_err(|e| e.during(format!("cancelling cycle cause {mv:?}")))?;
+                return Ok(ValidRes::HistChanged);
+            }
+        }
+        Ok(ValidRes::Unchanged)
+    }
+
     /// Cancel one invalid move in chronological/causal order, then rebuild.
     fn validate_moves(&mut self) -> Result<ValidRes, EngineErr> {
         let barrier = self.calculation_barrier();
@@ -91,6 +111,9 @@ impl Engine {
         let mut seen = Vec::new();
         loop {
             if seen.contains(&self.history) {
+                if self.cancel_impossible_cycle_move()? == ValidRes::HistChanged {
+                    continue;
+                }
                 return Err(EngineErr::InfLoop);
             }
             seen.push(self.history.clone());

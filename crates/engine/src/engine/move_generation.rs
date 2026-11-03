@@ -5,6 +5,35 @@ use crate::board::Board;
 use crate::pieces::{Color, PieceKind, PieceView, Sq};
 
 impl Engine {
+    /// Necessary spatial conditions, independent of unresolved occupancy and
+    /// attacks. Reuse movement rules on a permissive board: allow a pawn's
+    /// potential capture and provide a rook when checking castling geometry.
+    pub(super) fn recorded_move_has_geometry(&self, piece: PieceView, mv: Move) -> bool {
+        let mut board = Board::empty(piece.t);
+        if let Some(castling) = mv.castling() {
+            let rook_x = if castling == Castling::Long { 0 } else { 7 };
+            let home_y = if piece.color == Color::White { 0 } else { 7 };
+            board.add_piece(PieceView {
+                origin: usize::MAX,
+                kind: PieceKind::R { moved: false },
+                sq: Sq(rook_x, home_y),
+                ..piece
+            });
+            return piece
+                .castling_moves_with_attacks(&board, |_| false)
+                .contains(&(mv.sq, castling));
+        }
+        if matches!(piece.kind, PieceKind::P { .. }) && piece.sq.0 != mv.sq.0 {
+            board.add_piece(PieceView {
+                origin: usize::MAX,
+                color: piece.color.opposite(),
+                sq: mv.sq,
+                ..piece
+            });
+        }
+        piece.basic_moves(&board).contains(&mv.sq)
+    }
+
     /// Board on which movement is tested, with this move's own old effects undone.
     /// Existing target boards take precedence; only forward moves may fall back.
     pub(super) fn move_board(

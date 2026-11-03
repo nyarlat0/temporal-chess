@@ -629,6 +629,35 @@ fn self_annihilation_validation_cycle_loses_for_the_command_author() {
 }
 
 #[test]
+fn an_impossible_departure_breaks_the_collision_cycle_in_both_rulesets() {
+    for color in [Color::White, Color::Black] {
+        for gaps in [false, true] {
+            let earlier = color.first_board() + 2;
+            let departure = color.first_board() + 8;
+            let mut knight = line(PieceKind::N, color, Sq(5, 5), departure);
+            knight[earlier].rights.ordinary = true;
+            knight[departure].rights.ordinary = true;
+            let mut engine = Engine::from_worldlines(vec![knight], color).unwrap();
+            engine.history.causal_gaps = gaps;
+            let old = play(&mut engine, 0, departure, TimeDirection::Past, Sq(4, 3));
+            engine.turn = color;
+            let replacement = play(&mut engine, 0, earlier, TimeDirection::Future, Sq(4, 3));
+            assert!(engine.outcome().is_none());
+            assert!(!engine.history.moves.contains_key(&old.id()));
+            assert_eq!(
+                engine.history.moves.get(&replacement.id()),
+                Some(&replacement)
+            );
+            let endpoint = engine.history.worldlines[0].last().unwrap();
+            assert_eq!(endpoint.t, departure);
+            assert_eq!(Sq(endpoint.x, endpoint.y), Sq(4, 3));
+            assert!(endpoint.alive && endpoint.rights.ordinary && !endpoint.inverted);
+            roundtrip(&engine);
+        }
+    }
+}
+
+#[test]
 fn waiting_cannot_overwrite_a_later_recorded_move_and_rolls_back_consumed_rights() {
     let mut knight = line(PieceKind::N, Color::White, Sq(1, 0), 4);
     for t in [0, 2, 4] {

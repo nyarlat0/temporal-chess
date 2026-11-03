@@ -151,3 +151,38 @@ fn bishop_can_replace_a_dead_queens_move_with_a_backward_recapture() {
     assert!(!engine.piece_state(victim).unwrap().alive);
     assert_eq!(GameRecord::load(&record.to_text()).unwrap().0, engine);
 }
+
+#[test]
+fn impossible_future_knight_move_is_cancelled_before_declaring_paradox() {
+    let text = include_str!("fixtures/knight_capture_paradox.nolan");
+    let (prefix, last) = text.trim_end().rsplit_once('\n').unwrap();
+    let (mut engine, mut record) = GameRecord::load(prefix).unwrap();
+    let invalidated = *engine
+        .history()
+        .moves()
+        .values()
+        .find(|mv| mv.pid.wid == 22 && mv.t == 37)
+        .unwrap();
+    let command = last.parse().unwrap();
+    record.apply(&mut engine, command).unwrap();
+    assert!(engine.outcome().is_none(), "{:?}", engine.outcome());
+    let Command::Move { mv, .. } = command else {
+        unreachable!()
+    };
+    assert_eq!(engine.history().moves().get(&mv.id()), Some(&mv));
+    assert_eq!(
+        engine.board(32).unwrap().get_piece(4, 3).unwrap().origin,
+        22
+    );
+    assert!(
+        engine.history().worldlines()[7]
+            .iter()
+            .any(|s| s.t == 32 && !s.alive)
+    );
+    assert!(!engine.history().moves().contains_key(&invalidated.id()));
+    let knight = engine.piece_state(invalidated.source()).unwrap();
+    assert!(knight.alive && knight.rights.ordinary);
+    assert_eq!(Sq(knight.x, knight.y), Sq(4, 3));
+    assert_eq!(record.commands().last(), Some(&command));
+    assert_eq!(GameRecord::load(&record.to_text()).unwrap().0, engine);
+}
