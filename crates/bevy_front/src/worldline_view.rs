@@ -64,26 +64,21 @@ fn append_bezier(control: &[Pos2], output: &mut Vec<Pos2>, depth: usize) {
 
 /// Smooth S-shaped connection, with zero curvature at its vertical endpoints.
 /// There is no straight diagonal section between separately rounded corners.
-fn rounded_route(a: Pos2, b: Pos2, cell: f32) -> Vec<Pos2> {
-    let sign = (b.y - a.y).signum();
-    let lead = cell.min((b.y - a.y).abs() * 0.2) * 0.5;
-    let entry = a + Vec2::new(0.0, sign * lead);
-    let exit = b - Vec2::new(0.0, sign * lead);
-    let handle = Vec2::new(0.0, (exit.y - entry.y) * 0.2);
-    let mut route = vec![a, entry];
+fn rounded_route(a: Pos2, b: Pos2) -> Vec<Pos2> {
+    let handle = Vec2::new(0.0, (b.y - a.y) * 0.2);
+    let mut route = vec![a];
     append_bezier(
         &[
-            entry,
-            entry + handle,
-            entry + handle * 2.0,
-            exit - handle * 2.0,
-            exit - handle,
-            exit,
+            a,
+            a + handle,
+            a + handle * 2.0,
+            b - handle * 2.0,
+            b - handle,
+            b,
         ],
         &mut route,
         0,
     );
-    route.push(b);
     route
 }
 
@@ -92,21 +87,21 @@ fn rounded_route(a: Pos2, b: Pos2, cell: f32) -> Vec<Pos2> {
 /// endpoint curvature; the inner controls shape a compact, flowing hairpin.
 fn state_route(a: Pos2, b: Pos2, cell: f32, inverted: bool, next_inverted: bool) -> Vec<Pos2> {
     if inverted == next_inverted {
-        return rounded_route(a, b, cell);
+        return rounded_route(a, b);
     }
     let old_direction = Vec2::new(0.0, if inverted { 1.0 } else { -1.0 });
     let side = Vec2::new(if b.x < a.x { -1.0 } else { 1.0 }, 0.0);
-    let entry = a + old_direction * cell * 0.5;
-    let start_handle = old_direction * cell * 0.4;
-    let end_handle = old_direction * (b.y - entry.y).abs() * 0.18;
-    let mut route = vec![a, entry];
+    let radius = cell * 0.5;
+    let start_handle = old_direction * radius * 0.8;
+    let end_handle = old_direction * (b.y - a.y).abs() * 0.18;
+    let mut route = vec![a];
     append_bezier(
         &[
-            entry,
-            entry + start_handle,
-            entry + start_handle * 2.0,
-            entry + side * cell + start_handle * 2.0,
-            entry + side * cell - old_direction * cell * 0.5,
+            a,
+            a + start_handle,
+            a + start_handle * 2.0,
+            a + side * radius * 2.0 + start_handle * 2.0,
+            a + side * radius * 2.0 - old_direction * radius,
             b + end_handle * 2.0,
             b + end_handle,
             b,
@@ -265,8 +260,9 @@ mod tests {
                     let route = state_route(a, b, cell, inverted, !inverted);
                     assert_eq!(route[0], a);
                     assert_eq!(*route.last().unwrap(), b);
-                    assert_eq!(route[1], a + Vec2::new(0.0, old_direction * cell * 0.5));
-                    assert!(route.iter().any(|p| p.y * old_direction > cell * 0.65));
+                    assert!(route[1].y * old_direction > 0.0);
+                    assert!(route[1].distance(a) < cell * 0.5);
+                    assert!(route.iter().any(|p| p.y * old_direction > cell * 0.1));
                     assert!(route.iter().all(|p| p.x.is_finite() && p.y.is_finite()));
                     let directions: Vec<_> = route
                         .windows(2)
