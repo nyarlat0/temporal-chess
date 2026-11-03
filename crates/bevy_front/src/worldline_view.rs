@@ -23,14 +23,73 @@ fn blend(a: Color32, b: Color32, t: f32) -> Color32 {
     Color32::from_rgb(c(a.r(), b.r()), c(a.g(), b.g()), c(a.b(), b.b()))
 }
 
-fn spline(a: Pos2, b: Pos2, ta: Vec2, tb: Vec2, t: f32) -> Pos2 {
-    let t2 = t * t;
-    let t3 = t2 * t;
-    (a.to_vec2() * (2.0 * t3 - 3.0 * t2 + 1.0)
-        + ta * (t3 - 2.0 * t2 + t)
-        + b.to_vec2() * (-2.0 * t3 + 3.0 * t2)
-        + tb * (t3 - t2))
-        .to_pos2()
+/// Vertical leads keep bends away from the artwork. Circular fillets have a
+/// radius of at most half a cell, independent of the distance between boards.
+fn rounded_route(a: Pos2, b: Pos2, cell: f32) -> Vec<Pos2> {
+    let lead = cell.min((b.y - a.y).abs() * 0.25);
+    let vertical = Vec2::new(0.0, (b.y - a.y).signum() * lead);
+    let corners = [a, a + vertical, b - vertical, b];
+    let mut route = vec![a];
+    for i in 1..3 {
+        let incoming = corners[i] - corners[i - 1];
+        let outgoing = corners[i + 1] - corners[i];
+        let u = incoming.normalized();
+        let v = outgoing.normalized();
+        let angle = (u.x * v.y - u.y * v.x).atan2(u.dot(v));
+        if angle.abs() < 0.001 {
+            route.push(corners[i]);
+            continue;
+        }
+        let tangent = (angle.abs() * 0.5).tan();
+        let trim = (cell * 0.5 * tangent)
+            .min(incoming.length() * 0.45)
+            .min(outgoing.length() * 0.45);
+        let radius = trim / tangent;
+        let entry = corners[i] - u * trim;
+        let center = entry + Vec2::new(-u.y, u.x) * (radius * angle.signum());
+        let radial = entry - center;
+        for step in 0..=16 {
+            let t = angle * step as f32 / 16.0;
+            route.push(
+                center
+                    + Vec2::new(
+                        radial.x * t.cos() - radial.y * t.sin(),
+                        radial.x * t.sin() + radial.y * t.cos(),
+                    ),
+            );
+        }
+    }
+    route.push(b);
+    route
+}
+
+/// A temporal reversal is a U-turn beyond the source occurrence, not a cusp
+/// at its center. The outgoing tangent must agree with the incoming worldline.
+fn state_route(a: Pos2, b: Pos2, cell: f32, inverted: bool, next_inverted: bool) -> Vec<Pos2> {
+    if inverted == next_inverted {
+        return rounded_route(a, b, cell);
+    }
+    let old_direction = if inverted { 1.0 } else { -1.0 };
+    let side = if b.x < a.x { -1.0 } else { 1.0 };
+    let entry = a + Vec2::new(0.0, old_direction * cell);
+    let radius = cell * 0.5;
+    let steps = ((std::f32::consts::PI * radius / 1.5).ceil() as usize).clamp(32, 192);
+    let mut route = vec![a, entry];
+    for step in 1..=steps {
+        let angle = std::f32::consts::PI * step as f32 / steps as f32;
+        route.push(
+            entry
+                + Vec2::new(
+                    side * radius * (1.0 - angle.cos()),
+                    old_direction * radius * angle.sin(),
+                ),
+        );
+    }
+    let exit = entry + Vec2::new(side * radius * 2.0, 0.0);
+    // Use the exact semicircle endpoint, avoiding floating point seams.
+    *route.last_mut().unwrap() = exit;
+    route.extend(rounded_route(exit, b, cell).into_iter().skip(1));
+    route
 }
 
 pub fn paint(
@@ -60,35 +119,48 @@ pub fn paint(
             Some((state, rect))
         })
         .collect();
-    let tangent = |i: usize| {
-        let prev = nodes[i.saturating_sub(1)].1.center();
-        let next = nodes[(i + 1).min(nodes.len() - 1)].1.center();
-        if i > 0 && i + 1 < nodes.len() && (next - prev).length_sq() < 1.0 {
-            // A return through the same square needs a sideways tangent at the
-            // temporal turn, instead of a cusp or two coincident straight legs.
-            Vec2::new(cell * 1.6, 0.0)
-        } else {
-            (next - prev) * 0.35
-        }
-    };
     let width = (cell * 0.045).clamp(1.4, 3.0);
     for i in 0..nodes.len().saturating_sub(1) {
         let (a, b) = (nodes[i].1.center(), nodes[i + 1].1.center());
-        let (ta, tb) = (tangent(i), tangent(i + 1));
-        let bounds = Rect::from_points(&[a, a + ta / 3.0, b - tb / 3.0, b]);
-        if !bounds.expand(width * 5.0).intersects(painter.clip_rect()) {
+        let route = state_route(a, b, cell, nodes[i].0.inverted, nodes[i + 1].0.inverted);
+        if !Rect::from_points(&route)
+            .expand(width * 5.0)
+            .intersects(painter.clip_rect())
+        {
             continue;
         }
-        let steps = ((a.distance(b) / 5.0).ceil() as usize).clamp(24, 160);
-        let points: Vec<_> = (0..=steps)
-            .map(|j| {
-                let t = j as f32 / steps as f32;
-                (
-                    spline(a, b, ta, tb, t),
-                    blend(color(nodes[i].0), color(nodes[i + 1].0), t),
-                )
-            })
-            .collect();
+        let total: f32 = route.windows(2).map(|p| p[0].distance(p[1])).sum();
+        if total < 0.001 {
+            continue;
+        }
+        let mut points = vec![(a, color(nodes[i].0))];
+        let mut distance = 0.0;
+        let mut middle = a;
+        let mut arrow_direction = (b - a).normalized();
+        for pair in route.windows(2) {
+            let length = pair[0].distance(pair[1]);
+            if length < 0.0001 {
+                continue;
+            }
+            if distance <= total * 0.5 && distance + length >= total * 0.5 {
+                middle = pair[0].lerp(pair[1], (total * 0.5 - distance) / length);
+                arrow_direction = (pair[1] - pair[0]).normalized();
+            }
+            let steps = (length / 5.0).ceil().max(1.0) as usize;
+            for j in 1..=steps {
+                let fraction = j as f32 / steps as f32;
+                points.push((
+                    pair[0].lerp(pair[1], fraction),
+                    blend(
+                        color(nodes[i].0),
+                        color(nodes[i + 1].0),
+                        (distance + length * fraction) / total,
+                    ),
+                ));
+            }
+            distance += length;
+        }
+        let steps = points.len() - 1;
         // Joined ribbons, rather than overlapping transparent line segments,
         // keep the glow smooth and prevent bright dots at subdivision joints.
         for (radius, opacity) in [
@@ -112,8 +184,7 @@ pub fn paint(
             }
             painter.add(egui::Shape::mesh(mesh));
         }
-        let middle = spline(a, b, ta, tb, 0.5);
-        let dir = (spline(a, b, ta, tb, 0.52) - spline(a, b, ta, tb, 0.48)).normalized();
+        let dir = arrow_direction;
         let normal = Vec2::new(-dir.y, dir.x);
         let size = (cell * 0.22).clamp(5.5, 14.0);
         painter.add(egui::Shape::convex_polygon(
@@ -157,6 +228,35 @@ pub fn paint(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reversal_continues_old_direction_then_turns_without_a_cusp() {
+        for cell in [9.6, 64.0, 90.0] {
+            for inverted in [false, true] {
+                for horizontal in [-3.0, 0.0, 3.0] {
+                    let old_direction = if inverted { 1.0 } else { -1.0 };
+                    let a = Pos2::ZERO;
+                    let b = Pos2::new(horizontal * cell, -old_direction * 8.0 * cell);
+                    let route = state_route(a, b, cell, inverted, !inverted);
+                    assert_eq!(route[0], a);
+                    assert_eq!(*route.last().unwrap(), b);
+                    assert_eq!(route[1], a + Vec2::new(0.0, old_direction * cell));
+                    assert!(route.iter().any(|p| p.y * old_direction > cell * 1.49));
+                    assert!(route.iter().all(|p| p.x.is_finite() && p.y.is_finite()));
+                    let directions: Vec<_> = route
+                        .windows(2)
+                        .map(|pair| pair[1] - pair[0])
+                        .filter(|delta| delta.length_sq() > 0.0001)
+                        .map(|delta| delta.normalized())
+                        .collect();
+                    for pair in directions.windows(2) {
+                        assert!(pair[0].dot(pair[1]) > 0.98, "kink: {pair:?}");
+                    }
+                    assert!(directions.last().unwrap().y * old_direction < -0.99);
+                }
+            }
+        }
+    }
 
     #[test]
     fn worldline_selection_can_inspect_opponents_without_playing() {

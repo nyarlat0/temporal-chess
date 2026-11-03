@@ -793,6 +793,11 @@ fn paint_board(
         let highlighted =
             hovered.is_some_and(|(time, sq)| time == t && (sq == from || sq == mv.sq));
         let replacing = replaces_selected_move(game, mv);
+        let replacement_color = if mv.to_past() {
+            Color32::from_rgb(255, 145, 35)
+        } else {
+            Color32::from_rgb(255, 35, 55)
+        };
         paint_move_arrow(
             painter,
             board,
@@ -801,7 +806,7 @@ fn paint_board(
             mv.sq,
             game.facing.black_bottom,
             if replacing {
-                Color32::from_rgb(255, 35, 55).gamma_multiply(alpha)
+                replacement_color.gamma_multiply(alpha)
             } else {
                 direction_color(mv.direction).gamma_multiply(
                     alpha
@@ -824,7 +829,7 @@ fn paint_board(
                 center - across,
                 center + across,
                 cell * 0.058,
-                Color32::from_rgb(255, 35, 55).gamma_multiply(alpha),
+                replacement_color.gamma_multiply(alpha),
                 true,
             );
         }
