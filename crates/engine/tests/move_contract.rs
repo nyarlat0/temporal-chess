@@ -1,6 +1,6 @@
 use temporal_chess_engine::{
     engine::Engine,
-    model::Sq,
+    model::{PieceAt, PieceId, Sq},
     record::{Command, GameRecord},
 };
 
@@ -109,5 +109,45 @@ fn queen_reaction_can_cancel_castling_through_a_rook_collision() {
     assert!(
         matches!(record.commands().last(), Some(Command::Move { mv: last, .. }) if *last == mv)
     );
+    assert_eq!(GameRecord::load(&record.to_text()).unwrap().0, engine);
+}
+
+#[test]
+fn bishop_can_replace_a_dead_queens_move_with_a_backward_recapture() {
+    let text = format!(
+        "{}advance 14 3:14:0 c4 16\nmove 16 3:16:0 c4 b3 + normal\nmove 17 19:19:1 c5 c4 - normal\n",
+        include_str!("fixtures/castling_rook_collision.nolan")
+    );
+    let (mut engine, mut record) = GameRecord::load(&text).unwrap();
+    let bishop = engine
+        .move_sources()
+        .find(|p| p.origin == 5 && p.t == 16)
+        .unwrap();
+    let mv = engine
+        .possible_moves(bishop.origin, bishop.age)
+        .unwrap()
+        .into_iter()
+        .find(|mv| mv.to_past() && mv.sq == Sq(2, 3))
+        .expect("backward recapture stays offered");
+    let old = engine.history().moves()[&mv.id()];
+    assert_eq!(old.pid.wid, 3);
+    assert!(!engine.piece_state(old.source()).unwrap().alive);
+    let victim = engine.move_capture_target(mv).unwrap();
+    assert_eq!(victim.origin, 19);
+    let victim = PieceAt {
+        piece: PieceId::from_piv(victim),
+        t: victim.t,
+    };
+    record
+        .apply(
+            &mut engine,
+            Command::Move {
+                mv,
+                from: bishop.sq,
+            },
+        )
+        .unwrap();
+    assert_ne!(engine.history().moves().get(&old.id()), Some(&old));
+    assert!(!engine.piece_state(victim).unwrap().alive);
     assert_eq!(GameRecord::load(&record.to_text()).unwrap().0, engine);
 }

@@ -102,8 +102,14 @@ impl Engine {
             .ok_or(EngineErr::WrongMove)?;
         self.history.targets.remove(&mv_id);
 
-        // Piv before move, undid states will be set to it
-        let bf_piv = self.get_piv_from_mv(mv).ok_or(EngineErr::WrongPiece)?;
+        // Undo edits the recorded history, not a new action by its old mover.
+        // A later capture may have killed the source occurrence while its move
+        // still occupies this shared slot. Keep using that historical source
+        // to restore the route; liveness is required only for the new command.
+        let bf_piv = self.occurrence(mv.source()).ok_or_else(|| {
+            EngineErr::InvalidHistory("cancelled move source is missing")
+                .during(format!("cancelling {mv:?}"))
+        })?;
         self.undo_castling_rook(mv, bf_piv)?;
         if mv.to_past() != bf_piv.inverted {
             if mv.to_past() {

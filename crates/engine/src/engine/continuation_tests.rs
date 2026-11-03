@@ -649,3 +649,36 @@ fn oncoming_contact_at_a_worldline_origin_uses_existing_policy_for_both_colors()
         }
     }
 }
+
+#[test]
+fn cancelling_a_dead_movers_command_preserves_death_in_both_directions() {
+    for color in [Color::White, Color::Black] {
+        for gaps in [false, true] {
+            for inverted in [false, true] {
+                for direction in [TimeDirection::Past, TimeDirection::Future] {
+                    let source = state(color, Sq(1, 0), color.first_board() + 4, inverted);
+                    let anchor = state(color.opposite(), Sq(7, 7), source.t - 1, false);
+                    let mut engine =
+                        Engine::from_worldlines(vec![vec![source], vec![anchor]], color).unwrap();
+                    engine.history.causal_gaps = gaps;
+                    let mv = engine
+                        .possible_moves(0, 0)
+                        .unwrap()
+                        .into_iter()
+                        .find(|mv| mv.direction == direction && mv.sq == Sq(2, 2))
+                        .unwrap();
+                    engine.apply_move_inner(mv).unwrap();
+                    engine.kill_piece(0, 0).unwrap();
+                    engine.update_bufs().unwrap();
+                    // A dead source cannot submit commands, but its recorded
+                    // command remains editable when another piece replaces it.
+                    assert_eq!(engine.apply_new_mv(mv), Err(EngineErr::WrongPiece));
+                    engine.undo_mv(mv.id()).unwrap();
+                    assert!(!engine.history.moves.contains_key(&mv.id()));
+                    assert!(engine.history.worldlines[0].iter().all(|s| !s.alive));
+                    assert_eq!(engine.get_piv_necro(0, 0).unwrap().sq, Sq(1, 0));
+                }
+            }
+        }
+    }
+}
