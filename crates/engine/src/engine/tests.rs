@@ -20,7 +20,7 @@ fn play(engine: &mut Engine, from: Sq, to: Sq) -> Move {
 
 #[test]
 fn cancelling_an_earlier_move_revalidates_later_moves_and_revives_the_victim() {
-    let mut engine = Engine::new(true);
+    let mut engine = Engine::default();
     let first = play(&mut engine, Sq(4, 1), Sq(4, 3));
     let black = play(&mut engine, Sq(3, 6), Sq(3, 4));
     let capture = play(&mut engine, Sq(4, 3), Sq(3, 4));
@@ -105,7 +105,7 @@ fn en_passant_information_reacts_in_both_time_directions() {
 
 #[test]
 fn undoing_en_passant_removes_its_capture_cause() {
-    let mut engine = Engine::new(true);
+    let mut engine = Engine::default();
     play(&mut engine, Sq(4, 1), Sq(4, 3));
     play(&mut engine, Sq(0, 6), Sq(0, 5));
     play(&mut engine, Sq(4, 3), Sq(4, 4));
@@ -321,7 +321,7 @@ fn oncoming_tracking_uses_orientation_even_when_inverted_piece_knows_more_future
     inverted_last.y = 3;
     let engine = Engine {
         history: History {
-            causal_gaps: false,
+            rules: Default::default(),
             worldlines: vec![
                 vec![ordinary, ordinary_next].into(),
                 vec![inverted, inverted_next, inverted_last].into(),

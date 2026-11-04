@@ -176,14 +176,20 @@ async fn handle_client_message(
             protocol,
             engine_revision,
             side,
-            causal_gaps,
+            chain_info_activation,
+            global_reaction_reset,
         } => {
             if !check_handshake(protocol, authenticated, sender) {
                 return;
             }
             match state
                 .repository
-                .create_game(side, causal_gaps, &engine_revision)
+                .create_game(
+                    side,
+                    chain_info_activation,
+                    global_reaction_reset,
+                    &engine_revision,
+                )
                 .await
             {
                 Ok(ready) => {
@@ -201,7 +207,8 @@ async fn handle_client_message(
                         ServerMessage::GameReady {
                             engine_revision: ready.engine_revision,
                             pending: ready.pending,
-                            causal_gaps: ready.causal_gaps,
+                            chain_info_activation: ready.chain_info_activation,
+                            global_reaction_reset: ready.global_reaction_reset,
                             created: true,
                             game_id: ready.auth.game_id.clone(),
                             player_token: ready.auth.player_token.clone(),
@@ -258,7 +265,8 @@ async fn handle_client_message(
                         ServerMessage::GameReady {
                             engine_revision: ready.engine_revision,
                             pending: ready.pending,
-                            causal_gaps: ready.causal_gaps,
+                            chain_info_activation: ready.chain_info_activation,
+                            global_reaction_reset: ready.global_reaction_reset,
                             created: false,
                             game_id: ready.auth.game_id.clone(),
                             player_token: ready.auth.player_token.clone(),
@@ -469,7 +477,8 @@ mod tests {
                 ClientMessage::CreateGame {
                     protocol: PROTOCOL_VERSION,
                     engine_revision: hash.clone(),
-                    causal_gaps: false,
+                    chain_info_activation: false,
+                    global_reaction_reset: false,
                     side: SidePreference::White,
                 },
             )

@@ -3,13 +3,13 @@
 use crate::{
     engine::{Engine, EngineErr},
     model::{
-        Castling, Color, Move, MoveEffect, PieceAt, PieceId, PieceKind, Promotion, Sq,
+        Castling, Color, GameRules, Move, MoveEffect, PieceAt, PieceId, PieceKind, Promotion, Sq,
         TimeDirection,
     },
 };
 use std::fmt;
 
-const HEADER: &str = "NOLAN-CHESS 2";
+const HEADER: &str = "NOLAN-CHESS 3";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command {
@@ -28,7 +28,7 @@ pub enum Command {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct GameRecord {
-    causal_gaps: bool,
+    rules: GameRules,
     commands: Vec<Command>,
     pieces: Vec<Option<RecordedPiece>>,
 }
@@ -55,14 +55,14 @@ impl fmt::Display for RecordError {
 impl std::error::Error for RecordError {}
 
 impl GameRecord {
-    pub fn new(causal_gaps: bool) -> Self {
+    pub fn new(rules: GameRules) -> Self {
         Self {
-            causal_gaps,
+            rules,
             ..Self::default()
         }
     }
-    pub fn causal_gaps(&self) -> bool {
-        self.causal_gaps
+    pub fn rules(&self) -> GameRules {
+        self.rules
     }
 
     pub fn commands(&self) -> &[Command] {
@@ -86,7 +86,7 @@ impl GameRecord {
                 if let Command::Move { mv, .. } = command {
                     Some((
                         Self {
-                            causal_gaps: self.causal_gaps,
+                            rules: self.rules,
                             commands: self.commands[..index].to_vec(),
                             pieces: self.pieces[..index].to_vec(),
                         },
@@ -102,7 +102,7 @@ impl GameRecord {
     /// Successful commands are retained even when reconciliation removes the
     /// initiating move from History: replay needs the command and its effects.
     pub fn apply(&mut self, engine: &mut Engine, command: Command) -> Result<(), EngineErr> {
-        if !self.commands.is_empty() && self.causal_gaps != engine.history().causal_gaps() {
+        if !self.commands.is_empty() && self.rules != engine.history().rules() {
             return Err(EngineErr::InvalidHistory(
                 "record rules differ from engine rules",
             ));
@@ -141,7 +141,7 @@ impl GameRecord {
                 engine.continue_calculation()?;
             }
         }
-        self.causal_gaps = engine.history().causal_gaps();
+        self.rules = engine.history().rules();
         self.commands.push(command);
         self.pieces.push(piece);
         Ok(())
@@ -149,8 +149,17 @@ impl GameRecord {
 
     pub fn to_text(&self) -> String {
         let mut text = format!(
-            "{HEADER}\ncausal_gaps {}\n",
-            if self.causal_gaps { "on" } else { "off" }
+            "{HEADER}\nchain_info_activation {}\nglobal_reaction_reset {}\n",
+            if self.rules.chain_info_activation {
+                "on"
+            } else {
+                "off"
+            },
+            if self.rules.global_reaction_reset {
+                "on"
+            } else {
+                "off"
+            },
         );
         for command in &self.commands {
             text.push_str(&format!("{command}\n"));
@@ -174,15 +183,17 @@ impl GameRecord {
         let (line, header) = lines
             .next()
             .ok_or_else(|| error(1, "Пустая запись партии".into()))?;
-        let causal_gaps = match header {
-            "NOLAN-CHESS 1" => true, // Existing records used preserved futures.
-            HEADER => {
+        let rules = match header {
+            "NOLAN-CHESS 1" => GameRules::default(),
+            "NOLAN-CHESS 2" => {
                 let (line, mode) = lines
                     .next()
                     .ok_or_else(|| error(line, "Не указан режим causal_gaps".into()))?;
                 match mode {
-                    "causal_gaps on" => true,
-                    "causal_gaps off" => false,
+                    "causal_gaps off" => GameRules::default(),
+                    "causal_gaps on" => {
+                        return Err(error(line, "Режим причинных разрывов удалён".into()));
+                    }
                     _ => {
                         return Err(error(
                             line,
@@ -191,17 +202,33 @@ impl GameRecord {
                     }
                 }
             }
+            HEADER => {
+                let mut read_option = |name: &str| -> Result<bool, RecordError> {
+                    let (n, value) = lines
+                        .next()
+                        .ok_or_else(|| error(line, format!("Missing rule: {name}")))?;
+                    match value.split_once(' ') {
+                        Some((key, "on")) if key == name => Ok(true),
+                        Some((key, "off")) if key == name => Ok(false),
+                        _ => Err(error(n, format!("Expected {name} on or {name} off"))),
+                    }
+                };
+                GameRules {
+                    chain_info_activation: read_option("chain_info_activation")?,
+                    global_reaction_reset: read_option("global_reaction_reset")?,
+                }
+            }
             _ => {
                 return Err(error(
                     line,
-                    format!("Ожидался заголовок {HEADER} или NOLAN-CHESS 1"),
+                    format!("Ожидался заголовок {HEADER}, NOLAN-CHESS 2 или NOLAN-CHESS 1"),
                 ));
             }
         };
-        let mut engine = Engine::new(causal_gaps)
+        let mut engine = Engine::new(rules)
             .with_interactive_calculation()
             .map_err(|e| error(line, e.to_string()))?;
-        let mut record = Self::new(causal_gaps);
+        let mut record = Self::new(rules);
         for (line, text) in lines {
             if record.commands.len() >= 10_000 {
                 return Err(error(line, "Больше 10000 команд".into()));

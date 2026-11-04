@@ -300,3 +300,69 @@ fn continuing_paused_calculation_refreshes_both_sides_without_learning() {
         engine
     );
 }
+
+#[test]
+fn reaction_modes_are_independent_and_preserve_ordinary_reserves() {
+    for chain_info_activation in [false, true] {
+        for global_reaction_reset in [false, true] {
+            let mut engine = observed(true);
+            engine.history.rules = crate::model::GameRules {
+                chain_info_activation,
+                global_reaction_reset,
+            };
+            let mut actor = line(PieceKind::N, Color::White, Sq(3, 0), false);
+            actor.truncate(1);
+            actor[0].rights.ordinary = true;
+            let mut cancelled = line(PieceKind::N, Color::White, Sq(7, 0), false);
+            cancelled = vec![cancelled.pop().unwrap()];
+            cancelled[0].rights.cancelled_move = true;
+            let mut ordinary = cancelled.clone();
+            ordinary[0].x = 6;
+            ordinary[0].rights = MoveRights {
+                ordinary: true,
+                ..Default::default()
+            };
+            engine
+                .history
+                .worldlines
+                .extend([actor.into(), cancelled.into(), ordinary.into()]);
+            engine.reconcile().unwrap();
+            assert_eq!(
+                reacting_times(&engine, 0),
+                if chain_info_activation {
+                    vec![4, 2, 0]
+                } else {
+                    vec![4]
+                }
+            );
+            let mv = engine
+                .possible_moves(2, 0)
+                .unwrap()
+                .into_iter()
+                .find(|mv| !mv.to_past() && mv.sq == Sq(4, 2))
+                .unwrap();
+            engine.apply_new_mv(mv).unwrap();
+            let expected = if global_reaction_reset {
+                vec![]
+            } else if chain_info_activation {
+                vec![4, 2]
+            } else {
+                vec![4]
+            };
+            assert_eq!(reacting_times(&engine, 0), expected);
+            assert_eq!(
+                engine.history.worldlines[3][0].rights.cancelled_move,
+                !global_reaction_reset
+            );
+            assert!(engine.history.worldlines[4][0].rights.ordinary);
+            assert_eq!(
+                engine.history.worldlines[0][0].remembered.is_empty(),
+                !global_reaction_reset
+            );
+            assert_eq!(
+                Engine::from_history(engine.history.clone(), engine.turn).unwrap(),
+                engine
+            );
+        }
+    }
+}

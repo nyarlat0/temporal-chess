@@ -7,7 +7,7 @@ use temporal_chess_engine::{
     engine::{
         CalculationStatus, CheckStatus, Engine, GameOutcome, GameStatus, WaitingReason, WinReason,
     },
-    model::{Color, Move, PieceAt, PieceId, PieceView, Sq, TimeDirection},
+    model::{Color, GameRules, Move, PieceAt, PieceId, PieceView, Sq, TimeDirection},
     record::{Command, GameRecord},
 };
 
@@ -74,7 +74,7 @@ pub struct GameUi {
     pub cell_size: f32,
     pub jump_to: Option<usize>,
     pub confirm_restart: bool,
-    pub new_game_causal_gaps: bool,
+    pub new_game_rules: GameRules,
     pub viewport: TimelineViewport,
     pub transition: Option<BoardTransition>,
     pub transition_queue: std::collections::VecDeque<BoardTransition>,
@@ -155,7 +155,7 @@ impl Default for GameUi {
             cell_size: 64.0,
             jump_to: Some(0),
             confirm_restart: false,
-            new_game_causal_gaps: false,
+            new_game_rules: GameRules::default(),
             viewport: TimelineViewport::default(),
             transition: None,
             transition_queue: Default::default(),
@@ -219,13 +219,13 @@ impl GameUi {
         self.playback_destination = None;
     }
 
-    pub fn new(causal_gaps: bool) -> Self {
+    pub fn new(rules: GameRules) -> Self {
         Self {
-            engine: Engine::new(causal_gaps)
+            engine: Engine::new(rules)
                 .with_interactive_calculation()
                 .expect("initial game"),
-            record: GameRecord::new(causal_gaps),
-            new_game_causal_gaps: causal_gaps,
+            record: GameRecord::new(rules),
+            new_game_rules: rules,
             ..Self::default()
         }
     }
@@ -618,8 +618,8 @@ impl GameUi {
         self.confirm_restart = false;
         self.begin_replay(
             format!(
-                "NOLAN-CHESS 2\ncausal_gaps {}\n{}\n",
-                if self.online.causal_gaps { "on" } else { "off" },
+                "{}{}\n",
+                GameRecord::new(self.online.rules).to_text(),
                 history.join("\n")
             ),
             ReplayKind::Network,

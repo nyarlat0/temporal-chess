@@ -82,7 +82,7 @@ pub(super) struct Cancellation {
 /// Authoritative state. Board projections and lookup tables are never stored here.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct History {
-    pub(super) causal_gaps: bool,
+    pub(super) rules: crate::model::GameRules,
     pub(super) worldlines: Vec<Worldline>,
     pub(super) moves: BTreeMap<MoveId, Move>,
     /// Targets observed when a move was played. Dead targets are restored only
@@ -95,8 +95,8 @@ pub struct History {
 }
 
 impl History {
-    pub fn causal_gaps(&self) -> bool {
-        self.causal_gaps
+    pub fn rules(&self) -> crate::model::GameRules {
+        self.rules
     }
     pub fn worldlines(&self) -> &[Worldline] {
         &self.worldlines

@@ -64,40 +64,52 @@ fn skipping_only_arrives_on_own_color_in_both_orientations() {
 }
 
 #[test]
-fn inversion_discards_future_by_default_and_preserves_it_only_in_gap_mode() {
-    for gaps in [false, true] {
-        let mut engine =
-            Engine::from_worldlines(vec![timeline(Color::White, 8)], Color::White).unwrap();
-        engine.history.causal_gaps = gaps;
-        let mv = engine
-            .possible_moves(0, 4)
-            .unwrap()
-            .into_iter()
-            .find(|mv| mv.to_past() && mv.sq == Sq(2, 2))
-            .unwrap();
-        engine.apply_new_mv(mv).unwrap();
-        let line = &engine.history.worldlines[0];
-        assert_eq!(!line.gaps().is_empty(), gaps);
-        assert_eq!(line.iter().any(|state| state.t > 4), gaps);
-        assert!(line.iter().any(|state| state.t == 2 && state.inverted));
+fn inversion_discards_future_in_every_reaction_mode() {
+    for chain_info_activation in [false, true] {
+        for global_reaction_reset in [false, true] {
+            let mut engine =
+                Engine::from_worldlines(vec![timeline(Color::White, 8)], Color::White).unwrap();
+            engine.history.rules = crate::model::GameRules {
+                chain_info_activation,
+                global_reaction_reset,
+            };
+            let mv = engine
+                .possible_moves(0, 4)
+                .unwrap()
+                .into_iter()
+                .find(|mv| mv.to_past() && mv.sq == Sq(2, 2))
+                .unwrap();
+            engine.apply_new_mv(mv).unwrap();
+            let line = &engine.history.worldlines[0];
+            assert!(line.gaps().is_empty());
+            assert!(!line.iter().any(|state| state.t > 4));
+            assert!(line.iter().any(|state| state.t == 2 && state.inverted));
+        }
     }
-    assert!(!Engine::default().history().causal_gaps());
 }
 
 #[test]
-fn record_keeps_rules_and_legacy_records_opt_into_gaps() {
+fn records_keep_independent_rules_and_reject_removed_gap_mode() {
     use crate::record::GameRecord;
-    for gaps in [false, true] {
-        let record = GameRecord::new(gaps);
-        let (engine, restored) = GameRecord::load(&record.to_text()).unwrap();
-        assert_eq!(engine.history().causal_gaps(), gaps);
-        assert_eq!(restored, record);
+    for chain_info_activation in [false, true] {
+        for global_reaction_reset in [false, true] {
+            let rules = crate::model::GameRules {
+                chain_info_activation,
+                global_reaction_reset,
+            };
+            let record = GameRecord::new(rules);
+            let (engine, restored) = GameRecord::load(&record.to_text()).unwrap();
+            assert_eq!(engine.history().rules(), rules);
+            assert_eq!(restored, record);
+        }
     }
-    assert!(
-        GameRecord::load("NOLAN-CHESS 1\n")
+    assert_eq!(Engine::default().history().rules(), Default::default());
+    assert!(GameRecord::load("NOLAN-CHESS 2\ncausal_gaps on\n").is_err());
+    assert_eq!(
+        GameRecord::load("NOLAN-CHESS 2\ncausal_gaps off\n")
             .unwrap()
-            .0
-            .history()
-            .causal_gaps()
+            .1
+            .rules(),
+        Default::default()
     );
 }

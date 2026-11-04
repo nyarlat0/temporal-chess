@@ -74,29 +74,22 @@ fn latest_board_departure_has_no_copy_on_the_new_future_board() {
 }
 
 #[test]
-fn borrowed_future_is_unchanged_until_return_crosses_the_pivot() {
+fn inversion_discards_future_and_return_builds_a_new_continuation() {
     let mut engine = game(6);
-    let tail = engine.history.worldlines[0][5..].to_vec();
     play(&mut engine, 4, 0, TimeDirection::Past, Sq(2, 2));
-    assert_eq!(&engine.history.worldlines[0][7..], tail);
-    assert_eq!(engine.history.worldlines[0].gaps().len(), 1);
-    assert_eq!(
-        Engine::from_history(engine.history.clone(), engine.turn).unwrap(),
-        engine
-    );
+    assert_eq!(engine.history.worldlines[0].len(), 7);
+    assert!(engine.history.worldlines[0].gaps().is_empty());
+    assert!(engine.history.worldlines[0].iter().all(|s| s.t <= 4));
     play(&mut engine, 2, 1, TimeDirection::Future, Sq(4, 3));
-    assert_eq!(&engine.history.worldlines[0][9..], tail);
-    assert_eq!(engine.history.worldlines[0][8].loop_turn, 2); // At pivot: still in loop.
+    assert_eq!(engine.history.worldlines[0][8].loop_turn, 2);
     play(&mut engine, 4, 2, TimeDirection::Future, Sq(2, 4));
     let states = &engine.history.worldlines[0];
-    assert!(states.gaps().is_empty());
-    assert_eq!(states.len(), 11); // The preserved future was joined, not duplicated.
+    assert_eq!(states.len(), 11);
     assert_eq!(
         (states[9].t, states[9].loop_turn, states[9].fut_seen),
         (5, 0, 5)
     );
     assert_eq!(Sq(states[9].x, states[9].y), Sq(2, 4));
-    assert_eq!(Sq(states[10].x, states[10].y), Sq(2, 4));
     assert_eq!(
         Engine::from_history(engine.history.clone(), engine.turn).unwrap(),
         engine
@@ -122,10 +115,10 @@ fn nested_turns_repay_each_pivot_once() {
     play(&mut engine, 2, 1, TimeDirection::Future, Sq(5, 5));
     play(&mut engine, 4, 2, TimeDirection::Past, Sq(7, 4));
     play(&mut engine, 2, 3, TimeDirection::Future, Sq(5, 3));
-    let tip = engine.history.worldlines[0].gaps()[0].after;
+    let tip = engine.history.worldlines[0].last().unwrap();
     assert_eq!(tip.loop_turn, 4);
     play(&mut engine, 4, 4, TimeDirection::Future, Sq(3, 4));
-    let tip = engine.history.worldlines[0].gaps()[0].after;
+    let tip = engine.history.worldlines[0].last().unwrap();
     assert_eq!((tip.t, tip.loop_turn), (6, 2));
     play(&mut engine, 6, 2, TimeDirection::Future, Sq(2, 6));
     assert!(engine.history.worldlines[0].gaps().is_empty());
@@ -236,24 +229,19 @@ fn replacing_an_existing_forward_move_with_past_keeps_its_future_positions() {
 }
 
 #[test]
-fn returning_to_the_future_revalidates_its_preexisting_moves() {
+fn inversion_removes_preexisting_future_moves_without_restoring_them_on_return() {
     let mut engine = game(8);
     let future_move = play(&mut engine, 6, 0, TimeDirection::Future, Sq(0, 2));
-    let tail = engine.history.worldlines[0][5..].to_vec();
     play(&mut engine, 4, 0, TimeDirection::Past, Sq(2, 2));
+    assert!(!engine.history.moves.contains_key(&future_move.id()));
     play(&mut engine, 2, 1, TimeDirection::Future, Sq(4, 3));
-    assert_eq!(&engine.history.worldlines[0][9..], tail);
-    assert!(engine.history.moves.contains_key(&future_move.id()));
     play(&mut engine, 4, 2, TimeDirection::Future, Sq(2, 4));
     assert!(!engine.history.moves.contains_key(&future_move.id()));
-    assert!(
-        engine
-            .get_piv_from_mv(future_move)
-            .unwrap()
-            .rights
-            .cancelled_move
-    );
     assert!(engine.history.worldlines[0].gaps().is_empty());
+    assert_eq!(
+        Engine::from_history(engine.history.clone(), engine.turn).unwrap(),
+        engine
+    );
 }
 
 #[test]
@@ -324,17 +312,17 @@ fn counter_overflow_rejects_the_entire_command_even_after_rights_were_consumed()
 }
 
 #[test]
-fn cancelling_a_return_restores_inverted_direction_and_preserves_the_debt() {
+fn cancelling_a_return_restores_an_ordinary_inverted_endpoint() {
     let mut engine = game(6);
-    let tail = engine.history.worldlines[0][5..].to_vec();
     play(&mut engine, 4, 0, TimeDirection::Past, Sq(2, 2));
     let returning = play(&mut engine, 2, 1, TimeDirection::Future, Sq(4, 3));
     engine.undo_mv(returning.id()).unwrap();
     engine.reconcile().unwrap();
-    assert_eq!(&engine.history.worldlines[0][9..], tail);
-    assert_eq!(engine.history.worldlines[0][8].t, 0);
-    assert_eq!(engine.history.worldlines[0][8].loop_turn, 1);
-    assert!(engine.history.worldlines[0][8].inverted);
+    let endpoint = engine.history.worldlines[0].last().unwrap();
+    assert_eq!((endpoint.t, endpoint.loop_turn), (2, 1));
+    assert!(endpoint.inverted && endpoint.rights.ordinary);
+    assert!(!endpoint.rights.cancelled_move);
+    assert!(engine.history.worldlines[0].gaps().is_empty());
     assert_eq!(
         Engine::from_history(engine.history.clone(), engine.turn).unwrap(),
         engine
@@ -511,7 +499,7 @@ fn mixed_direction_games_keep_restorable_history_and_atomic_failures() {
     let mut backward_moves = 0;
     for initial_seed in [11_u64, 29, 47, 83] {
         let mut seed = initial_seed;
-        let mut engine = Engine::new(true);
+        let mut engine = Engine::default();
         for turn in 0..24 {
             let moves: Vec<_> = engine
                 .move_sources()
@@ -618,21 +606,18 @@ fn replacing_castling_restores_rook_and_inversion_preserves_king_future() {
 #[test]
 fn cancelling_a_return_at_time_zero_keeps_the_inverted_endpoint() {
     let mut engine = game(6);
-    let tail = engine.history.worldlines[0][5..].to_vec();
     play(&mut engine, 4, 0, TimeDirection::Past, Sq(2, 2));
     play(&mut engine, 2, 1, TimeDirection::Past, Sq(4, 3));
     let returning = play(&mut engine, 0, 1, TimeDirection::Future, Sq(5, 5));
     engine.undo_mv(returning.id()).unwrap();
     engine.reconcile().unwrap();
-    assert_eq!(&engine.history.worldlines[0][9..], tail);
+    assert_eq!(engine.history.worldlines[0].len(), 9);
     let endpoint = &engine.history.worldlines[0][8];
     assert_eq!(endpoint.t, 0);
     assert!(endpoint.inverted);
-    assert!(endpoint.rights.cancelled_move);
-    assert_eq!(
-        engine.history.worldlines[0].gaps()[0].after,
-        MoveId::from_state(endpoint)
-    );
+    assert!(endpoint.rights.ordinary);
+    assert!(!endpoint.rights.cancelled_move);
+    assert!(engine.history.worldlines[0].gaps().is_empty());
     assert_eq!(
         Engine::from_history(engine.history.clone(), engine.turn).unwrap(),
         engine

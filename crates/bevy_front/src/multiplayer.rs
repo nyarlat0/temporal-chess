@@ -12,7 +12,7 @@ use std::{
 use temporal_chess_engine::{
     ENGINE_REVISION,
     engine::Engine,
-    model::Color,
+    model::{Color, GameRules},
     record::{Command, GameRecord},
 };
 use temporal_chess_protocol::{
@@ -22,7 +22,7 @@ use temporal_chess_protocol::{
 use web_time::Instant;
 
 pub struct OnlineState {
-    pub causal_gaps: bool,
+    pub rules: GameRules,
     pub enabled: bool,
     pub ready: bool,
     pub waiting: bool,
@@ -42,7 +42,7 @@ pub struct OnlineState {
 impl Default for OnlineState {
     fn default() -> Self {
         Self {
-            causal_gaps: false,
+            rules: GameRules::default(),
             enabled: false,
             ready: false,
             waiting: false,
@@ -328,7 +328,8 @@ pub fn poll(
                     game.online.room = None;
                     ClientMessage::CreateGame {
                         engine_revision: ENGINE_REVISION.to_owned(),
-                        causal_gaps: game.online.causal_gaps,
+                        chain_info_activation: game.online.rules.chain_info_activation,
+                        global_reaction_reset: game.online.rules.global_reaction_reset,
                         protocol: PROTOCOL_VERSION,
                         side: game.online.preference,
                     }
@@ -498,7 +499,8 @@ fn receive(client: &mut MultiplayerClient, game: &mut GameUi, message: ServerMes
         ServerMessage::GameReady {
             engine_revision,
             pending,
-            causal_gaps,
+            chain_info_activation,
+            global_reaction_reset,
             game_id,
             player_token,
             side,
@@ -513,7 +515,10 @@ fn receive(client: &mut MultiplayerClient, game: &mut GameUi, message: ServerMes
                 game.online.status = crate::i18n::server_error("engine_revision_mismatch", "");
                 return;
             }
-            game.online.causal_gaps = causal_gaps;
+            game.online.rules = GameRules {
+                chain_info_activation,
+                global_reaction_reset,
+            };
             let key = token_key(&game.online.endpoint, &game_id);
             client.tokens.insert(key.clone(), player_token.clone());
             save_token(&key, &player_token);
@@ -625,6 +630,7 @@ fn receive(client: &mut MultiplayerClient, game: &mut GameUi, message: ServerMes
                         | "invalid_engine_revision"
                         | "game_not_found"
                         | "game_full"
+                        | "removed_room_rules"
                 )
             {
                 game.online.fatal = true;
@@ -783,10 +789,7 @@ pub fn panel(ui: &mut egui::Ui, game: &mut GameUi) {
             .show(ui, |ui| {
                 ui.add_enabled_ui(idle, |ui| {
                     ui.label(crate::tr!("Создать новую комнату", "Create a new room"));
-                    ui.checkbox(
-                        &mut game.online.causal_gaps,
-                        crate::tr!("С причинными разрывами", "Allow causal gaps"),
-                    );
+                    crate::view::rule_controls(ui, &mut game.online.rules);
                     ui.horizontal(|ui| {
                         ui.selectable_value(
                             &mut game.online.preference,

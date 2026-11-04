@@ -56,7 +56,7 @@ cargo run -p temporal-chess-server --release
 Пример первого сообщения:
 
 ```json
-{"type":"create_game","protocol":3,"engine_revision":"<64 lowercase hex characters>","side":"random","causal_gaps":false}
+{"type":"create_game","protocol":4,"engine_revision":"<64 lowercase hex characters>","side":"random","chain_info_activation":false,"global_reaction_reset":false}
 ```
 
 Клиент сохраняет токен автоматически: браузер — `localStorage`, нативный клиент —
@@ -69,10 +69,12 @@ cargo run -p temporal-chess-server --release
 Локальный режим, экспорт и инспекция сохранены. Импорт, новая позиция и отмена хода
 не меняют сетевую комнату: они доступны после выхода в локальный режим.
 
-Режим комнаты задаётся `causal_gaps` при создании (обычно `false`), хранится
-в PostgreSQL и передаётся обоим клиентам в `game_ready`. Протокол — версия 3; клиент и сервер нужно обновить вместе.
-Миграция 0003 добавляет ревизии движка и таблицу неподтверждённых предложений.
-Миграция 0002 сохраняет старые комнаты с `causal_gaps=true`.
+Режимы комнаты задаются независимыми полями `chain_info_activation` и
+`global_reaction_reset` при создании (оба по умолчанию выключены), хранятся
+в PostgreSQL и передаются обоим клиентам в `game_ready`. Протокол — версия 4;
+клиент и сервер нужно обновить вместе. Миграция 0004 добавляет оба поля.
+Старые комнаты с `causal_gaps=true` не продолжаются по другим правилам молча:
+сервер возвращает `removed_room_rules`. Их журналы сохраняются в базе.
 
 ## Проверка согласования
 

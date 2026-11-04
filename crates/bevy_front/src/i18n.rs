@@ -131,6 +131,10 @@ fn error_message(text: &str) -> Message {
     for (ru, en) in [
         ("Партия больше 2 МиБ", "Game record exceeds 2 MiB"),
         ("Пустая запись партии", "Empty game record"),
+        (
+            "Режим причинных разрывов удалён",
+            "Causal gaps mode has been removed",
+        ),
         ("Не указан режим causal_gaps", "Missing causal_gaps mode"),
         (
             "Ожидалось causal_gaps on или causal_gaps off",
@@ -255,6 +259,10 @@ pub fn server_error(code: &str, detail: &str) -> Message {
         "protocol_mismatch" => (
             "Версии клиента и сервера несовместимы.",
             "Client and server versions are incompatible.",
+        ),
+        "removed_room_rules" => (
+            "Комната использует удалённый режим причинных разрывов. Создайте новую комнату.",
+            "This room uses the removed causal gaps mode. Create a new room.",
         ),
         "engine_revision_mismatch" => (
             "Версии движка не совпадают. Оба игрока должны открыть одну версию игры.",

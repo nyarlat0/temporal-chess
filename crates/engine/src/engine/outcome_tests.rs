@@ -4,7 +4,7 @@ use crate::model::{Color, PieceKind, Sq};
 #[test]
 fn reported_bishop_opening_is_checkmate_without_an_automatic_pass() {
     for interactive in [false, true] {
-        let mut engine = Engine::new(true);
+        let mut engine = Engine::default();
         if interactive {
             engine = engine.with_interactive_calculation().unwrap();
         }
@@ -396,7 +396,7 @@ fn inverted_check_uses_past_blockers_not_the_future_interposition() {
 
 #[test]
 fn paradox_is_a_committed_loss_but_other_failures_roll_back() {
-    let mut engine = Engine::new(true);
+    let mut engine = Engine::default();
     let before = engine.clone();
     assert_eq!(
         engine.transaction(|candidate| {
@@ -476,7 +476,7 @@ fn checkmate_waits_for_opponent_causal_debt_then_finishes_when_it_is_closed() {
 
 #[test]
 fn ordinary_right_cannot_be_discarded_at_the_current_time() {
-    let mut engine = Engine::new(true);
+    let mut engine = Engine::default();
     let source = Engine::piece_at(engine.move_sources().next().unwrap());
     let before = engine.clone();
     assert_eq!(
@@ -639,7 +639,7 @@ fn an_impossible_departure_breaks_the_collision_cycle_in_both_rulesets() {
             knight[earlier].rights.ordinary = true;
             knight[departure].rights.ordinary = true;
             let mut engine = Engine::from_worldlines(vec![knight], color).unwrap();
-            engine.history.causal_gaps = gaps;
+            engine.history.rules.chain_info_activation = gaps;
             let old = play(&mut engine, 0, departure, TimeDirection::Past, Sq(4, 3));
             engine.turn = color;
             let replacement = play(&mut engine, 0, earlier, TimeDirection::Future, Sq(4, 3));
@@ -678,13 +678,12 @@ fn waiting_cannot_overwrite_a_later_recorded_move_and_rolls_back_consumed_rights
 }
 
 #[test]
-fn an_inverted_wait_inserts_before_the_borrowed_future_without_changing_it() {
+fn an_inverted_wait_extends_the_line_without_preserving_a_future_copy() {
     let mut knight = line(PieceKind::N, Color::White, Sq(1, 0), 8);
     for t in [0, 2, 4, 6, 8] {
         knight[t].rights.ordinary = true;
     }
     let mut engine = super::legacy_from_worldlines(vec![knight], Color::White).unwrap();
-    let tail = engine.history.worldlines[0][7..].to_vec();
     play(&mut engine, 0, 6, TimeDirection::Past, Sq(2, 2));
     engine.turn = Color::White;
     let source = engine
@@ -693,10 +692,10 @@ fn an_inverted_wait_inserts_before_the_borrowed_future_without_changing_it() {
         .unwrap();
     engine.skip_ordinary(Engine::piece_at(source), 2).unwrap();
     let line = &engine.history.worldlines[0];
-    assert_eq!(&line[11..], tail);
+    assert_eq!(line.len(), 11);
     assert_eq!(line[10].t, 2);
     assert_eq!(line[10].loop_turn, 1);
-    assert_eq!(line.gaps()[0].after, MoveId::from_state(&line[10]));
+    assert!(line.gaps().is_empty());
     roundtrip(&engine);
 }
 

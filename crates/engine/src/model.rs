@@ -11,6 +11,13 @@ mod worldline;
 pub use pieces::{Color, PieceKind, PieceView, Sq};
 pub use worldline::{CausalGap, Worldline};
 
+/// Independent, immutable options for a game. Both are off in standard play.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GameRules {
+    pub chain_info_activation: bool,
+    pub global_reaction_reset: bool,
+}
+
 /// Independent reasons why an occurrence may act. Expiring reactions never
 /// consumes an ordinary move; only playing in its causal slot consumes that.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]

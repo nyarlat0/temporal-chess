@@ -21,7 +21,7 @@ async fn two_client_consensus_persists_and_commits_exactly_once() {
     let hash = "a".repeat(64);
     let new_hash = "b".repeat(64);
     let white = repo
-        .create_game(SidePreference::White, false, &hash)
+        .create_game(SidePreference::White, false, false, &hash)
         .await
         .unwrap()
         .auth;
@@ -177,5 +177,74 @@ async fn two_client_consensus_persists_and_commits_exactly_once() {
         .execute(&pool)
         .await
         .unwrap();
+    pool.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires an isolated PostgreSQL database in NOLAN_TEST_DATABASE_URL"]
+async fn two_client_consensus_keeps_independent_room_rules() {
+    let pool = sqlx::PgPool::connect(&std::env::var("NOLAN_TEST_DATABASE_URL").unwrap())
+        .await
+        .unwrap();
+    sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+    let repo = Repository::new(pool.clone());
+    let hash = "c".repeat(64);
+    for chain in [false, true] {
+        for global in [false, true] {
+            let created = repo
+                .create_game(SidePreference::White, chain, global, &hash)
+                .await
+                .unwrap();
+            assert_eq!(
+                (created.chain_info_activation, created.global_reaction_reset),
+                (chain, global)
+            );
+            let joined = repo
+                .join_game(&created.auth.game_id, None, &hash, false)
+                .await
+                .unwrap();
+            assert_eq!(
+                (joined.chain_info_activation, joined.global_reaction_reset),
+                (chain, global)
+            );
+            let resumed = repo
+                .join_game(
+                    &created.auth.game_id,
+                    Some(&created.auth.player_token),
+                    &hash,
+                    false,
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                (resumed.chain_info_activation, resumed.global_reaction_reset),
+                (chain, global)
+            );
+            // Do not reinterpret rooms created under the removed ruleset.
+            sqlx::query("UPDATE games SET causal_gaps = TRUE WHERE game_id = $1")
+                .bind(&created.auth.game_id)
+                .execute(&pool)
+                .await
+                .unwrap();
+            assert!(matches!(
+                repo.join_game(
+                    &created.auth.game_id,
+                    Some(&created.auth.player_token),
+                    &hash,
+                    false
+                )
+                .await,
+                Err(RepositoryError::Client {
+                    code: "removed_room_rules",
+                    ..
+                })
+            ));
+            sqlx::query("DELETE FROM games WHERE game_id = $1")
+                .bind(&created.auth.game_id)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+    }
     pool.close().await;
 }

@@ -37,9 +37,7 @@ fn legacy_from_worldlines(
     worldlines: Vec<Vec<State>>,
     turn: crate::model::Color,
 ) -> Result<Engine, EngineErr> {
-    let mut engine = Engine::from_worldlines(worldlines, turn)?;
-    engine.history.causal_gaps = true;
-    Ok(engine)
+    Engine::from_worldlines(worldlines, turn)
 }
 
 #[cfg(test)]

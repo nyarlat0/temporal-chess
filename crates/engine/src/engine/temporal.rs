@@ -1,4 +1,4 @@
-use crate::model::{CausalGap, MoveId, PieceAt, PieceId, State, TimeDirection};
+use crate::model::{CausalGap, MoveId, PieceAt, PieceId, State};
 use crate::pieces::{Color, PieceView, Sq};
 
 use super::{Engine, EngineErr, Move};
@@ -7,14 +7,7 @@ impl Engine {
     /// Remove the old backward excursion, retaining the first continuation in
     /// future board time. Journal entries are removed by their source identities.
     pub(super) fn remove_past_route(&mut self, piece: PieceView) -> Result<(), EngineErr> {
-        if !self.history.causal_gaps {
-            return self.prune_route(piece, self.history.worldlines[piece.origin].len());
-        }
-        let line = &self.history.worldlines[piece.origin];
-        let end = (piece.age + 1..line.len())
-            .find(|&i| line[i].t > piece.t)
-            .unwrap_or(line.len());
-        self.prune_route(piece, end)
+        self.prune_route(piece, self.history.worldlines[piece.origin].len())
     }
 
     /// Cancellation of a completed loop keeps its causally rejoined future in
@@ -28,14 +21,7 @@ impl Engine {
     }
 
     pub(super) fn remove_return_route(&mut self, piece: PieceView) -> Result<(), EngineErr> {
-        if !self.history.causal_gaps {
-            return self.prune_route(piece, self.history.worldlines[piece.origin].len());
-        }
-        let line = &self.history.worldlines[piece.origin];
-        let end = (piece.age + 1..line.segment_end(piece.age))
-            .find(|&i| line[i].t > piece.t && line[i].loop_turn < piece.loop_turn)
-            .unwrap_or_else(|| line.segment_end(piece.age));
-        self.prune_route(piece, end)
+        self.prune_route(piece, self.history.worldlines[piece.origin].len())
     }
 
     fn prune_route(&mut self, piece: PieceView, end: usize) -> Result<(), EngineErr> {
@@ -170,28 +156,8 @@ impl Engine {
             self.relocate_from(piece.origin, piece.age + 1, &next);
             age = piece.age + 1;
         } else {
-            if !self.history.causal_gaps {
-                // Discard the old causal suffix in either turning direction.
-                // No preserved tail means no gap and no borrowed states.
-                self.prune_route(piece, self.history.worldlines[piece.origin].len())?;
-            } else if connected
-                && line.get(piece.age + 1).is_some_and(|st| st.t < piece.t)
-                && mv.direction == TimeDirection::Future
-            {
-                self.remove_past_route(piece)?;
-            }
-            let line = &mut self.history.worldlines[piece.origin];
-            if self.history.causal_gaps
-                && line.gap_after(piece.age).is_none()
-                && (line.get(piece.age + 1).is_some() || mv.to_past())
-            {
-                let key = MoveId::from_piv(piece);
-                line.gaps.push(CausalGap {
-                    entry: key,
-                    after: key,
-                    resume: line.get(piece.age + 1).map(MoveId::from_state),
-                });
-            }
+            // Turning always discards the previous causal continuation.
+            self.prune_route(piece, self.history.worldlines[piece.origin].len())?;
             let (arrived, joined) = self.advance_route(piece.origin, piece.age, next)?;
             age = arrived;
             if joined {

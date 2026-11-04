@@ -30,7 +30,8 @@ pub(crate) struct AuthenticatedPlayer {
 pub(crate) struct ReadyGame {
     pub(crate) engine_revision: String,
     pub(crate) pending: Option<CommandProposal>,
-    pub(crate) causal_gaps: bool,
+    pub(crate) chain_info_activation: bool,
+    pub(crate) global_reaction_reset: bool,
     pub(crate) auth: AuthenticatedPlayer,
     pub(crate) revision: u64,
     pub(crate) history: Vec<String>,
@@ -70,7 +71,9 @@ pub(crate) enum RepositoryError {
 #[derive(FromRow)]
 struct RoomRow {
     engine_revision: Option<String>,
-    causal_gaps: bool,
+    causal_gaps: bool, // Legacy rooms with this removed option cannot be replayed.
+    chain_info_activation: bool,
+    global_reaction_reset: bool,
     game_id: String,
     white_token_hash: Option<Vec<u8>>,
     black_token_hash: Option<Vec<u8>>,
@@ -85,7 +88,8 @@ impl Repository {
     pub(crate) async fn create_game(
         &self,
         preference: SidePreference,
-        causal_gaps: bool,
+        chain_info_activation: bool,
+        global_reaction_reset: bool,
         engine_revision: &str,
     ) -> Result<ReadyGame, RepositoryError> {
         validate_engine_revision(engine_revision)?;
@@ -101,14 +105,15 @@ impl Repository {
             };
             let result = sqlx::query(
                 "INSERT INTO games
-                    (game_id, white_token_hash, black_token_hash, revision, causal_gaps, engine_revision)
-                 VALUES ($1, $2, $3, 0, $4, $5)
+                    (game_id, white_token_hash, black_token_hash, revision, chain_info_activation, global_reaction_reset, engine_revision)
+                 VALUES ($1, $2, $3, 0, $4, $5, $6)
                  ON CONFLICT (game_id) DO NOTHING",
             )
             .bind(&game_id)
             .bind(white_hash)
             .bind(black_hash)
-            .bind(causal_gaps)
+            .bind(chain_info_activation)
+            .bind(global_reaction_reset)
             .bind(engine_revision)
             .execute(&self.pool)
             .await?;
@@ -116,7 +121,8 @@ impl Repository {
                 return Ok(ReadyGame {
                     engine_revision: engine_revision.to_owned(),
                     pending: None,
-                    causal_gaps,
+                    chain_info_activation,
+                    global_reaction_reset,
                     auth: AuthenticatedPlayer {
                         game_id,
                         side,
@@ -153,13 +159,20 @@ impl Repository {
         let game_id = normalize_game_id(game_id)?;
         let mut transaction = self.pool.begin().await?;
         let mut room = sqlx::query_as::<_, RoomRow>(
-            "SELECT game_id, white_token_hash, black_token_hash, revision, causal_gaps, engine_revision
+            "SELECT game_id, white_token_hash, black_token_hash, revision, causal_gaps, chain_info_activation, global_reaction_reset, engine_revision
              FROM games WHERE game_id = $1 FOR UPDATE",
         )
         .bind(&game_id)
         .fetch_optional(&mut *transaction)
         .await?
         .ok_or_else(|| client_error("game_not_found", "No game exists with that id."))?;
+
+        if room.causal_gaps {
+            return Err(client_error(
+                "removed_room_rules",
+                "This room uses the removed causal gaps mode. Create a new room.",
+            ));
+        }
 
         if !allow_engine_change
             && room
@@ -241,7 +254,8 @@ impl Repository {
         Ok(ReadyGame {
             engine_revision: engine_revision.to_owned(),
             pending,
-            causal_gaps: room.causal_gaps,
+            chain_info_activation: room.chain_info_activation,
+            global_reaction_reset: room.global_reaction_reset,
             auth: AuthenticatedPlayer {
                 game_id: room.game_id,
                 side,
@@ -485,7 +499,7 @@ async fn locked_room(
     game_id: &str,
 ) -> Result<RoomRow, RepositoryError> {
     sqlx::query_as::<_, RoomRow>(
-        "SELECT game_id, white_token_hash, black_token_hash, revision, causal_gaps, engine_revision
+        "SELECT game_id, white_token_hash, black_token_hash, revision, causal_gaps, chain_info_activation, global_reaction_reset, engine_revision
          FROM games WHERE game_id = $1 FOR UPDATE",
     )
     .bind(game_id)

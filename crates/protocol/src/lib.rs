@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u16 = 3;
+pub const PROTOCOL_VERSION: u16 = 4;
 pub const MAX_GAME_ID_LEN: usize = 12;
 pub const MAX_COMMAND_LEN: usize = 192;
 
@@ -36,7 +36,10 @@ pub enum ClientMessage {
         protocol: u16,
         #[serde(default)]
         engine_revision: String,
-        causal_gaps: bool,
+        #[serde(default)]
+        chain_info_activation: bool,
+        #[serde(default)]
+        global_reaction_reset: bool,
         side: SidePreference,
     },
     JoinGame {
@@ -82,7 +85,8 @@ pub enum SyncReason {
 pub enum ServerMessage {
     GameReady {
         engine_revision: String,
-        causal_gaps: bool,
+        chain_info_activation: bool,
+        global_reaction_reset: bool,
         created: bool,
         game_id: String,
         player_token: String,

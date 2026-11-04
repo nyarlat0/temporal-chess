@@ -1,6 +1,6 @@
 use temporal_chess_engine::{
     engine::Engine,
-    model::{PieceAt, PieceId, Sq},
+    model::{GameRules, PieceAt, PieceId, Sq},
     record::{Command, GameRecord},
 };
 
@@ -28,11 +28,25 @@ fn accepted_moves(engine: &Engine, record: &GameRecord) -> Vec<(Command, Engine,
 #[test]
 fn offered_moves_are_accepted_through_temporal_play_and_replay() {
     let mut checked = 0;
-    for gaps in [false, true] {
+    for rules in [
+        GameRules::default(),
+        GameRules {
+            chain_info_activation: true,
+            ..Default::default()
+        },
+        GameRules {
+            global_reaction_reset: true,
+            ..Default::default()
+        },
+        GameRules {
+            chain_info_activation: true,
+            global_reaction_reset: true,
+        },
+    ] {
         for seed in 0..8_u64 {
             let mut rng = seed + 1;
-            let mut engine = Engine::new(gaps).with_interactive_calculation().unwrap();
-            let mut record = GameRecord::new(gaps);
+            let mut engine = Engine::new(rules).with_interactive_calculation().unwrap();
+            let mut record = GameRecord::new(rules);
             for _ in 0..8 {
                 let mut accepted = accepted_moves(&engine, &record);
                 checked += accepted.len();
@@ -59,8 +73,8 @@ fn offered_moves_are_accepted_through_temporal_play_and_replay() {
 
 #[test]
 fn king_can_invert_into_a_pawns_origin_and_replay_the_result() {
-    for gaps in ["off", "on"] {
-        let (engine, record) = GameRecord::load(&format!("NOLAN-CHESS 2\ncausal_gaps {gaps}\nmove 0 12:0:0 e2 e3 + normal\nmove 1 25:1:0 b7 b6 + normal\n")).unwrap();
+    for chain in ["off", "on"] {
+        let (engine, record) = GameRecord::load(&format!("NOLAN-CHESS 3\nchain_info_activation {chain}\nglobal_reaction_reset off\nmove 0 12:0:0 e2 e3 + normal\nmove 1 25:1:0 b7 b6 + normal\n")).unwrap();
         let (_, result, record) = accepted_moves(&engine, &record).into_iter().find(|(command, _, _)| {
             matches!(command, Command::Move { mv, from } if *from == Sq(4, 0) && mv.to_past() && mv.sq == Sq(4, 1))
         }).expect("e1,t=2 -> e2,t=1 must remain available");

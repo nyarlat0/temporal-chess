@@ -77,7 +77,7 @@ fn play(engine: &mut Engine, t: usize, from: Sq, to: Sq) -> Move {
 
 #[test]
 fn later_invalid_capture_and_revival_are_deferred_until_user_advances() {
-    let mut engine = Engine::new(true);
+    let mut engine = Engine::default();
     let first = play(&mut engine, 0, Sq(4, 1), Sq(4, 3));
     play(&mut engine, 1, Sq(3, 6), Sq(3, 4));
     let capture = play(&mut engine, 2, Sq(4, 3), Sq(3, 4));

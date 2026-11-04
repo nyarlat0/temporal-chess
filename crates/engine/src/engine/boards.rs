@@ -82,7 +82,7 @@ impl Engine {
                     continue;
                 }
                 for target in state.informed.difference(&state.remembered) {
-                    if first_seen.insert(*target) {
+                    if self.history.rules.chain_info_activation || first_seen.insert(*target) {
                         state.rights.new_information = true;
                     }
                 }

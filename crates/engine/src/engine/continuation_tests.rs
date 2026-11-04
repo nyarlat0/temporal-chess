@@ -22,7 +22,7 @@ fn cancelled_return_leaves_an_ordinary_endpoint_for_either_color() {
             let first = color.first_board();
             let source = state(color, Sq(1, 0), first + 4, true);
             let mut engine = Engine::from_worldlines(vec![vec![source]], color).unwrap();
-            engine.history.causal_gaps = gaps;
+            engine.history.rules.chain_info_activation = gaps;
             let mv = engine
                 .possible_moves(0, 0)
                 .unwrap()
@@ -499,7 +499,7 @@ fn cancelling_closed_loop_preserves_connected_future_in_both_modes() {
         engine.history.worldlines[0] = states.into();
         engine.history.horizon = 7;
         engine.update_bufs().unwrap();
-        engine.history.causal_gaps = gaps;
+        engine.history.rules.chain_info_activation = gaps;
         engine.history.moves.insert(begin.id(), begin);
         engine.history.moves.insert(later.id(), later);
         engine.undo_mv(begin.id()).unwrap();
@@ -527,7 +527,7 @@ fn cancelling_open_loop_does_not_create_passive_states() {
             let anchor = state(color.opposite(), Sq(7, 7), source.t - 1, false);
             let mut engine =
                 Engine::from_worldlines(vec![vec![source], vec![anchor]], color).unwrap();
-            engine.history.causal_gaps = gaps;
+            engine.history.rules.chain_info_activation = gaps;
             let mv = engine
                 .possible_moves(0, 0)
                 .unwrap()
@@ -604,30 +604,6 @@ fn every_offered_move_is_accepted_in_king_inversion_position() {
 }
 
 #[test]
-fn returning_bishop_can_meet_a_borrowed_pawn() {
-    use crate::record::GameRecord;
-    let (mut engine, _) = GameRecord::load("NOLAN-CHESS 2\ncausal_gaps on\nmove 0 10:0:0 c2 c4 + normal\nmove 1 27:1:0 d7 d5 + normal\nmove 2 3:2:0 d1 c2 - normal\nmove 3 18:3:0 c8 h3 - normal\nmove 2 14:2:0 g2 g4 - normal\n").unwrap();
-    let piece = engine
-        .move_sources()
-        .find(|p| p.origin == 18 && p.t == 1)
-        .unwrap();
-    let mv = engine
-        .possible_moves(piece.origin, piece.age)
-        .unwrap()
-        .into_iter()
-        .find(|mv| !mv.to_past() && mv.sq == Sq(6, 1))
-        .unwrap();
-    engine.apply_new_mv(mv).unwrap();
-    assert!(
-        engine.history.worldlines[14]
-            .iter()
-            .filter(|s| s.t >= 2)
-            .all(|s| !s.alive)
-    );
-    assert!(engine.get_piv(18, 7).is_some());
-}
-
-#[test]
 fn oncoming_contact_at_a_worldline_origin_uses_existing_policy_for_both_colors() {
     for color in [Color::White, Color::Black] {
         for other_color in [color, color.opposite()] {
@@ -660,7 +636,7 @@ fn cancelling_a_dead_movers_command_preserves_death_in_both_directions() {
                     let anchor = state(color.opposite(), Sq(7, 7), source.t - 1, false);
                     let mut engine =
                         Engine::from_worldlines(vec![vec![source], vec![anchor]], color).unwrap();
-                    engine.history.causal_gaps = gaps;
+                    engine.history.rules.chain_info_activation = gaps;
                     let mv = engine
                         .possible_moves(0, 0)
                         .unwrap()

@@ -224,17 +224,7 @@ pub fn draw(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState, art:
                 "Текущая партия будет сброшена.",
                 "The current game will be reset."
             ));
-            ui.checkbox(
-                &mut game.new_game_causal_gaps,
-                crate::tr!(
-                    "Причинные разрывы: сохранять будущее при инверсии",
-                    "Causal gaps: preserve the future when inverting"
-                ),
-            );
-            ui.small(crate::tr!(
-                "Без разрывов поворот удаляет прежнее продолжение фигуры.",
-                "Without gaps, turning removes the piece's previous continuation."
-            ));
+            crate::view::rule_controls(ui, &mut game.new_game_rules);
             ui.horizontal(|ui| {
                 if icon_button(
                     ui,
@@ -248,7 +238,7 @@ pub fn draw(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState, art:
                     *game = GameUi {
                         cell_size: game.cell_size,
                         local_auto_flip: game.local_auto_flip,
-                        ..GameUi::new(game.new_game_causal_gaps)
+                        ..GameUi::new(game.new_game_rules)
                     };
                 }
                 if icon_button(ui, Icon::Close, crate::tr!("Отмена", "Cancel"), false, true)

@@ -146,14 +146,13 @@ fn sidebar(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, art: &P
                 });
             });
         });
-    ui.small(if game.engine.history().causal_gaps() {
-        crate::tr!("Режим: с причинными разрывами", "Mode: causal gaps enabled")
-    } else {
-        crate::tr!(
-            "Режим: без причинных разрывов",
-            "Mode: causal gaps disabled"
-        )
-    });
+    let rules = game.engine.history().rules();
+    if rules.chain_info_activation {
+        ui.small(crate::tr!("Цепная инфоактивация", "Chain info-activation"));
+    }
+    if rules.global_reaction_reset {
+        ui.small(crate::tr!("Реагировать один раз", "React once"));
+    }
     crate::multiplayer::panel(ui, game);
     ui.horizontal(|ui| {
         if icon_button(
@@ -614,6 +613,23 @@ pub fn piece_name(kind: PieceKind) -> &'static str {
 
 fn square_name(sq: temporal_chess_engine::model::Sq) -> String {
     format!("{}{}", char::from(b'a' + sq.0 as u8), sq.1 + 1)
+}
+
+pub fn rule_controls(ui: &mut egui::Ui, rules: &mut temporal_chess_engine::model::GameRules) {
+    ui.checkbox(
+        &mut rules.chain_info_activation,
+        crate::tr!("Цепная инфоактивация", "Chain info-activation"),
+    )
+    .on_hover_text(crate::tr!(
+        "Новая информация активирует каждое увидевшее её состояние мировой линии.",
+        "New information activates every observing state of a worldline."
+    ));
+    ui.checkbox(&mut rules.global_reaction_reset,
+        crate::tr!("Реагировать один раз", "React once"))
+        .on_hover_text(crate::tr!(
+            "Ход сбрасывает свои реакции на всех досках, включая отменённые ходы, и фиксирует текущую информацию в памяти. Обычная активность сохраняется.",
+            "A move clears your reactions on every board, including cancelled moves, and acknowledges current information. Ordinary activity is preserved."
+        ));
 }
 
 #[cfg(test)]

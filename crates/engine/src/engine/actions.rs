@@ -103,7 +103,12 @@ impl Engine {
         let rook = self.castling_rook(mv, piece)?;
         // Acknowledge the old view before replacing moves or editing routes.
         // Reactions beyond this board remain unanswered and retain their memory.
-        self.remember_information(piece.color, piece.t);
+        let reaction_limit = if self.history.rules.global_reaction_reset {
+            usize::MAX
+        } else {
+            piece.t
+        };
+        self.remember_information(piece.color, reaction_limit);
         if let Some(old) = self.history.moves.get(&mv.id()).copied() {
             if old.pid != mv.pid || (old.castling().is_some() && !mv.to_past()) {
                 self.undo_mv(old.id())?;
@@ -119,7 +124,7 @@ impl Engine {
             piece = self.get_piv_from_mv(mv).ok_or(EngineErr::WrongPiece)?;
         }
         let idle_endpoints = self.deact_same_order(piece);
-        self.deact_prev_reactable(piece.color, piece.t);
+        self.deact_prev_reactable(piece.color, reaction_limit);
 
         let end_t = self
             .projection
