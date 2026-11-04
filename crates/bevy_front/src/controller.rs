@@ -60,6 +60,8 @@ impl Selection {
 #[derive(Resource)]
 pub struct GameUi {
     pub online: crate::multiplayer::OnlineState,
+    pub bot: crate::tempfish::BotState,
+    pub new_game_bot: crate::tempfish::Settings,
     pub engine: Engine,
     pub checks: CheckStatus,
     pub selected: Option<Selection>,
@@ -136,6 +138,8 @@ impl Default for GameUi {
     fn default() -> Self {
         Self {
             online: Default::default(),
+            bot: Default::default(),
+            new_game_bot: Default::default(),
             engine: Engine::default()
                 .with_interactive_calculation()
                 .expect("valid initial game"),
@@ -191,6 +195,8 @@ impl GameUi {
     pub fn finish_travel(&mut self, fallback: usize) {
         let side = if self.online.enabled {
             self.online.side.unwrap_or(self.engine.turn())
+        } else if self.bot.settings.enabled {
+            self.bot.settings.human
         } else {
             self.engine.turn()
         };
@@ -488,6 +494,7 @@ impl GameUi {
     pub fn can_submit(&self) -> bool {
         !self.playback_busy()
             && !self.facing.animating()
+            && !self.bot.owns_turn(self)
             && (!self.online.enabled
                 || (self.online.ready
                     && !self.online.waiting
@@ -656,6 +663,10 @@ impl GameUi {
             return;
         };
         self.clear_selection();
+        // Do not immediately replay the just-undone bot move.
+        if self.bot.settings.enabled {
+            self.bot.paused = true;
+        }
         self.begin_replay(
             prefix.to_text(),
             ReplayKind::Undo {

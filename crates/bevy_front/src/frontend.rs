@@ -19,13 +19,17 @@ impl Plugin for ChessFrontendPlugin {
             .insert_resource(WinitSettings::desktop_app())
             .init_resource::<GameUi>()
             .init_resource::<ShellState>()
+            .init_resource::<crate::tempfish::Runner>()
             .add_systems(
                 PreStartup,
                 setup_camera.before(EguiStartupSet::InitContexts),
             )
             .add_systems(Startup, configure_ui)
             .init_non_send::<crate::multiplayer::MultiplayerClient>()
-            .add_systems(Update, (update_game, crate::multiplayer::poll).chain())
+            .add_systems(
+                Update,
+                (update_game, crate::multiplayer::poll, crate::tempfish::poll).chain(),
+            )
             .add_systems(EguiPrimaryContextPass, draw);
     }
 }

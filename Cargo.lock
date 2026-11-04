@@ -5962,6 +5962,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "tempfish"
+version = "0.1.0"
+dependencies = [
+ "temporal-chess-engine",
+]
+
+[[package]]
 name = "temporal-chess-bevy"
 version = "0.1.0"
 dependencies = [
@@ -5971,6 +5978,7 @@ dependencies = [
  "resvg",
  "serde_json",
  "sha2",
+ "tempfish",
  "temporal-chess-engine",
  "temporal-chess-protocol",
  "web-sys",

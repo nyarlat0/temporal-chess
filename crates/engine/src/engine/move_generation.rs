@@ -44,12 +44,17 @@ impl Engine {
         let target_time = direction.step(piece.t);
         // A conflict-free preboard is usable as a tentative destination even
         // when reconciliation is paused before it. Never publish it as a Board.
-        let tentative = target_time
-            .and_then(|t| self.projection.preboards.get(&t))
-            .and_then(|preboard| preboard.try_into_board());
-        let target = target_time
-            .and_then(|t| self.projection.boards.get(&t))
-            .or(tentative.as_ref());
+        let computed = target_time.and_then(|t| self.projection.boards.get(&t));
+        // A computed board always wins. Do not allocate an unused tentative
+        // board on this hot path; fallback selection is otherwise identical.
+        let tentative = if computed.is_none() {
+            target_time
+                .and_then(|t| self.projection.preboards.get(&t))
+                .and_then(|preboard| preboard.try_into_board())
+        } else {
+            None
+        };
+        let target = computed.or(tentative.as_ref());
         if target.is_none() && target_time.is_some_and(|t| self.preboard(t).is_some()) {
             return Err(EngineErr::AbsentBoard);
         }

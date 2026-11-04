@@ -224,6 +224,7 @@ pub fn draw(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState, art:
                 "Текущая партия будет сброшена.",
                 "The current game will be reset."
             ));
+            crate::tempfish::settings(ui, &mut game.new_game_bot);
             crate::view::rule_controls(ui, &mut game.new_game_rules);
             ui.horizontal(|ui| {
                 if icon_button(
@@ -238,6 +239,11 @@ pub fn draw(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState, art:
                     *game = GameUi {
                         cell_size: game.cell_size,
                         local_auto_flip: game.local_auto_flip,
+                        bot: crate::tempfish::BotState {
+                            settings: game.new_game_bot,
+                            ..Default::default()
+                        },
+                        new_game_bot: game.new_game_bot,
                         ..GameUi::new(game.new_game_rules)
                     };
                 }

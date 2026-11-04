@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/engine", "crates/bevy_front", "crates/protocol", "crates/server"]
+members = ["crates/engine", "crates/bevy_front", "crates/protocol", "crates/server", "crates/tempfish"]
 default-members = ["crates/bevy_front"]
 resolver = "3"
 

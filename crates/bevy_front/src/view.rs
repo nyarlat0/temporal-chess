@@ -153,6 +153,7 @@ fn sidebar(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, art: &P
     if rules.global_reaction_reset {
         ui.small(crate::tr!("Реагировать один раз", "React once"));
     }
+    crate::tempfish::panel(ui, game);
     crate::multiplayer::panel(ui, game);
     ui.horizontal(|ui| {
         if icon_button(
@@ -203,6 +204,7 @@ fn sidebar(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, art: &P
         )
         .clicked()
         {
+            game.new_game_bot = game.bot.settings;
             game.confirm_restart = true;
         }
     });
@@ -271,7 +273,7 @@ fn sidebar(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, art: &P
         ))
         .small(),
     );
-    if !game.online.enabled {
+    if !game.online.enabled && !game.bot.settings.enabled {
         ui.add_enabled(
             idle,
             egui::Checkbox::new(

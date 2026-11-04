@@ -21,12 +21,14 @@ impl Engine {
     /// before continuing, so no conflict is resolved against stale projections.
     pub(super) fn build_boards(&mut self, through: usize) -> Result<ValidRes, EngineErr> {
         self.projection.boards.clear();
-        let times: Vec<_> = self.projection.preboards.keys().copied().collect();
         let limit = self.calculation_barrier().unwrap_or(through).min(through);
+        let times: Vec<_> = self
+            .projection
+            .preboards
+            .range(..=limit)
+            .map(|(&t, _)| t)
+            .collect();
         for t in times {
-            if t > limit {
-                break;
-            }
             match self.make_board(t) {
                 Ok(board) => {
                     self.projection.boards.insert(t, board);

@@ -8,6 +8,7 @@ mod icons;
 mod input;
 mod multiplayer;
 mod piece_art;
+mod tempfish;
 mod theme;
 mod view;
 mod worldline_view;
