@@ -48,7 +48,12 @@ pub struct State {
     pub kind: PieceKind,
     pub color: Color,
     pub inverted: bool,
+    /// Current capturable identities on this occurrence's board. Derived anew
+    /// from the projection; disappearing targets must not leave stale reactions.
     pub informed: BTreeSet<PieceId>,
+    /// Additive memory acknowledged by a player's turn action. Reconciliation,
+    /// free waiting and calculation never overwrite it.
+    pub remembered: BTreeSet<PieceId>,
     // points in time, on which piece inverted to and began moving to past.
     pub loop_pivots: Vec<usize>,
 }
@@ -278,6 +283,7 @@ impl State {
             color,
             inverted: false,
             informed: BTreeSet::new(),
+            remembered: BTreeSet::new(),
             loop_pivots: Vec::new(),
         }
     }
@@ -297,6 +303,7 @@ impl State {
             color: self.color,
             inverted: self.inverted,
             informed: BTreeSet::new(),
+            remembered: BTreeSet::new(),
             loop_pivots: self.loop_pivots.clone(),
         }
     }

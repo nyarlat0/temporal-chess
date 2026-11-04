@@ -61,9 +61,11 @@ impl Engine {
                         // Keep current observations/rights in both alternatives.
                         let rights = line[age].rights;
                         let informed = line[age].informed.clone();
+                        let remembered = line[age].remembered.clone();
                         line[age] = previous.clone();
                         line[age].rights = rights;
                         line[age].informed = informed;
+                        line[age].remembered = remembered;
                     } else {
                         line.states.remove(age);
                     }
@@ -176,12 +178,8 @@ impl Engine {
         }
         // Information includes temporal en passant evidence. Only an actual new
         // reaction absent in the counterfactual is caused by this continuation.
-        for side in [Color::White, Color::Black] {
-            before.turn = side;
-            after.turn = side;
-            if before.update_infos().is_err() || after.update_infos().is_err() {
-                continue;
-            }
+        if before.update_infos().is_err() || after.update_infos().is_err() {
+            return false;
         }
         after
             .history
@@ -196,9 +194,6 @@ impl Engine {
                     };
                     state.alive
                         && state.rights.new_information
-                        && self
-                            .piece_state(id)
-                            .is_some_and(|s| !s.rights.new_information)
                         && before
                             .piece_state(id)
                             .is_some_and(|s| !s.rights.new_information)

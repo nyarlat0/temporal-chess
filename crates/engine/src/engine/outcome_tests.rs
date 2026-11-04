@@ -180,7 +180,8 @@ fn free_wait_is_piece_local_preserves_unmoved_flags_and_has_no_turn_cost() {
     }
     assert!(engine.get_piv(0, 4).unwrap().rights.ordinary);
     assert!(engine.get_piv(1, 0).unwrap().rights.ordinary);
-    assert!(engine.get_piv(1, 0).unwrap().rights.new_information);
+    // A synthetic stale flag without a visible target is no longer a reaction.
+    assert!(!engine.get_piv(1, 0).unwrap().rights.new_information);
     assert!(
         engine.history.worldlines[0]
             .iter()

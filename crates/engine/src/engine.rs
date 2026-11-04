@@ -47,3 +47,6 @@ mod mode_tests;
 
 #[cfg(test)]
 mod continuation_tests;
+
+#[cfg(test)]
+mod information_tests;

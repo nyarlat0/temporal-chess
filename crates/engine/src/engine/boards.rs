@@ -41,48 +41,70 @@ impl Engine {
         Ok(ValidRes::Unchanged)
     }
 
-    /// Discover optional reactions. Only newly available targets grant a reaction;
-    /// losing information alone does not grant a new move. Targets and blockers
-    /// are observed exclusively on the piece's current board. An occurrence
-    /// with its own recorded move cannot gain a new-information reaction.
+    /// Derive reactions from the current view and acknowledged memory. Never
+    /// learn merely by calculating a board: doing so would consume a reaction.
     pub(super) fn update_infos(&mut self) -> Result<(), EngineErr> {
-        let mut updates = Vec::new();
-        for (&t, board) in &self.projection.boards {
-            if Color::from_board(t) != self.turn {
-                continue;
+        for line in &mut self.history.worldlines {
+            for state in line.iter_mut() {
+                state.informed.clear();
+                state.rights.new_information = false;
             }
-            // Observe targets on this board. Adjacent boards only supply the
-            // double-step evidence for ordinary or inverted en passant.
+        }
+        for (&t, board) in &self.projection.boards {
+            // Adjacent boards supply only the double-step evidence for en passant;
+            // targets and blockers still come from this occurrence's own board.
             let adjacent: Vec<_> = [t.checked_sub(1), t.checked_add(1)]
                 .into_iter()
                 .flatten()
                 .filter_map(|time| self.projection.preboards.get(&time))
                 .collect();
-            updates.extend(
-                board
-                    .calc_info_with_en_passant(&adjacent)
-                    .into_iter()
-                    .filter(|(id, _)| !self.history.worldlines[id.wid].is_borrowed(id.age)),
-            );
-        }
-        for (id, info) in updates {
-            let state = &mut self.history.worldlines[id.wid][id.age];
-            // MoveId identifies a shared slot, so also check the actual mover.
-            // A different piece's move or a different incarnation must not
-            // suppress this occurrence's reaction.
-            let has_own_move = self
-                .history
-                .moves
-                .get(&MoveId::from_state(state))
-                .is_some_and(|mv| mv.pid == PieceId::from_state(state, id.wid));
-            if has_own_move || state.rights.cancelled_move {
-                state.rights.new_information = false;
-            } else if !state.rights.ordinary && !info.is_subset(&state.informed) {
-                state.rights.new_information = true;
+            for (id, info) in board.calc_info_with_en_passant(&adjacent) {
+                if !self.history.worldlines[id.wid].is_borrowed(id.age) {
+                    self.history.worldlines[id.wid][id.age].informed = info;
+                }
             }
-            state.informed = info;
+        }
+        for (wid, line) in self.history.worldlines.iter_mut().enumerate() {
+            let mut first_seen = std::collections::BTreeSet::new();
+            // Subjective age, not board time: this also orders inverted states
+            // and separate incarnations of the same worldline causally.
+            for state in line.iter_mut() {
+                let has_own_move = self
+                    .history
+                    .moves
+                    .get(&MoveId::from_state(state))
+                    .is_some_and(|mv| mv.pid == PieceId::from_state(state, wid));
+                if !state.alive
+                    || state.rights.ordinary
+                    || state.rights.cancelled_move
+                    || has_own_move
+                {
+                    continue;
+                }
+                for target in state.informed.difference(&state.remembered) {
+                    if first_seen.insert(*target) {
+                        state.rights.new_information = true;
+                    }
+                }
+            }
         }
         Ok(())
+    }
+
+    /// Accept the pre-command view on the boards whose reactions expire. Include
+    /// suppressed later observations too, so deduplication cannot postpone an
+    /// already acknowledged target's reaction until another recalculation.
+    pub(super) fn remember_information(&mut self, side: Color, until_t: usize) {
+        for state in self
+            .history
+            .worldlines
+            .iter_mut()
+            .flat_map(|line| line.iter_mut())
+        {
+            if state.color == side && state.t <= until_t {
+                state.remembered.extend(state.informed.iter().copied());
+            }
+        }
     }
 
     /// Rebuild all indexes from the authoritative worldlines, including dead states

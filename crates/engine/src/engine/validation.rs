@@ -127,6 +127,16 @@ impl Engine {
                     .filter(|&t| t <= limit)
                     .filter_map(|t| self.make_board(t).ok().map(|board| (t, board)))
                     .collect();
+                self.update_infos()?;
+                // A paused calculation still publishes fresh observations and
+                // removes reactions whose targets have disappeared or are no
+                // longer on a calculated board.
+                self.update_bufs()?;
+                self.projection.boards = self
+                    .timeline_times()
+                    .filter(|&t| t <= limit)
+                    .filter_map(|t| self.make_board(t).ok().map(|board| (t, board)))
+                    .collect();
                 return Ok(());
             }
             if self.reconcile_boards()? == ValidRes::HistChanged {

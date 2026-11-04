@@ -27,6 +27,7 @@ impl Engine {
                 return Err(EngineErr::WrongMove);
             }
             candidate.update_infos()?;
+            candidate.remember_information(candidate.turn, usize::MAX);
             for state in candidate
                 .history
                 .worldlines
@@ -100,6 +101,9 @@ impl Engine {
             .copied()
             .filter(|target| target.color != piece.color);
         let rook = self.castling_rook(mv, piece)?;
+        // Acknowledge the old view before replacing moves or editing routes.
+        // Reactions beyond this board remain unanswered and retain their memory.
+        self.remember_information(piece.color, piece.t);
         if let Some(old) = self.history.moves.get(&mv.id()).copied() {
             if old.pid != mv.pid || (old.castling().is_some() && !mv.to_past()) {
                 self.undo_mv(old.id())?;
