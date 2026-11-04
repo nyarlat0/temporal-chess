@@ -2,16 +2,22 @@
 //! Revisions count journal commands, including free temporal advances/calculation.
 use crate::controller::{GameUi, side_name};
 use bevy::prelude::*;
+use bevy::tasks::{AsyncComputeTaskPool, Task, TaskPool, futures::check_ready};
 use bevy_egui::{EguiContexts, egui};
 use ewebsock::{WsEvent, WsMessage, WsReceiver, WsSender};
 use std::{
     collections::{HashMap, VecDeque},
     time::Duration,
 };
-use temporal_chess_engine::{model::Color, record::Command};
+use temporal_chess_engine::{
+    ENGINE_REVISION,
+    engine::Engine,
+    model::Color,
+    record::{Command, GameRecord},
+};
 use temporal_chess_protocol::{
-    ClientMessage, MAX_COMMAND_LEN, MAX_COMMANDS, PROTOCOL_VERSION, ServerMessage, Side,
-    SidePreference,
+    ClientMessage, CommandProposal, MAX_COMMAND_LEN, MAX_COMMANDS, MAX_REJECTION_LEN,
+    PROTOCOL_VERSION, ServerMessage, Side, SidePreference,
 };
 use web_time::Instant;
 
@@ -55,11 +61,71 @@ impl Default for OnlineState {
         }
     }
 }
+impl OnlineState {
+    pub fn opponent_connected(&self) -> bool {
+        self.opponent
+    }
+}
 enum Action {
     Create,
     Join,
     Retry,
     Leave,
+}
+
+struct PreparedCommand {
+    command: Command,
+    engine: Engine,
+    record: GameRecord,
+}
+struct ValidationJob {
+    proposal: CommandProposal,
+    task: Task<Result<PreparedCommand, String>>,
+}
+
+fn validate_proposal(
+    mut engine: Engine,
+    mut record: GameRecord,
+    proposal: &CommandProposal,
+) -> Result<PreparedCommand, String> {
+    if record.commands().len() as u64 != proposal.revision {
+        return Err("Game revision mismatch.".into());
+    }
+    let side = match proposal.side {
+        Side::White => Color::White,
+        Side::Black => Color::Black,
+    };
+    if engine.turn() != side {
+        return Err("piece cannot act on this turn".into());
+    }
+    let command: Command = proposal.command.parse()?;
+    // Bounds belong to the clients too: the server does not parse chess commands.
+    let source = match command {
+        Command::Move { mv, .. } => Some(mv.source()),
+        Command::Advance { source, to_t, .. } => {
+            if to_t > engine.history().horizon() {
+                return Err("board is unavailable".into());
+            }
+            Some(source)
+        }
+        Command::Continue | Command::DeclineReactions => None,
+    };
+    if source.is_some_and(|source| {
+        source.t > engine.history().horizon()
+            || source.piece.wid >= engine.history().worldlines().len()
+            || source.piece.fut_seen > engine.history().horizon()
+            || source.piece.loop_turn > MAX_COMMANDS
+    }) {
+        return Err("piece occurrence is absent or cannot act".into());
+    }
+    record
+        .apply(&mut engine, command)
+        .map_err(|error| error.to_string())?;
+    Ok(PreparedCommand {
+        command,
+        engine,
+        record,
+    })
 }
 
 #[derive(Default)]
@@ -75,6 +141,10 @@ pub struct MultiplayerClient {
     retry_at: Option<Instant>,
     deadline: Option<Instant>,
     retry_delay: u64,
+    proposal: Option<CommandProposal>,
+    validation: Option<ValidationJob>,
+    prepared: Option<(CommandProposal, PreparedCommand)>,
+    voted: Option<String>,
 }
 impl MultiplayerClient {
     fn close(&mut self) {
@@ -84,6 +154,10 @@ impl MultiplayerClient {
         self.receiver = None;
         self.handshake = None;
         self.deadline = None;
+        self.proposal = None;
+        self.validation = None;
+        self.prepared = None;
+        self.voted = None;
     }
     fn connect(
         &mut self,
@@ -156,11 +230,67 @@ impl MultiplayerClient {
         game.online.waiting = true;
         game.online.outgoing = None;
         self.accepted.clear();
+        self.proposal = None;
+        self.validation = None;
+        self.prepared = None;
+        self.voted = None;
         self.awaiting_snapshot = true;
         self.send(&ClientMessage::Resync {
             revision: game.online.revision,
         });
         self.deadline = Some(Instant::now() + Duration::from_secs(30));
+    }
+
+    fn poll_validation(&mut self, game: &mut GameUi) {
+        if let Some(job) = &mut self.validation
+            && let Some(result) = check_ready(&mut job.task)
+        {
+            let proposal = self.validation.take().unwrap().proposal;
+            let current = self.proposal.as_ref().is_some_and(|p| p.id == proposal.id);
+            let committed = self.accepted.iter().any(|(revision, command)| {
+                *revision == proposal.revision + 1 && *command == proposal.command
+            });
+            if current || committed {
+                let reason = result
+                    .as_ref()
+                    .err()
+                    .map(|error| error.chars().take(MAX_REJECTION_LEN).collect());
+                if current {
+                    self.send(&ClientMessage::CommandVote {
+                        proposal_id: proposal.id.clone(),
+                        revision: proposal.revision,
+                        accepted: result.is_ok(),
+                        reason,
+                    });
+                    self.voted = Some(proposal.id.clone());
+                    self.deadline = Some(Instant::now() + Duration::from_secs(300));
+                }
+                if let Ok(prepared) = result {
+                    self.prepared = Some((proposal, prepared));
+                } else if committed {
+                    self.resync(game);
+                }
+            }
+        }
+        if self.validation.is_none()
+            && self.accepted.is_empty()
+            && let Some(proposal) = &self.proposal
+            && proposal.revision == game.online.revision
+            && self.voted.as_ref() != Some(&proposal.id)
+        {
+            let engine = game.engine.clone();
+            let record = game.record.clone();
+            let proposed = proposal.clone();
+            let task = AsyncComputeTaskPool::get_or_init(TaskPool::new).spawn(async move {
+                std::panic::catch_unwind(|| validate_proposal(engine, record, &proposed))
+                    .map_err(|_| "Engine panicked while validating the command.".to_owned())?
+            });
+            self.validation = Some(ValidationJob {
+                proposal: proposal.clone(),
+                task,
+            });
+            game.online.waiting = true;
+        }
     }
 }
 
@@ -197,6 +327,7 @@ pub fn poll(
                     client.token = None;
                     game.online.room = None;
                     ClientMessage::CreateGame {
+                        engine_revision: ENGINE_REVISION.to_owned(),
                         causal_gaps: game.online.causal_gaps,
                         protocol: PROTOCOL_VERSION,
                         side: game.online.preference,
@@ -218,6 +349,7 @@ pub fn poll(
                         .or_else(|| load_token(&key));
                     game.online.room = Some(room.clone());
                     ClientMessage::JoinGame {
+                        engine_revision: ENGINE_REVISION.to_owned(),
                         protocol: PROTOCOL_VERSION,
                         game_id: room,
                         player_token: client.token.clone(),
@@ -303,7 +435,9 @@ pub fn poll(
     if game.online.synchronizing || game.replay_job.is_some() {
         return;
     }
-    if game.transition.is_none()
+    client.poll_validation(&mut game);
+    if client.validation.is_none()
+        && game.transition.is_none()
         && game.transition_queue.is_empty()
         && !game.returning_camera
         && !game.facing.animating()
@@ -328,9 +462,16 @@ pub fn poll(
                 client.resync(&mut game);
                 return;
             }
-            let result = text
-                .parse::<Command>()
-                .and_then(|command| game.apply_confirmed(command));
+            let result = if client.prepared.as_ref().is_some_and(|(proposal, _)| {
+                proposal.revision + 1 == revision && proposal.command == text
+            }) {
+                let (_, prepared) = client.prepared.take().unwrap();
+                game.apply_prepared(prepared.command, prepared.engine, prepared.record);
+                Ok(())
+            } else {
+                text.parse::<Command>()
+                    .and_then(|command| game.apply_confirmed(command))
+            };
             if result.is_err() {
                 // A different engine build must not loop on the same invalid journal.
                 client.resync(&mut game);
@@ -338,7 +479,7 @@ pub fn poll(
             }
             game.online.revision = revision;
             if client.accepted.is_empty() {
-                game.online.waiting = false;
+                game.online.waiting = client.proposal.is_some();
             }
         }
     }
@@ -348,13 +489,15 @@ pub fn poll(
             revision,
             command: command.to_string(),
         });
-        client.deadline = Some(Instant::now() + Duration::from_secs(30));
+        client.deadline = Some(Instant::now() + Duration::from_secs(300));
     }
 }
 
 fn receive(client: &mut MultiplayerClient, game: &mut GameUi, message: ServerMessage) {
     match message {
         ServerMessage::GameReady {
+            engine_revision,
+            pending,
             causal_gaps,
             game_id,
             player_token,
@@ -364,6 +507,12 @@ fn receive(client: &mut MultiplayerClient, game: &mut GameUi, message: ServerMes
             opponent_connected,
             ..
         } => {
+            if engine_revision != ENGINE_REVISION {
+                game.online.fatal = true;
+                game.online.ready = false;
+                game.online.status = crate::i18n::server_error("engine_revision_mismatch", "");
+                return;
+            }
             game.online.causal_gaps = causal_gaps;
             let key = token_key(&game.online.endpoint, &game_id);
             client.tokens.insert(key.clone(), player_token.clone());
@@ -379,11 +528,59 @@ fn receive(client: &mut MultiplayerClient, game: &mut GameUi, message: ServerMes
             game.online.ready = true;
             game.online.status.clear();
             client.retry_delay = 0;
-            snapshot(client, game, revision, history);
+            snapshot(client, game, revision, history, pending);
         }
         ServerMessage::Sync {
-            revision, history, ..
-        } => snapshot(client, game, revision, history),
+            revision,
+            history,
+            pending,
+            ..
+        } => snapshot(client, game, revision, history, pending),
+        ServerMessage::CommandProposed { proposal } => receive_proposal(client, game, proposal),
+        ServerMessage::CommandRejected {
+            proposal_id,
+            reason,
+            ..
+        } => {
+            if !client
+                .proposal
+                .as_ref()
+                .is_some_and(|p| p.id == proposal_id)
+            {
+                return;
+            }
+            if client
+                .proposal
+                .as_ref()
+                .is_some_and(|p| p.id == proposal_id)
+            {
+                client.proposal = None;
+            }
+            if client
+                .validation
+                .as_ref()
+                .is_some_and(|job| job.proposal.id == proposal_id)
+            {
+                client.validation = None;
+            }
+            if client
+                .prepared
+                .as_ref()
+                .is_some_and(|(p, _)| p.id == proposal_id)
+            {
+                client.prepared = None;
+            }
+            if client.voted.as_ref() == Some(&proposal_id) {
+                client.voted = None;
+            }
+            game.online.waiting = !client.accepted.is_empty() || client.proposal.is_some();
+            client.deadline = None;
+            game.online.status = crate::i18n::Message::with_error(
+                "Команда отклонена клиентом: ",
+                "Command rejected by a client: ",
+                reason,
+            );
+        }
         ServerMessage::CommandAccepted { revision, command } => {
             if client.awaiting_snapshot || revision <= client.received_revision {
                 return;
@@ -395,8 +592,17 @@ fn receive(client: &mut MultiplayerClient, game: &mut GameUi, message: ServerMes
                 client.resync(game);
                 return;
             }
+            if client
+                .proposal
+                .as_ref()
+                .is_some_and(|p| p.revision + 1 == revision && p.command == command)
+            {
+                client.proposal = None;
+                client.voted = None;
+            }
             client.received_revision = revision;
             client.accepted.push_back((revision, command));
+            game.online.status.clear();
             game.online.waiting = true;
             client.deadline = None;
             game.clear_selection();
@@ -404,8 +610,10 @@ fn receive(client: &mut MultiplayerClient, game: &mut GameUi, message: ServerMes
         ServerMessage::OpponentConnection { connected } => game.online.opponent = connected,
         ServerMessage::Error { code, message } => {
             game.online.outgoing = None;
-            game.online.waiting = !client.accepted.is_empty();
-            client.deadline = None;
+            game.online.waiting = !client.accepted.is_empty() || client.proposal.is_some();
+            if client.proposal.is_none() {
+                client.deadline = None;
+            }
             game.online.status = crate::i18n::server_error(&code, &message);
             if !game.online.ready
                 || matches!(
@@ -413,6 +621,8 @@ fn receive(client: &mut MultiplayerClient, game: &mut GameUi, message: ServerMes
                     "connection_replaced"
                         | "invalid_player_token"
                         | "protocol_mismatch"
+                        | "engine_revision_mismatch"
+                        | "invalid_engine_revision"
                         | "game_not_found"
                         | "game_full"
                 )
@@ -424,11 +634,55 @@ fn receive(client: &mut MultiplayerClient, game: &mut GameUi, message: ServerMes
     }
 }
 
+fn receive_proposal(client: &mut MultiplayerClient, game: &mut GameUi, proposal: CommandProposal) {
+    if client.awaiting_snapshot || proposal.revision < client.received_revision {
+        return;
+    }
+    if proposal.revision != client.received_revision
+        || proposal.id.len() != 32
+        || !proposal.id.bytes().all(|b| b.is_ascii_hexdigit())
+        || proposal.command.len() > MAX_COMMAND_LEN
+        || !proposal.command.is_ascii()
+        || proposal.command.contains(['\r', '\n'])
+    {
+        client.resync(game);
+        return;
+    }
+    if client
+        .proposal
+        .as_ref()
+        .is_some_and(|p| p.id == proposal.id)
+    {
+        return;
+    }
+    if client
+        .validation
+        .as_ref()
+        .is_some_and(|job| job.proposal.revision == proposal.revision)
+    {
+        client.validation = None;
+    }
+    if client
+        .prepared
+        .as_ref()
+        .is_some_and(|(p, _)| p.revision == proposal.revision)
+    {
+        client.prepared = None;
+    }
+    client.voted = None;
+    client.proposal = Some(proposal);
+    game.online.waiting = true;
+    game.online.status.clear();
+    game.clear_selection();
+    client.deadline = Some(Instant::now() + Duration::from_secs(300));
+}
+
 fn snapshot(
     client: &mut MultiplayerClient,
     game: &mut GameUi,
     revision: u64,
     history: Vec<String>,
+    pending: Option<CommandProposal>,
 ) {
     if revision != history.len() as u64
         || history.len() > MAX_COMMANDS
@@ -446,6 +700,10 @@ fn snapshot(
     }
     client.deadline = None;
     client.accepted.clear();
+    client.proposal = None;
+    client.validation = None;
+    client.prepared = None;
+    client.voted = None;
     client.received_revision = revision;
     client.awaiting_snapshot = false;
     game.online.revision = revision;
@@ -453,6 +711,9 @@ fn snapshot(
     game.online.outgoing = None;
     game.online.synchronizing = true;
     game.begin_network_replay(&history);
+    if let Some(proposal) = pending {
+        receive_proposal(client, game, proposal);
+    }
 }
 
 pub fn panel(ui: &mut egui::Ui, game: &mut GameUi) {
@@ -670,5 +931,129 @@ fn save_token(key: &str, token: &str) {
     }
     if let Ok(mut file) = options.open(path) {
         let _ = file.write_all(token.as_bytes());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn opening() -> CommandProposal {
+        CommandProposal {
+            id: "a".repeat(32),
+            revision: 0,
+            side: Side::White,
+            command: "move 0 12:0:0 e2 e4 + normal".into(),
+        }
+    }
+
+    #[test]
+    fn consensus_validation_is_isolated_and_prepared_state_matches_replay() {
+        let mut game = GameUi::default();
+        let initial = game.record.to_text();
+        let proposal = opening();
+        let prepared =
+            validate_proposal(game.engine.clone(), game.record.clone(), &proposal).unwrap();
+        assert_eq!(game.record.to_text(), initial);
+        assert_eq!(game.engine.history().horizon(), 0);
+        assert_eq!(game.engine.turn(), Color::White);
+        assert_eq!(prepared.record.commands().len(), 1);
+        let second_client =
+            validate_proposal(game.engine.clone(), game.record.clone(), &proposal).unwrap();
+        assert_eq!(prepared.record.to_text(), second_client.record.to_text());
+        let (replayed, _) = GameRecord::load(&prepared.record.to_text()).unwrap();
+        assert_eq!(
+            format!("{:?}", prepared.engine.history()),
+            format!("{:?}", replayed.history())
+        );
+        game.apply_prepared(prepared.command, prepared.engine, prepared.record);
+        assert_eq!(game.engine.turn(), Color::Black);
+        assert_eq!(game.record.commands().len(), 1);
+    }
+
+    #[test]
+    fn clients_reject_wrong_actor_revision_and_illegal_commands() {
+        let game = GameUi::default();
+        let mut wrong_actor = opening();
+        wrong_actor.side = Side::Black;
+        let mut wrong_revision = opening();
+        wrong_revision.revision = 1;
+        let mut illegal = opening();
+        illegal.command = "move 0 12:0:0 e2 e5 + normal".into();
+        let mut malformed = opening();
+        malformed.command = "opaque command".into();
+        for proposal in [wrong_actor, wrong_revision, illegal, malformed] {
+            assert!(
+                validate_proposal(game.engine.clone(), game.record.clone(), &proposal).is_err()
+            );
+        }
+        assert!(game.record.commands().is_empty());
+    }
+
+    #[test]
+    fn proposal_and_rejection_do_not_change_the_live_game() {
+        let mut game = GameUi::default();
+        let mut client = MultiplayerClient::default();
+        let proposal = opening();
+        receive_proposal(&mut client, &mut game, proposal.clone());
+        let prepared =
+            validate_proposal(game.engine.clone(), game.record.clone(), &proposal).unwrap();
+        client.voted = Some(proposal.id.clone());
+        client.prepared = Some((proposal.clone(), prepared));
+        receive_proposal(&mut client, &mut game, proposal.clone());
+        assert!(client.prepared.is_some());
+        assert_eq!(client.voted.as_ref(), Some(&proposal.id));
+        assert!(game.record.commands().is_empty());
+        receive(
+            &mut client,
+            &mut game,
+            ServerMessage::CommandRejected {
+                proposal_id: proposal.id,
+                side: Side::Black,
+                reason: "test rejection".into(),
+            },
+        );
+        assert!(client.proposal.is_none());
+        assert!(client.prepared.is_none());
+        assert!(client.voted.is_none());
+        assert!(!game.online.waiting);
+        assert!(game.record.commands().is_empty());
+    }
+
+    #[test]
+    fn acceptance_keeps_prepared_result_until_animation_can_start() {
+        let mut game = GameUi::default();
+        let mut client = MultiplayerClient::default();
+        let proposal = opening();
+        receive_proposal(&mut client, &mut game, proposal.clone());
+        client.prepared = Some((
+            proposal.clone(),
+            validate_proposal(game.engine.clone(), game.record.clone(), &proposal).unwrap(),
+        ));
+        let accepted = ServerMessage::CommandAccepted {
+            revision: 1,
+            command: proposal.command.clone(),
+        };
+        receive(&mut client, &mut game, accepted.clone());
+        receive(&mut client, &mut game, accepted);
+        assert_eq!(client.accepted.len(), 1);
+        assert!(client.proposal.is_none());
+        assert!(client.prepared.is_some());
+        assert!(game.record.commands().is_empty());
+        let mut next = proposal;
+        next.id = "b".repeat(32);
+        next.revision = 1;
+        next.side = Side::Black;
+        next.command = "move 1 28:1:0 e7 e5 + normal".into();
+        receive_proposal(&mut client, &mut game, next);
+        assert!(
+            client.prepared.is_some(),
+            "next proposal must not discard the preceding committed result"
+        );
+        client.poll_validation(&mut game);
+        assert!(
+            client.validation.is_none(),
+            "cannot validate against a position before the preceding commit"
+        );
     }
 }

@@ -22,6 +22,14 @@ pub(crate) struct ConnectionHub {
 }
 
 impl ConnectionHub {
+    pub(crate) async fn has_players(&self, game_id: &str) -> bool {
+        self.rooms
+            .read()
+            .await
+            .get(game_id)
+            .is_some_and(|room| !room.is_empty())
+    }
+
     pub(crate) async fn is_current(&self, game_id: &str, side: Side, id: Uuid) -> bool {
         self.rooms
             .read()

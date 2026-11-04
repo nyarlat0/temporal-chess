@@ -5980,6 +5980,9 @@ dependencies = [
 [[package]]
 name = "temporal-chess-engine"
 version = "0.1.0"
+dependencies = [
+ "sha2",
+]
 
 [[package]]
 name = "temporal-chess-protocol"
@@ -5999,7 +6002,6 @@ dependencies = [
  "serde_json",
  "sha2",
  "sqlx",
- "temporal-chess-engine",
  "temporal-chess-protocol",
  "thiserror 2.0.21",
  "tokio",

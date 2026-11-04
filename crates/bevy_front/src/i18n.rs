@@ -256,6 +256,19 @@ pub fn server_error(code: &str, detail: &str) -> Message {
             "Версии клиента и сервера несовместимы.",
             "Client and server versions are incompatible.",
         ),
+        "engine_revision_mismatch" => (
+            "Версии движка не совпадают. Оба игрока должны открыть одну версию игры.",
+            "Engine revisions differ. Both players must open the same game version.",
+        ),
+        "invalid_engine_revision" => (
+            "Некорректная версия движка. Обновите клиент.",
+            "Invalid engine revision. Update the client.",
+        ),
+        "opponent_missing" => ("Ожидание второго игрока.", "Waiting for the other player."),
+        "proposal_pending" => (
+            "Предыдущая команда ещё ожидает подтверждения.",
+            "The previous command is still awaiting confirmation.",
+        ),
         "already_authenticated" => (
             "Это подключение уже используется в партии.",
             "This connection already belongs to a game.",

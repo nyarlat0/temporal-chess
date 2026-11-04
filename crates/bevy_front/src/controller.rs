@@ -492,6 +492,7 @@ impl GameUi {
                 || (self.online.ready
                     && !self.online.waiting
                     && !self.online.synchronizing
+                    && self.online.opponent_connected()
                     && self.online.side == Some(self.engine.turn())))
     }
 
@@ -522,6 +523,24 @@ impl GameUi {
     pub fn apply_confirmed(&mut self, command: Command) -> Result<(), String> {
         let before = matches!(command, Command::Move { .. }).then(|| self.engine.clone());
         let result = self.record.apply(&mut self.engine, command);
+        self.finish_confirmed(command, before, result)
+    }
+
+    /// Publish the isolated result already approved by this client, after both
+    /// players have voted and the server has durably appended the command.
+    pub fn apply_prepared(&mut self, command: Command, engine: Engine, record: GameRecord) {
+        let before = matches!(command, Command::Move { .. }).then(|| self.engine.clone());
+        self.engine = engine;
+        self.record = record;
+        let _ = self.finish_confirmed(command, before, Ok(()));
+    }
+
+    fn finish_confirmed(
+        &mut self,
+        command: Command,
+        before: Option<Engine>,
+        result: Result<(), temporal_chess_engine::engine::EngineErr>,
+    ) -> Result<(), String> {
         let error = result.as_ref().err().map(ToString::to_string);
         if let (Ok(()), Command::Move { mv, .. }, Some(before)) = (&result, command, before) {
             self.transition = if matches!(

@@ -5,7 +5,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use temporal_chess_protocol::{ClientMessage, PROTOCOL_VERSION, ServerMessage, SyncReason};
+use temporal_chess_protocol::{ClientMessage, PROTOCOL_VERSION, ServerMessage};
 use tokio::sync::{Mutex, mpsc};
 use uuid::Uuid;
 
@@ -174,13 +174,18 @@ async fn handle_client_message(
     match message {
         ClientMessage::CreateGame {
             protocol,
+            engine_revision,
             side,
             causal_gaps,
         } => {
             if !check_handshake(protocol, authenticated, sender) {
                 return;
             }
-            match state.repository.create_game(side, causal_gaps).await {
+            match state
+                .repository
+                .create_game(side, causal_gaps, &engine_revision)
+                .await
+            {
                 Ok(ready) => {
                     let opponent_connected = state
                         .hub
@@ -194,6 +199,8 @@ async fn handle_client_message(
                     send_local(
                         sender,
                         ServerMessage::GameReady {
+                            engine_revision: ready.engine_revision,
+                            pending: ready.pending,
                             causal_gaps: ready.causal_gaps,
                             created: true,
                             game_id: ready.auth.game_id.clone(),
@@ -211,6 +218,7 @@ async fn handle_client_message(
         }
         ClientMessage::JoinGame {
             protocol,
+            engine_revision,
             game_id,
             player_token,
         } => {
@@ -219,7 +227,12 @@ async fn handle_client_message(
             }
             match state
                 .repository
-                .join_game(&game_id, player_token.as_deref())
+                .join_game(
+                    &game_id,
+                    player_token.as_deref(),
+                    &engine_revision,
+                    !state.hub.has_players(&key).await,
+                )
                 .await
             {
                 Ok(ready) => {
@@ -243,6 +256,8 @@ async fn handle_client_message(
                     send_local(
                         sender,
                         ServerMessage::GameReady {
+                            engine_revision: ready.engine_revision,
+                            pending: ready.pending,
                             causal_gaps: ready.causal_gaps,
                             created: false,
                             game_id: ready.auth.game_id.clone(),
@@ -263,53 +278,83 @@ async fn handle_client_message(
                 send_error(sender, "not_authenticated", "Create or join a game first.");
                 return;
             };
-            match state
+            let result = state
                 .repository
-                .play_command(auth, revision, &command)
-                .await
-            {
-                Ok(CommandResult::Accepted { revision, command }) => {
-                    state
-                        .hub
-                        .broadcast(
-                            &auth.game_id,
-                            ServerMessage::CommandAccepted { revision, command },
-                        )
-                        .await;
-                }
-                Ok(CommandResult::Sync {
-                    revision,
-                    history,
-                    reason,
-                }) => send_local(
-                    sender,
-                    ServerMessage::Sync {
-                        revision,
-                        history,
-                        reason,
-                    },
-                ),
-                Err(error) => send_repository_error(sender, error),
-            }
+                .propose_command(auth, revision, &command)
+                .await;
+            send_command_result(state, &auth.game_id, sender, result).await;
+        }
+        ClientMessage::CommandVote {
+            proposal_id,
+            revision,
+            accepted,
+            reason,
+        } => {
+            let Some(auth) = authenticated.as_ref() else {
+                send_error(sender, "not_authenticated", "Create or join a game first.");
+                return;
+            };
+            let result = state
+                .repository
+                .vote_command(auth, &proposal_id, revision, accepted, reason.as_deref())
+                .await;
+            send_command_result(state, &auth.game_id, sender, result).await;
         }
         ClientMessage::Resync { revision: _ } => {
             let Some(auth) = authenticated.as_ref() else {
                 send_error(sender, "not_authenticated", "Create or join a game first.");
                 return;
             };
-            match state.repository.resync(auth).await {
-                Ok((revision, history)) => send_local(
-                    sender,
-                    ServerMessage::Sync {
-                        revision,
-                        history,
-                        reason: SyncReason::Requested,
-                    },
-                ),
-                Err(error) => send_repository_error(sender, error),
-            }
+            let result = state.repository.resync(auth).await;
+            send_command_result(state, &auth.game_id, sender, result).await;
         }
     }
+}
+
+async fn send_command_result(
+    state: &AppState,
+    game_id: &str,
+    sender: &mpsc::Sender<Outbound>,
+    result: Result<CommandResult, RepositoryError>,
+) {
+    let message = match result {
+        Ok(CommandResult::Proposed(proposal)) => ServerMessage::CommandProposed { proposal },
+        Ok(CommandResult::Accepted { revision, command }) => {
+            ServerMessage::CommandAccepted { revision, command }
+        }
+        Ok(CommandResult::Rejected {
+            proposal_id,
+            side,
+            reason,
+        }) => ServerMessage::CommandRejected {
+            proposal_id,
+            side,
+            reason,
+        },
+        Ok(CommandResult::Unchanged) => return,
+        Ok(CommandResult::Sync {
+            revision,
+            history,
+            reason,
+            pending,
+        }) => {
+            send_local(
+                sender,
+                ServerMessage::Sync {
+                    revision,
+                    history,
+                    reason,
+                    pending,
+                },
+            );
+            return;
+        }
+        Err(error) => {
+            send_repository_error(sender, error);
+            return;
+        }
+    };
+    state.hub.broadcast(game_id, message).await;
 }
 
 fn check_handshake(
@@ -370,4 +415,205 @@ async fn send_message(
 ) -> Result<(), actix_ws::Closed> {
     let json = serde_json::to_string(message).expect("server protocol messages are serializable");
     session.text(json).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use temporal_chess_protocol::{Side, SidePreference};
+
+    struct Peer {
+        id: Uuid,
+        auth: Option<AuthenticatedPlayer>,
+        sender: mpsc::Sender<Outbound>,
+        receiver: mpsc::Receiver<Outbound>,
+    }
+    impl Peer {
+        fn new() -> Self {
+            let (sender, receiver) = mpsc::channel(64);
+            Self {
+                id: Uuid::new_v4(),
+                auth: None,
+                sender,
+                receiver,
+            }
+        }
+        async fn send(&mut self, state: &AppState, message: ClientMessage) {
+            handle_client_message(state, self.id, &self.sender, &mut self.auth, message).await;
+        }
+        fn next(&mut self) -> ServerMessage {
+            match self.receiver.try_recv().unwrap() {
+                Outbound::Message(message) => message,
+                Outbound::Close => panic!("unexpected close"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an isolated PostgreSQL database in NOLAN_TEST_DATABASE_URL"]
+    async fn two_client_consensus_transport_and_reconnect() {
+        let pool = sqlx::PgPool::connect(&std::env::var("NOLAN_TEST_DATABASE_URL").unwrap())
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        let state = AppState {
+            repository: Repository::new(pool.clone()),
+            hub: Default::default(),
+            ordering: Default::default(),
+        };
+        let hash = "a".repeat(64);
+        let mut white = Peer::new();
+        white
+            .send(
+                &state,
+                ClientMessage::CreateGame {
+                    protocol: PROTOCOL_VERSION,
+                    engine_revision: hash.clone(),
+                    causal_gaps: false,
+                    side: SidePreference::White,
+                },
+            )
+            .await;
+        let (room, token) = match white.next() {
+            ServerMessage::GameReady {
+                game_id,
+                player_token,
+                revision: 0,
+                engine_revision,
+                ..
+            } => {
+                assert_eq!(engine_revision, hash);
+                (game_id, player_token)
+            }
+            other => panic!("{other:?}"),
+        };
+        let mut black = Peer::new();
+        black
+            .send(
+                &state,
+                ClientMessage::JoinGame {
+                    protocol: PROTOCOL_VERSION,
+                    engine_revision: "b".repeat(64),
+                    game_id: room.clone(),
+                    player_token: None,
+                },
+            )
+            .await;
+        assert!(
+            matches!(black.next(), ServerMessage::Error { code, .. } if code == "engine_revision_mismatch")
+        );
+        assert!(black.auth.is_none());
+        black
+            .send(
+                &state,
+                ClientMessage::JoinGame {
+                    protocol: PROTOCOL_VERSION,
+                    engine_revision: hash.clone(),
+                    game_id: room.clone(),
+                    player_token: None,
+                },
+            )
+            .await;
+        assert!(matches!(
+            black.next(),
+            ServerMessage::GameReady {
+                side: Side::Black,
+                opponent_connected: true,
+                ..
+            }
+        ));
+        assert!(matches!(
+            white.next(),
+            ServerMessage::OpponentConnection { connected: true }
+        ));
+        white
+            .send(
+                &state,
+                ClientMessage::PlayCommand {
+                    revision: 0,
+                    command: "opaque client command".into(),
+                },
+            )
+            .await;
+        let proposal = match white.next() {
+            ServerMessage::CommandProposed { proposal } => proposal,
+            other => panic!("{other:?}"),
+        };
+        assert!(
+            matches!(black.next(), ServerMessage::CommandProposed { proposal: p } if p == proposal)
+        );
+        let vote = ClientMessage::CommandVote {
+            proposal_id: proposal.id.clone(),
+            revision: 0,
+            accepted: true,
+            reason: None,
+        };
+        white.send(&state, vote.clone()).await;
+        assert!(white.receiver.try_recv().is_err());
+        assert!(black.receiver.try_recv().is_err());
+
+        let mut resumed = Peer::new();
+        resumed
+            .send(
+                &state,
+                ClientMessage::JoinGame {
+                    protocol: PROTOCOL_VERSION,
+                    engine_revision: hash,
+                    game_id: room.clone(),
+                    player_token: Some(token),
+                },
+            )
+            .await;
+        assert!(
+            matches!(resumed.next(), ServerMessage::GameReady { pending: Some(p), revision: 0, .. } if p == proposal)
+        );
+        assert!(
+            matches!(white.next(), ServerMessage::Error { code, .. } if code == "connection_replaced")
+        );
+        assert!(matches!(
+            white.receiver.try_recv().unwrap(),
+            Outbound::Close
+        ));
+        assert!(matches!(
+            black.next(),
+            ServerMessage::OpponentConnection { connected: true }
+        ));
+        white
+            .send(
+                &state,
+                ClientMessage::CommandVote {
+                    proposal_id: proposal.id.clone(),
+                    revision: 0,
+                    accepted: false,
+                    reason: None,
+                },
+            )
+            .await;
+        assert!(
+            matches!(white.next(), ServerMessage::Error { code, .. } if code == "connection_replaced")
+        );
+        black.send(&state, vote.clone()).await;
+        assert!(matches!(
+            resumed.next(),
+            ServerMessage::CommandAccepted { revision: 1, .. }
+        ));
+        assert!(matches!(
+            black.next(),
+            ServerMessage::CommandAccepted { revision: 1, .. }
+        ));
+        black.send(&state, vote).await;
+        assert!(black.receiver.try_recv().is_err());
+        resumed
+            .send(&state, ClientMessage::Resync { revision: 1 })
+            .await;
+        assert!(
+            matches!(resumed.next(), ServerMessage::Sync { revision: 1, history, pending: None, .. } if history == ["opaque client command"])
+        );
+        sqlx::query("DELETE FROM games WHERE game_id = $1")
+            .bind(room)
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+    }
 }

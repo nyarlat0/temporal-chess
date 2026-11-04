@@ -1,11 +1,8 @@
 use sha2::{Digest, Sha256};
 use sqlx::{FromRow, PgPool};
-use temporal_chess_engine::{
-    model::Color as EngineSide,
-    record::{Command, GameRecord},
-};
 use temporal_chess_protocol::{
-    MAX_COMMAND_LEN, MAX_COMMANDS, MAX_GAME_ID_LEN, Side, SidePreference, SyncReason,
+    CommandProposal, MAX_COMMAND_LEN, MAX_COMMANDS, MAX_GAME_ID_LEN, MAX_REJECTION_LEN, Side,
+    SidePreference, SyncReason,
 };
 use thiserror::Error;
 use uuid::Uuid;
@@ -13,6 +10,9 @@ use uuid::Uuid;
 const GAME_ID_LEN: usize = 10;
 const GAME_ID_ALPHABET: &[u8] = b"23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
 const CREATE_RETRIES: usize = 8;
+
+#[cfg(test)]
+mod tests;
 
 #[derive(Clone)]
 pub(crate) struct Repository {
@@ -28,6 +28,8 @@ pub(crate) struct AuthenticatedPlayer {
 
 #[derive(Debug)]
 pub(crate) struct ReadyGame {
+    pub(crate) engine_revision: String,
+    pub(crate) pending: Option<CommandProposal>,
     pub(crate) causal_gaps: bool,
     pub(crate) auth: AuthenticatedPlayer,
     pub(crate) revision: u64,
@@ -36,6 +38,13 @@ pub(crate) struct ReadyGame {
 
 #[derive(Debug)]
 pub(crate) enum CommandResult {
+    Proposed(CommandProposal),
+    Rejected {
+        proposal_id: String,
+        side: Side,
+        reason: String,
+    },
+    Unchanged,
     Accepted {
         revision: u64,
         command: String,
@@ -44,6 +53,7 @@ pub(crate) enum CommandResult {
         revision: u64,
         history: Vec<String>,
         reason: SyncReason,
+        pending: Option<CommandProposal>,
     },
 }
 
@@ -59,6 +69,7 @@ pub(crate) enum RepositoryError {
 
 #[derive(FromRow)]
 struct RoomRow {
+    engine_revision: Option<String>,
     causal_gaps: bool,
     game_id: String,
     white_token_hash: Option<Vec<u8>>,
@@ -75,7 +86,9 @@ impl Repository {
         &self,
         preference: SidePreference,
         causal_gaps: bool,
+        engine_revision: &str,
     ) -> Result<ReadyGame, RepositoryError> {
+        validate_engine_revision(engine_revision)?;
         let side = resolve_side(preference);
         let player_token = generate_token();
         let token_hash = hash_token(&player_token);
@@ -88,18 +101,21 @@ impl Repository {
             };
             let result = sqlx::query(
                 "INSERT INTO games
-                    (game_id, white_token_hash, black_token_hash, revision, causal_gaps)
-                 VALUES ($1, $2, $3, 0, $4)
+                    (game_id, white_token_hash, black_token_hash, revision, causal_gaps, engine_revision)
+                 VALUES ($1, $2, $3, 0, $4, $5)
                  ON CONFLICT (game_id) DO NOTHING",
             )
             .bind(&game_id)
             .bind(white_hash)
             .bind(black_hash)
             .bind(causal_gaps)
+            .bind(engine_revision)
             .execute(&self.pool)
             .await?;
             if result.rows_affected() == 1 {
                 return Ok(ReadyGame {
+                    engine_revision: engine_revision.to_owned(),
+                    pending: None,
                     causal_gaps,
                     auth: AuthenticatedPlayer {
                         game_id,
@@ -122,7 +138,10 @@ impl Repository {
         &self,
         game_id: &str,
         player_token: Option<&str>,
+        engine_revision: &str,
+        allow_engine_change: bool,
     ) -> Result<ReadyGame, RepositoryError> {
+        validate_engine_revision(engine_revision)?;
         if player_token
             .is_some_and(|token| token.len() != 64 || !token.bytes().all(|b| b.is_ascii_hexdigit()))
         {
@@ -134,13 +153,37 @@ impl Repository {
         let game_id = normalize_game_id(game_id)?;
         let mut transaction = self.pool.begin().await?;
         let mut room = sqlx::query_as::<_, RoomRow>(
-            "SELECT game_id, white_token_hash, black_token_hash, revision, causal_gaps
+            "SELECT game_id, white_token_hash, black_token_hash, revision, causal_gaps, engine_revision
              FROM games WHERE game_id = $1 FOR UPDATE",
         )
         .bind(&game_id)
         .fetch_optional(&mut *transaction)
         .await?
         .ok_or_else(|| client_error("game_not_found", "No game exists with that id."))?;
+
+        if !allow_engine_change
+            && room
+                .engine_revision
+                .as_deref()
+                .is_some_and(|revision| revision != engine_revision)
+        {
+            return Err(client_error(
+                "engine_revision_mismatch",
+                "The room uses a different engine revision.",
+            ));
+        }
+        if room.engine_revision.as_deref() != Some(engine_revision) {
+            sqlx::query("UPDATE games SET engine_revision = $2 WHERE game_id = $1")
+                .bind(&game_id)
+                .bind(engine_revision)
+                .execute(&mut *transaction)
+                .await?;
+            // Approval under another engine revision must never carry over.
+            sqlx::query("DELETE FROM command_proposals WHERE game_id = $1")
+                .bind(&game_id)
+                .execute(&mut *transaction)
+                .await?;
+        }
 
         let (side, player_token) = if let Some(token) = player_token {
             (authenticate(&room, token)?, token.to_owned())
@@ -190,8 +233,14 @@ impl Repository {
         let history = fetch_history(&mut transaction, &room.game_id).await?;
         verify_revision(&room, &history)?;
         let revision = revision_to_u64(room.revision, &room.game_id)?;
+        let pending = fetch_proposal(&mut transaction, &room.game_id)
+            .await?
+            .map(ProposalRow::proposal)
+            .transpose()?;
         transaction.commit().await?;
         Ok(ReadyGame {
+            engine_revision: engine_revision.to_owned(),
+            pending,
             causal_gaps: room.causal_gaps,
             auth: AuthenticatedPlayer {
                 game_id: room.game_id,
@@ -203,126 +252,232 @@ impl Repository {
         })
     }
 
-    pub(crate) async fn play_command(
+    /// Store only a proposal. Commands are opaque to the server; no engine is linked.
+    pub(crate) async fn propose_command(
         &self,
         auth: &AuthenticatedPlayer,
         client_revision: u64,
         command: &str,
     ) -> Result<CommandResult, RepositoryError> {
-        if command.is_empty() || command.len() > MAX_COMMAND_LEN || !command.is_ascii() {
-            return Err(client_error("invalid_move", "Некорректная команда."));
+        if command.is_empty()
+            || command.len() > MAX_COMMAND_LEN
+            || !command.is_ascii()
+            || command.contains(['\r', '\n'])
+        {
+            return Err(client_error("invalid_command", "Invalid command envelope."));
         }
-
         let mut transaction = self.pool.begin().await?;
         let room = locked_room(&mut transaction, &auth.game_id).await?;
         authenticate_as(&room, auth.side, &auth.player_token)?;
-        let history = fetch_history(&mut transaction, &room.game_id).await?;
-        verify_revision(&room, &history)?;
         let revision = revision_to_u64(room.revision, &room.game_id)?;
         if revision != client_revision {
-            transaction.commit().await?;
-            return Ok(CommandResult::Sync {
-                revision,
-                history,
-                reason: SyncReason::RevisionMismatch,
-            });
+            return sync_result(&mut transaction, &room).await;
         }
-
-        if history.len() >= MAX_COMMANDS {
+        if revision >= MAX_COMMANDS as u64 {
             return Err(client_error(
                 "history_limit",
-                "Достигнут предел: 10000 команд.",
+                "Limit reached: 10000 commands.",
             ));
         }
-        let text = format!(
-            "NOLAN-CHESS 2\ncausal_gaps {}\n{}\n",
-            if room.causal_gaps { "on" } else { "off" },
-            history.join("\n")
-        );
-        let requested = command.to_owned();
-        let side = auth.side;
-        // Temporal reconciliation is CPU work; do not block the WebSocket reactor.
-        let accepted_command = tokio::task::spawn_blocking(move || {
-            let (mut engine, mut record) = GameRecord::load(&text)
-                .map_err(|e| client_error("replay_failed", e.to_string()))?;
-            if side_from_engine(engine.turn()) != side {
-                return Err(client_error("not_your_turn", "Сейчас ход соперника."));
+        if room.white_token_hash.is_none() || room.black_token_hash.is_none() {
+            return Err(client_error(
+                "opponent_missing",
+                "Waiting for the other player.",
+            ));
+        }
+        sqlx::query("DELETE FROM command_proposals WHERE game_id = $1 AND created_at <= now() - interval '5 minutes'")
+            .bind(&room.game_id).execute(&mut *transaction).await?;
+        if let Some(existing) = fetch_proposal(&mut transaction, &room.game_id).await? {
+            let proposal = existing.proposal()?;
+            if proposal.side == auth.side && proposal.command == command {
+                transaction.commit().await?;
+                return Ok(CommandResult::Proposed(proposal));
             }
-            let command: Command = requested
-                .parse()
-                .map_err(|e| client_error("invalid_command", e))?;
-            // Bounds are checked before handing untrusted indices to the engine.
-            let horizon = engine.history().horizon();
-            let source = match command {
-                Command::Move { mv, .. } => Some(mv.source()),
-                Command::Advance { source, to_t, .. } => {
-                    if to_t > horizon {
-                        return Err(client_error("invalid_command", "Нет такой доски."));
-                    }
-                    Some(source)
-                }
-                Command::Continue | Command::DeclineReactions => None,
-            };
-            if let Some(source) = source
-                && (source.t > horizon
-                    || source.piece.wid >= 32
-                    || source.piece.fut_seen > horizon
-                    || source.piece.loop_turn > MAX_COMMANDS)
-            {
-                return Err(client_error(
-                    "invalid_command",
-                    "Нет такого состояния фигуры.",
-                ));
-            }
-            record.apply(&mut engine, command).map_err(|e| {
-                let code = if e.is_internal() {
-                    "engine_error"
-                } else {
-                    "illegal_command"
-                };
-                client_error(code, e.to_string())
-            })?;
-            Ok::<_, RepositoryError>(command.to_string())
-        })
-        .await
-        .map_err(|error| client_error("engine_error", error.to_string()))??;
-        let next_revision = revision
+            return Err(client_error(
+                "proposal_pending",
+                "Another command is awaiting confirmation.",
+            ));
+        }
+        let proposal = CommandProposal {
+            id: Uuid::new_v4().simple().to_string(),
+            revision,
+            side: auth.side,
+            command: command.to_owned(),
+        };
+        sqlx::query("INSERT INTO command_proposals (game_id, proposal_id, revision, side, command) VALUES ($1, $2, $3, $4, $5)")
+            .bind(&room.game_id).bind(&proposal.id).bind(room.revision)
+            .bind(side_text(auth.side)).bind(command).execute(&mut *transaction).await?;
+        transaction.commit().await?;
+        Ok(CommandResult::Proposed(proposal))
+    }
+
+    /// Each authenticated color has one vote. The second acceptance commits the
+    /// command and revision atomically; duplicate/stale votes never append twice.
+    pub(crate) async fn vote_command(
+        &self,
+        auth: &AuthenticatedPlayer,
+        proposal_id: &str,
+        client_revision: u64,
+        accepted: bool,
+        reason: Option<&str>,
+    ) -> Result<CommandResult, RepositoryError> {
+        let mut transaction = self.pool.begin().await?;
+        let room = locked_room(&mut transaction, &auth.game_id).await?;
+        authenticate_as(&room, auth.side, &auth.player_token)?;
+        let Some(mut row) = fetch_proposal(&mut transaction, &room.game_id).await? else {
+            return Ok(CommandResult::Unchanged);
+        };
+        if row.proposal_id != proposal_id {
+            return Ok(CommandResult::Unchanged);
+        }
+        if row.revision != room.revision
+            || client_revision != revision_to_u64(room.revision, &room.game_id)?
+        {
+            return sync_result(&mut transaction, &room).await;
+        }
+        if !accepted {
+            sqlx::query("DELETE FROM command_proposals WHERE game_id = $1")
+                .bind(&room.game_id)
+                .execute(&mut *transaction)
+                .await?;
+            transaction.commit().await?;
+            return Ok(CommandResult::Rejected {
+                proposal_id: proposal_id.to_owned(),
+                side: auth.side,
+                reason: reason
+                    .unwrap_or("The client rejected the command.")
+                    .chars()
+                    .take(MAX_REJECTION_LEN)
+                    .collect(),
+            });
+        }
+        match auth.side {
+            Side::White => row.white_accepted = true,
+            Side::Black => row.black_accepted = true,
+        }
+        if !(row.white_accepted && row.black_accepted) {
+            sqlx::query("UPDATE command_proposals SET white_accepted = $2, black_accepted = $3 WHERE game_id = $1")
+                .bind(&room.game_id).bind(row.white_accepted).bind(row.black_accepted)
+                .execute(&mut *transaction).await?;
+            transaction.commit().await?;
+            return Ok(CommandResult::Unchanged);
+        }
+        let next_revision = room
+            .revision
             .checked_add(1)
             .ok_or_else(|| client_error("revision_overflow", "Game revision overflow."))?;
-        let next_revision_i64 = i64::try_from(next_revision)
-            .map_err(|_| client_error("revision_overflow", "Game revision overflow."))?;
-
         sqlx::query("INSERT INTO game_commands (game_id, revision, command) VALUES ($1, $2, $3)")
             .bind(&room.game_id)
-            .bind(next_revision_i64)
-            .bind(&accepted_command)
+            .bind(next_revision)
+            .bind(&row.command)
             .execute(&mut *transaction)
             .await?;
         sqlx::query("UPDATE games SET revision = $2, updated_at = now() WHERE game_id = $1")
             .bind(&room.game_id)
-            .bind(next_revision_i64)
+            .bind(next_revision)
+            .execute(&mut *transaction)
+            .await?;
+        sqlx::query("DELETE FROM command_proposals WHERE game_id = $1")
+            .bind(&room.game_id)
             .execute(&mut *transaction)
             .await?;
         transaction.commit().await?;
         Ok(CommandResult::Accepted {
-            revision: next_revision,
-            command: accepted_command,
+            revision: next_revision as u64,
+            command: row.command,
         })
     }
 
     pub(crate) async fn resync(
         &self,
         auth: &AuthenticatedPlayer,
-    ) -> Result<(u64, Vec<String>), RepositoryError> {
+    ) -> Result<CommandResult, RepositoryError> {
         let mut transaction = self.pool.begin().await?;
         let room = locked_room(&mut transaction, &auth.game_id).await?;
         authenticate_as(&room, auth.side, &auth.player_token)?;
-        let history = fetch_history(&mut transaction, &room.game_id).await?;
-        verify_revision(&room, &history)?;
-        let revision = revision_to_u64(room.revision, &room.game_id)?;
+        let mut result = sync_result(&mut transaction, &room).await?;
+        if let CommandResult::Sync { reason, .. } = &mut result {
+            *reason = SyncReason::Requested;
+        }
         transaction.commit().await?;
-        Ok((revision, history))
+        Ok(result)
     }
+}
+
+#[derive(FromRow)]
+struct ProposalRow {
+    proposal_id: String,
+    revision: i64,
+    side: String,
+    command: String,
+    white_accepted: bool,
+    black_accepted: bool,
+}
+impl ProposalRow {
+    fn proposal(self) -> Result<CommandProposal, RepositoryError> {
+        let side = match self.side.as_str() {
+            "white" => Side::White,
+            "black" => Side::Black,
+            _ => {
+                return Err(client_error(
+                    "server_error",
+                    "Invalid stored proposal side.",
+                ));
+            }
+        };
+        Ok(CommandProposal {
+            id: self.proposal_id,
+            revision: self.revision as u64,
+            side,
+            command: self.command,
+        })
+    }
+}
+
+async fn fetch_proposal(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    game_id: &str,
+) -> Result<Option<ProposalRow>, sqlx::Error> {
+    sqlx::query_as::<_, ProposalRow>("SELECT proposal_id, revision, side, command, white_accepted, black_accepted FROM command_proposals WHERE game_id = $1 AND created_at > now() - interval '5 minutes'")
+        .bind(game_id).fetch_optional(&mut **transaction).await
+}
+
+async fn sync_result(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    room: &RoomRow,
+) -> Result<CommandResult, RepositoryError> {
+    let history = fetch_history(transaction, &room.game_id).await?;
+    verify_revision(room, &history)?;
+    let pending = fetch_proposal(transaction, &room.game_id)
+        .await?
+        .map(ProposalRow::proposal)
+        .transpose()?;
+    Ok(CommandResult::Sync {
+        revision: revision_to_u64(room.revision, &room.game_id)?,
+        history,
+        pending,
+        reason: SyncReason::RevisionMismatch,
+    })
+}
+
+fn side_text(side: Side) -> &'static str {
+    match side {
+        Side::White => "white",
+        Side::Black => "black",
+    }
+}
+fn validate_engine_revision(value: &str) -> Result<(), RepositoryError> {
+    if value.len() != 64
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(client_error(
+            "invalid_engine_revision",
+            "Invalid engine revision hash.",
+        ));
+    }
+    Ok(())
 }
 
 async fn locked_room(
@@ -330,7 +485,7 @@ async fn locked_room(
     game_id: &str,
 ) -> Result<RoomRow, RepositoryError> {
     sqlx::query_as::<_, RoomRow>(
-        "SELECT game_id, white_token_hash, black_token_hash, revision, causal_gaps
+        "SELECT game_id, white_token_hash, black_token_hash, revision, causal_gaps, engine_revision
          FROM games WHERE game_id = $1 FOR UPDATE",
     )
     .bind(game_id)
@@ -426,13 +581,6 @@ fn resolve_side(preference: SidePreference) -> Side {
         SidePreference::Black => Side::Black,
         SidePreference::Random if Uuid::new_v4().as_bytes()[0] & 1 == 0 => Side::White,
         SidePreference::Random => Side::Black,
-    }
-}
-
-fn side_from_engine(side: EngineSide) -> Side {
-    match side {
-        EngineSide::White => Side::White,
-        EngineSide::Black => Side::Black,
     }
 }
 

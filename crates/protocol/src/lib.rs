@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u16 = 2;
+pub const PROTOCOL_VERSION: u16 = 3;
 pub const MAX_GAME_ID_LEN: usize = 12;
 pub const MAX_COMMAND_LEN: usize = 192;
 
@@ -34,11 +34,15 @@ pub enum SidePreference {
 pub enum ClientMessage {
     CreateGame {
         protocol: u16,
+        #[serde(default)]
+        engine_revision: String,
         causal_gaps: bool,
         side: SidePreference,
     },
     JoinGame {
         protocol: u16,
+        #[serde(default)]
+        engine_revision: String,
         game_id: String,
         player_token: Option<String>,
     },
@@ -46,9 +50,24 @@ pub enum ClientMessage {
         revision: u64,
         command: String,
     },
+    CommandVote {
+        proposal_id: String,
+        revision: u64,
+        accepted: bool,
+        reason: Option<String>,
+    },
     Resync {
         revision: u64,
     },
+}
+
+/// An opaque command awaiting independent validation by both player clients.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CommandProposal {
+    pub id: String,
+    pub revision: u64,
+    pub side: Side,
+    pub command: String,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -62,6 +81,7 @@ pub enum SyncReason {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMessage {
     GameReady {
+        engine_revision: String,
         causal_gaps: bool,
         created: bool,
         game_id: String,
@@ -70,6 +90,15 @@ pub enum ServerMessage {
         revision: u64,
         history: Vec<String>,
         opponent_connected: bool,
+        pending: Option<CommandProposal>,
+    },
+    CommandProposed {
+        proposal: CommandProposal,
+    },
+    CommandRejected {
+        proposal_id: String,
+        side: Side,
+        reason: String,
     },
     CommandAccepted {
         revision: u64,
@@ -82,6 +111,7 @@ pub enum ServerMessage {
         revision: u64,
         history: Vec<String>,
         reason: SyncReason,
+        pending: Option<CommandProposal>,
     },
     Error {
         code: String,
@@ -91,3 +121,4 @@ pub enum ServerMessage {
 
 /// Bound replay cost and keep snapshots below the record importer limit.
 pub const MAX_COMMANDS: usize = 10_000;
+pub const MAX_REJECTION_LEN: usize = 512;
