@@ -142,6 +142,7 @@ impl Job {
 }
 struct Pending {
     root: Engine,
+    settings: Settings,
     command: Command,
     focused: bool,
 }
@@ -176,14 +177,16 @@ pub fn poll(mut runner: ResMut<Runner>, mut game: ResMut<GameUi>, mut contexts: 
     if runner
         .job
         .as_ref()
-        .is_some_and(|job| job.settings != game.bot.settings)
+        .is_some_and(|job| job.settings != game.bot.settings || job.root != game.engine)
     {
         runner.job = None;
     }
     if let Some(pending) = &mut runner.pending {
-        if pending.root != game.engine {
+        if pending.root != game.engine || pending.settings != game.bot.settings {
             runner.pending = None;
             game.reset_playback();
+            game.jump_to = None;
+            game.viewport.scroll = None;
             return;
         }
         if let Command::Move { mv, .. } = pending.command {
@@ -233,6 +236,7 @@ pub fn poll(mut runner: ResMut<Runner>, mut game: ResMut<GameUi>, mut contexts: 
         if let Some(command) = result.command {
             runner.pending = Some(Pending {
                 root: job.root.clone(),
+                settings: job.settings,
                 command,
                 focused: false,
             });
@@ -320,6 +324,66 @@ pub fn panel(ui: &mut egui::Ui, game: &mut GameUi) {
             ));
             if let Some(error) = &game.bot.error {
                 ui.label(error);
+            } else if game.bot.paused && game.bot.owns_turn(game) {
+                ui.small(crate::tr!(
+                    "Поиск на паузе. Можно увеличить бюджет и продолжить.",
+                    "Search paused. You can increase the budget and resume."
+                ));
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use temporal_chess_engine::record::GameRecord;
+
+    #[test]
+    fn bot_turn_blocks_human_commands_and_undo_pauses_the_bot() {
+        let mut game = GameUi::default();
+        game.bot.settings.enabled = true;
+        assert!(game.can_submit());
+        game.bot.settings.human = Color::Black;
+        assert!(!game.can_submit());
+        game.bot.paused = true;
+        assert!(
+            !game.can_submit(),
+            "pausing must not let the human play the bot's pieces"
+        );
+        game.bot.settings.human = Color::White;
+        let command = "move 0 12:0:0 e2 e4 + normal".parse().unwrap();
+        game.apply_confirmed(command).unwrap();
+        game.reset_playback();
+        game.bot.paused = false;
+        game.undo_last_move();
+        assert!(game.bot.paused);
+        assert!(game.undo_in_progress());
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn native_job_returns_a_command_from_its_own_immutable_position() {
+        let game = GameUi::default();
+        let settings = Settings {
+            enabled: true,
+            human: Color::Black,
+            budget: 0,
+        };
+        let mut job = Job::new(game.engine.clone(), settings);
+        let mut state = BotState::default();
+        let start = std::time::Instant::now();
+        let result = loop {
+            if let Some(result) = job.poll(&mut state) {
+                break result;
+            }
+            assert!(start.elapsed().as_secs() < 30);
+            std::thread::yield_now();
+        };
+        assert_eq!(job.root, game.engine);
+        assert!(result.nodes <= NODE_BUDGETS[0]);
+        let mut next = game.engine.clone();
+        GameRecord::default()
+            .apply(&mut next, result.command.unwrap())
+            .unwrap();
+    }
 }

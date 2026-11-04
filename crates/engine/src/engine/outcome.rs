@@ -110,9 +110,7 @@ impl Engine {
             if piece.rights.ordinary {
                 for t in prepared.possible_skips(Self::piece_at(piece)) {
                     let mut probe = prepared.clone();
-                    let result = probe
-                        .skip_inner(Self::piece_at(piece), t)
-                        .and_then(|()| probe.reconcile());
+                    let result = probe.skip_with_information(Self::piece_at(piece), t);
                     if result.is_ok() && !probe.king_died(side) {
                         return Ok(true);
                     }

@@ -134,14 +134,16 @@ impl Search {
         if self.done {
             return;
         }
-        if self.result.nodes >= self.node_limit && self.result().command.is_some() {
-            self.done = true;
-            return;
-        }
         let frame = self.stack.last_mut().expect("active search frame");
         if frame.depth == 0 || frame.engine.outcome().is_some() {
             let score = evaluate(&frame.engine, frame.ply);
             self.finish_frame(score);
+            return;
+        }
+        // Finish the last leaf before stopping so a one-node budget can still
+        // produce a command. Rejected candidates consume budget as well.
+        if self.result.nodes >= self.node_limit {
+            self.done = true;
             return;
         }
         if let Some(&piece) = frame.sources.get(frame.generated) {

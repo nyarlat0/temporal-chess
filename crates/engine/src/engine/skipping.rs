@@ -16,10 +16,46 @@ impl Engine {
     /// Does not consume a player's turn or another piece's rights. Staying at
     /// the same time cannot relinquish a right.
     pub fn skip_ordinary(&mut self, source: PieceAt, to_t: usize) -> Result<(), EngineErr> {
-        self.transaction(|candidate| {
-            candidate.skip_inner(source, to_t)?;
-            candidate.reconcile()
-        })
+        self.transaction(|candidate| candidate.skip_with_information(source, to_t))
+    }
+
+    /// Waiting acknowledges the resulting view on the traversed occurrences,
+    /// after reconciliation has resolved their actual positions and targets.
+    /// Other occurrences and other pieces retain their reaction memory.
+    pub(super) fn skip_with_information(
+        &mut self,
+        source: PieceAt,
+        to_t: usize,
+    ) -> Result<(), EngineErr> {
+        self.skip_inner(source, to_t)?;
+        let location = self.projection.pieces[&source];
+        let mut traversed = Vec::new();
+        for state in &self.history.worldlines[location.wid][location.age..] {
+            traversed.push(PieceAt {
+                piece: super::PieceId::from_state(state, location.wid),
+                t: state.t,
+            });
+            if state.t == to_t {
+                break;
+            }
+        }
+        loop {
+            self.reconcile()?;
+            let mut learned = false;
+            for id in &traversed {
+                if let Some(location) = self.projection.pieces.get(id) {
+                    let state = &mut self.history.worldlines[location.wid][location.age];
+                    let before = state.remembered.len();
+                    state.remembered.extend(state.informed.iter().copied());
+                    learned |= state.remembered.len() != before;
+                }
+            }
+            // Acknowledging a reaction may release a calculation barrier. If it
+            // does, also learn the resulting view, not a stale intermediate one.
+            if !learned {
+                return Ok(());
+            }
+        }
     }
 
     pub(super) fn skip_inner(&mut self, source: PieceAt, to_t: usize) -> Result<(), EngineErr> {

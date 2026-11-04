@@ -203,3 +203,75 @@ fn material_is_not_multiplied_by_passive_history_length() {
     let longer = Engine::from_worldlines(vec![white, black], Color::White).unwrap();
     assert!((evaluate(&longer, 0) - evaluate(&initial, 0)).abs() <= 12);
 }
+
+#[test]
+fn generated_actions_include_inversion_promotion_decline_and_calculation() {
+    fn generated(engine: Engine) -> Vec<Command> {
+        let mut search = Search::new(engine, Limits::default());
+        while !search.stack[0].ordered {
+            search.step();
+        }
+        search.stack[0].commands.clone()
+    }
+    let (engine, _) = GameRecord::load("NOLAN-CHESS 2\ncausal_gaps off\nmove 0 12:0:0 e2 e4 + normal\nmove 1 30:1:0 g7 g6 + normal\n").unwrap();
+    assert!(
+        generated(engine)
+            .iter()
+            .any(|c| matches!(c, Command::Move { mv, .. } if mv.to_past()))
+    );
+    let engine = Engine::from_worldlines(
+        vec![vec![State::new(
+            PieceKind::P { moved: true },
+            Color::White,
+            Sq(0, 6),
+        )]],
+        Color::White,
+    )
+    .unwrap();
+    assert_eq!(
+        generated(engine)
+            .iter()
+            .filter(|c| matches!(c, Command::Move { mv, .. } if mv.promotion().is_some()))
+            .count(),
+        4
+    );
+    let mut rook = State::new(PieceKind::R { moved: true }, Color::White, Sq(0, 0));
+    rook.rights.ordinary = false;
+    let engine = Engine::from_worldlines(
+        vec![
+            vec![rook],
+            vec![State::new(PieceKind::N, Color::Black, Sq(0, 4))],
+        ],
+        Color::White,
+    )
+    .unwrap();
+    assert!(generated(engine).contains(&Command::DeclineReactions));
+    let text = include_str!("../../engine/tests/fixtures/castling_rook_collision.nolan");
+    let prefix = text.split("\ncontinue\n").next().unwrap();
+    let (engine, _) = GameRecord::load(prefix).unwrap();
+    assert!(generated(engine).contains(&Command::Continue));
+}
+
+#[test]
+fn both_colors_can_complete_and_replay_a_short_bot_game() {
+    let mut engine = Engine::default().with_interactive_calculation().unwrap();
+    let mut record = GameRecord::default();
+    let mut colors = [false; 2];
+    for _ in 0..10 {
+        if engine.outcome().is_some() {
+            break;
+        }
+        colors[usize::from(engine.turn() == Color::Black)] = true;
+        let decision = solve(&engine, MAX_DEPTH, 50);
+        record
+            .apply(
+                &mut engine,
+                decision
+                    .command
+                    .expect("bot must return an applicable command"),
+            )
+            .unwrap();
+    }
+    assert!(colors.into_iter().all(|seen| seen));
+    assert_eq!(GameRecord::load(&record.to_text()).unwrap().0, engine);
+}

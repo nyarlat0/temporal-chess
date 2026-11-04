@@ -167,7 +167,7 @@ fn declining_acknowledges_all_reactions_and_prevents_reactivation() {
 }
 
 #[test]
-fn free_wait_does_not_acknowledge_information() {
+fn free_wait_does_not_acknowledge_other_figures_information() {
     let mut engine = observed(false);
     let mut waiting = line(PieceKind::N, Color::White, Sq(7, 0), false);
     waiting[0].rights.ordinary = true;
@@ -359,6 +359,59 @@ fn reaction_modes_are_independent_and_preserve_ordinary_reserves() {
                 engine.history.worldlines[0][0].remembered.is_empty(),
                 !global_reaction_reset
             );
+            assert_eq!(
+                Engine::from_history(engine.history.clone(), engine.turn).unwrap(),
+                engine
+            );
+        }
+    }
+}
+
+#[test]
+fn waiting_remembers_its_result_without_activating_the_waiting_piece() {
+    for inverted in [false, true] {
+        for chain_info_activation in [false, true] {
+            let mut engine = observed(inverted);
+            engine.history.rules.chain_info_activation = chain_info_activation;
+            engine.history.worldlines[0][0].rights.ordinary = true;
+            engine.history.worldlines[0][4].rights.ordinary = true;
+            engine.reconcile().unwrap();
+            let target = PieceId::from_state(&engine.history.worldlines[1][0], 1);
+            let old_memory = PieceId {
+                wid: 123,
+                fut_seen: 9,
+                loop_turn: 1,
+            };
+            engine.history.worldlines[0][0]
+                .remembered
+                .insert(old_memory);
+            let opponent_memory: Vec<_> = engine.history.worldlines[1]
+                .iter()
+                .map(|s| s.remembered.clone())
+                .collect();
+            let source = Engine::piece_at(engine.get_piv(0, 0).unwrap());
+            engine
+                .skip_ordinary(source, if inverted { 0 } else { 4 })
+                .unwrap();
+            assert!(reacting_times(&engine, 0).is_empty());
+            for state in engine.history.worldlines[0].iter().filter(|s| s.t % 2 == 0) {
+                assert!(state.remembered.contains(&target));
+            }
+            assert!(
+                engine.history.worldlines[0][0]
+                    .remembered
+                    .contains(&old_memory)
+            );
+            assert_eq!(
+                engine.history.worldlines[1]
+                    .iter()
+                    .map(|s| s.remembered.clone())
+                    .collect::<Vec<_>>(),
+                opponent_memory
+            );
+            assert_eq!(engine.turn(), Color::White);
+            assert!(engine.history.moves.is_empty());
+            assert!(engine.history.worldlines[0][4].rights.ordinary);
             assert_eq!(
                 Engine::from_history(engine.history.clone(), engine.turn).unwrap(),
                 engine
