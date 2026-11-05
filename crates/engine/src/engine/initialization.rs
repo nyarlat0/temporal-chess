@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use crate::model::{GameRules, StartingPosition, TimeDirection};
 use crate::pieces::{Color, Sq, initial_position};
 
 use super::{Engine, EngineErr, History, Projection, State};
@@ -23,6 +24,77 @@ impl Engine {
         engine
     }
 
+    /// Construct an explicit starting layout. Time War owns an immutable closed
+    /// interval; black starts naturally inverted, with no artificial loop pivot.
+    pub fn with_start(
+        rules: GameRules,
+        starting_position: StartingPosition,
+    ) -> Result<Self, EngineErr> {
+        if !starting_position.is_valid() {
+            return Err(EngineErr::InvalidHistory(
+                "Time War separation must be odd and between 3 and 255",
+            ));
+        }
+        if starting_position == StartingPosition::Standard {
+            return Ok(Self::new(rules));
+        }
+        let end = starting_position.fixed_end().unwrap();
+        let worldlines = initial_position()
+            .into_iter()
+            .map(|(kind, color, sq)| {
+                let mut state = State::new(kind, color, sq);
+                if color == Color::Black {
+                    state.t = end;
+                    state.fut_seen = end;
+                    state.inverted = true;
+                    state.rights.ordinary = true;
+                }
+                vec![state].into()
+            })
+            .collect();
+        Self::from_history(
+            History {
+                rules,
+                starting_position,
+                worldlines,
+                moves: BTreeMap::new(),
+                targets: BTreeMap::new(),
+                horizon: end,
+                status: super::GameStatus::Ongoing,
+                calculation: Default::default(),
+            },
+            Color::White,
+        )
+    }
+
+    /// A command must also leave room for the passive tick to the next own-color
+    /// board. This generalizes the existing prohibition on moving past t=0/1.
+    pub(super) fn time_direction_available(
+        &self,
+        piece: crate::model::PieceView,
+        direction: TimeDirection,
+    ) -> bool {
+        if direction == TimeDirection::Past && piece.t <= 1 {
+            return false;
+        }
+        if let Some(end) = self.history.starting_position.fixed_end() {
+            return direction
+                .step(piece.t)
+                .and_then(|t| direction.step(t))
+                .is_some_and(|t| t <= end);
+        }
+        true
+    }
+
+    pub(super) fn passive_successor(&self, state: &State) -> Option<State> {
+        state.prolongate().filter(|next| {
+            self.history
+                .starting_position
+                .last_own_board(state.color)
+                .is_none_or(|end| next.t <= end)
+        })
+    }
+
     /// Build a scenario from worldlines, validating and projecting it immediately.
     pub fn from_worldlines(worldlines: Vec<Vec<State>>, turn: Color) -> Result<Self, EngineErr> {
         let horizon = worldlines
@@ -34,6 +106,7 @@ impl Engine {
         Self::from_history(
             History {
                 rules: Default::default(),
+                starting_position: StartingPosition::Standard,
                 worldlines: worldlines.into_iter().map(Into::into).collect(),
                 moves: BTreeMap::new(),
                 targets: BTreeMap::new(),
@@ -47,6 +120,14 @@ impl Engine {
 
     /// Restore an owned snapshot without trusting any cached boards or lookups.
     pub fn from_history(history: History, turn: Color) -> Result<Self, EngineErr> {
+        if !history.starting_position.is_valid()
+            || history
+                .starting_position
+                .fixed_end()
+                .is_some_and(|end| history.horizon != end)
+        {
+            return Err(EngineErr::InvalidHistory("invalid fixed timeline bounds"));
+        }
         for line in &history.worldlines {
             if !line.gaps.is_empty() {
                 return Err(EngineErr::InvalidHistory("unresolved causal gap"));

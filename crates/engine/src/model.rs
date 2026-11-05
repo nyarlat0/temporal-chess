@@ -11,6 +11,42 @@ mod worldline;
 pub use pieces::{Color, PieceKind, PieceView, Sq};
 pub use worldline::{CausalGap, Worldline};
 
+pub const MAX_TIME_WAR_SEPARATION: usize = 255;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum StartingPosition {
+    #[default]
+    Standard,
+    TimeWar {
+        separation: usize,
+    },
+}
+impl StartingPosition {
+    pub fn is_valid(self) -> bool {
+        match self {
+            Self::Standard => true,
+            Self::TimeWar { separation } => {
+                (3..=MAX_TIME_WAR_SEPARATION).contains(&separation) && separation % 2 == 1
+            }
+        }
+    }
+    pub fn fixed_end(self) -> Option<usize> {
+        match self {
+            Self::Standard => None,
+            Self::TimeWar { separation } => Some(separation),
+        }
+    }
+    pub fn last_own_board(self, color: Color) -> Option<usize> {
+        self.fixed_end().map(|end| {
+            if color == Color::White {
+                end.saturating_sub(1)
+            } else {
+                end
+            }
+        })
+    }
+}
+
 /// Independent, immutable options for a game. Both are off in standard play.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct GameRules {

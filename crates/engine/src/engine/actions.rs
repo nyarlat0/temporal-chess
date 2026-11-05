@@ -132,7 +132,7 @@ impl Engine {
             .last_key_value()
             .map(|(&t, _)| t)
             .unwrap_or(0);
-        let horizon = if piece.t == end_t {
+        let horizon = if piece.t == end_t && self.history.starting_position.fixed_end().is_none() {
             self.prolongate_wlines(end_t, mv.to_past().then_some(piece.origin))?;
             end_t.checked_add(1).ok_or(EngineErr::WrongMove)?
         } else {
@@ -204,6 +204,7 @@ impl Engine {
 
     fn deact_same_order(&mut self, piece: PieceView) -> Vec<PieceView> {
         let mut idle_endpoints = Vec::new();
+        let starting_position = self.history.starting_position;
         for (origin, line) in self.history.worldlines.iter_mut().enumerate() {
             let last_age = line.len() - 1;
             for (age, state) in line.iter_mut().enumerate() {
@@ -217,7 +218,12 @@ impl Engine {
                         // A cancelled turn can leave a deliberate active
                         // endpoint. Once another piece takes its shared turn,
                         // it must wait, not become an inactive stranded end.
-                        if state.inverted && state.t <= state.color.first_board() {
+                        if (state.inverted && state.t <= state.color.first_board())
+                            || (!state.inverted
+                                && starting_position
+                                    .last_own_board(state.color)
+                                    .is_some_and(|end| state.t >= end))
+                        {
                             // There is no earlier own board to wait on. Keep
                             // the boundary reserve available for a future turn.
                             state.expire_reactions();

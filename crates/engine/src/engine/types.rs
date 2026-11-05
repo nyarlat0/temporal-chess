@@ -83,6 +83,7 @@ pub(super) struct Cancellation {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct History {
     pub(super) rules: crate::model::GameRules,
+    pub(super) starting_position: crate::model::StartingPosition,
     pub(super) worldlines: Vec<Worldline>,
     pub(super) moves: BTreeMap<MoveId, Move>,
     /// Targets observed when a move was played. Dead targets are restored only
@@ -95,6 +96,9 @@ pub struct History {
 }
 
 impl History {
+    pub fn starting_position(&self) -> crate::model::StartingPosition {
+        self.starting_position
+    }
     pub fn rules(&self) -> crate::model::GameRules {
         self.rules
     }

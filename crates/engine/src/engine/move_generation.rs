@@ -280,7 +280,7 @@ impl Engine {
         };
         let mut moves = Vec::new();
         for direction in [TimeDirection::Future, TimeDirection::Past] {
-            if direction == TimeDirection::Past && piece.t <= 1 {
+            if !self.time_direction_available(piece, direction) {
                 continue;
             }
             let mut board = match self.move_board(piece, direction) {
@@ -392,7 +392,7 @@ impl Engine {
             let Some(state) = self.piece_state(Self::piece_at(*piece)) else {
                 return false;
             };
-            let Some(next) = state.prolongate() else {
+            let Some(next) = self.passive_successor(state) else {
                 return false;
             };
             let next_id = super::PieceAt {

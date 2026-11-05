@@ -393,6 +393,8 @@ fn paint_transition(
         activity(false) + (activity(true) - activity(false)) * progress,
         opacity,
     );
+    let source_all_active = all_side_active(&motion.source, motion.from_t);
+    let target_all_active = all_side_active(&motion.target, motion.to_t);
     for x in 0..8 {
         for y in 0..8 {
             let rect = Rect::from_min_size(
@@ -410,8 +412,15 @@ fn paint_transition(
                     .any(|p| p.sq == Sq(x, y) && ordinary_activity(*p, horizon))
                     as u8 as f32
             };
-            let strength = activity(&motion.source, motion.source_horizon) * (1.0 - progress)
-                + activity(&motion.target, motion.target_horizon) * progress;
+            let strength = if source_all_active {
+                0.0
+            } else {
+                activity(&motion.source, motion.source_horizon) * (1.0 - progress)
+            } + if target_all_active {
+                0.0
+            } else {
+                activity(&motion.target, motion.target_horizon) * progress
+            };
             if strength > 0.0 {
                 painter.rect_filled(
                     rect,
@@ -592,6 +601,7 @@ fn paint_board(
     let alpha = if computed { 1.0 } else { 0.4 };
     let pieces = game.pieces(t);
     let active = pieces.iter().any(|p| p.can_move() && p.is_movable());
+    let all_active = all_side_active(&pieces, t);
     let side = Color::from_board(t);
     let (outer, inner) = active_board_colors(side);
     paint_frame(
@@ -618,9 +628,10 @@ fn paint_board(
             painter.rect_filled(rect, 0.0, base.gamma_multiply(alpha));
             let hovering = hovered == Some((t, sq));
             let occupants: Vec<_> = pieces.iter().filter(|p| p.sq == sq).collect();
-            if occupants
-                .iter()
-                .any(|piece| ordinary_activity(**piece, game.engine.history().horizon()))
+            if !all_active
+                && occupants
+                    .iter()
+                    .any(|piece| ordinary_activity(**piece, game.engine.history().horizon()))
             {
                 painter.rect_filled(
                     rect,
@@ -1002,6 +1013,14 @@ fn target_marker(
 
 fn ordinary_activity(piece: temporal_chess_engine::model::PieceView, horizon: usize) -> bool {
     piece.can_move() && piece.t != horizon && piece.rights.ordinary
+}
+
+fn all_side_active(pieces: &[temporal_chess_engine::model::PieceView], t: usize) -> bool {
+    let side = Color::from_board(t);
+    pieces
+        .iter()
+        .filter(|piece| piece.color == side)
+        .all(|piece| piece.is_movable())
 }
 
 fn paint_reactions(

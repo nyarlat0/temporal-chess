@@ -99,6 +99,14 @@ impl Engine {
         age: usize,
         next: State,
     ) -> Result<(usize, bool), EngineErr> {
+        if self
+            .history
+            .starting_position
+            .fixed_end()
+            .is_some_and(|end| next.t > end)
+        {
+            return Err(EngineErr::InvalidHistory("state outside fixed timeline"));
+        }
         let line = &mut self.history.worldlines[wid];
         let key = MoveId::from_state(&next);
         let gap_index = line.gap_after(age);
@@ -144,6 +152,14 @@ impl Engine {
         let mut next = source.step(mv.direction).ok_or(EngineErr::InvalidHistory(
             "time or temporal identity overflow while creating move arrival",
         ))?;
+        if self
+            .history
+            .starting_position
+            .fixed_end()
+            .is_some_and(|end| next.t > end)
+        {
+            return Err(EngineErr::WrongMove);
+        }
         next.apply_mv(mv);
         let line = &self.history.worldlines[piece.origin];
         let connected = line.gap_after(piece.age).is_none();
@@ -169,12 +185,10 @@ impl Engine {
         let line = &self.history.worldlines[piece.origin];
         if Color::from_board(line[age].t) != piece.color
             && (age + 1 == line.len() || line.gap_after(age).is_some())
-            && !(line[age].inverted && line[age].t <= piece.color.first_board())
+            && let Some(waiting) = self.passive_successor(&line[age])
+            && waiting.t <= horizon
         {
-            let waiting = line[age].prolongate().ok_or(EngineErr::WrongMove)?;
-            if waiting.t <= horizon {
-                self.advance_route(piece.origin, age, waiting)?;
-            }
+            self.advance_route(piece.origin, age, waiting)?;
         }
         Ok(())
     }
@@ -215,9 +229,11 @@ impl Engine {
         }
         for _ in 0..2 {
             let source = &self.history.worldlines[piece.origin][age];
-            let next = source.prolongate().ok_or(EngineErr::InvalidHistory(
-                "temporal endpoint cannot continue after its shared turn",
-            ))?;
+            let next = self
+                .passive_successor(source)
+                .ok_or(EngineErr::InvalidHistory(
+                    "temporal endpoint cannot continue after its shared turn",
+                ))?;
             if next.t > horizon {
                 break;
             }

@@ -113,9 +113,15 @@ impl Engine {
     /// for historical move lookup. Empty slices are kept even if everyone died.
     pub(super) fn update_bufs(&mut self) -> Result<(), EngineErr> {
         let mut projection = Projection::default();
-        projection
-            .preboards
-            .insert(self.history.horizon, PreBoard::new(self.history.horizon));
+        if let Some(end) = self.history.starting_position.fixed_end() {
+            for t in 0..=end {
+                projection.preboards.insert(t, PreBoard::new(t));
+            }
+        } else {
+            projection
+                .preboards
+                .insert(self.history.horizon, PreBoard::new(self.history.horizon));
+        }
         for (origin, line) in self.history.worldlines.iter().enumerate() {
             for (age, state) in line.iter().enumerate() {
                 let board = projection

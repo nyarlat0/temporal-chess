@@ -275,3 +275,25 @@ fn both_colors_can_complete_and_replay_a_short_bot_game() {
     assert!(colors.into_iter().all(|seen| seen));
     assert_eq!(GameRecord::load(&record.to_text()).unwrap().0, engine);
 }
+
+#[test]
+fn time_war_search_uses_fixed_timeline_and_replayable_actions() {
+    use temporal_chess_engine::model::StartingPosition;
+    let mut engine = Engine::with_start(
+        GameRules::default(),
+        StartingPosition::TimeWar { separation: 5 },
+    )
+    .unwrap()
+    .with_interactive_calculation()
+    .unwrap();
+    let mut record = GameRecord::default();
+    for _ in 0..4 {
+        let result = solve(&engine, 2, 50);
+        assert_eq!(result.rejected, 0, "{:?}", result.first_error);
+        record
+            .apply(&mut engine, result.command.expect("Time War action"))
+            .unwrap();
+        assert_eq!(engine.history().horizon(), 5);
+    }
+    assert_eq!(GameRecord::load(&record.to_text()).unwrap().0, engine);
+}

@@ -7,7 +7,9 @@ use temporal_chess_engine::{
     engine::{
         CalculationStatus, CheckStatus, Engine, GameOutcome, GameStatus, WaitingReason, WinReason,
     },
-    model::{Color, GameRules, Move, PieceAt, PieceId, PieceView, Sq, TimeDirection},
+    model::{
+        Color, GameRules, Move, PieceAt, PieceId, PieceView, Sq, StartingPosition, TimeDirection,
+    },
     record::{Command, GameRecord},
 };
 
@@ -77,6 +79,7 @@ pub struct GameUi {
     pub jump_to: Option<usize>,
     pub confirm_restart: bool,
     pub new_game_rules: GameRules,
+    pub new_game_start: StartingPosition,
     pub viewport: TimelineViewport,
     pub transition: Option<BoardTransition>,
     pub transition_queue: std::collections::VecDeque<BoardTransition>,
@@ -160,6 +163,7 @@ impl Default for GameUi {
             jump_to: Some(0),
             confirm_restart: false,
             new_game_rules: GameRules::default(),
+            new_game_start: StartingPosition::Standard,
             viewport: TimelineViewport::default(),
             transition: None,
             transition_queue: Default::default(),
@@ -225,12 +229,14 @@ impl GameUi {
         self.playback_destination = None;
     }
 
-    pub fn new(rules: GameRules) -> Self {
+    pub fn with_start(rules: GameRules, starting_position: StartingPosition) -> Self {
         Self {
-            engine: Engine::new(rules)
+            engine: Engine::with_start(rules, starting_position)
+                .expect("validated starting position")
                 .with_interactive_calculation()
                 .expect("initial game"),
-            record: GameRecord::new(rules),
+            record: GameRecord::with_start(rules, starting_position),
+            new_game_start: starting_position,
             new_game_rules: rules,
             ..Self::default()
         }
@@ -626,7 +632,7 @@ impl GameUi {
         self.begin_replay(
             format!(
                 "{}{}\n",
-                GameRecord::new(self.online.rules).to_text(),
+                GameRecord::with_start(self.online.rules, self.online.starting_position).to_text(),
                 history.join("\n")
             ),
             ReplayKind::Network,
@@ -735,7 +741,37 @@ impl GameUi {
                     ReplayKind::Import | ReplayKind::Network => {
                         match self.engine.calculation_status() {
                             CalculationStatus::Paused { t, .. } => t,
-                            CalculationStatus::Complete => self.engine.history().horizon(),
+                            CalculationStatus::Complete => {
+                                if self
+                                    .engine
+                                    .history()
+                                    .starting_position()
+                                    .fixed_end()
+                                    .is_some()
+                                {
+                                    let side = self.online.side.unwrap_or(self.engine.turn());
+                                    let times = self
+                                        .engine
+                                        .history()
+                                        .worldlines()
+                                        .iter()
+                                        .flat_map(|l| l.iter())
+                                        .filter(|s| {
+                                            s.alive
+                                                && s.color == side
+                                                && Color::from_board(s.t) == side
+                                                && s.rights.is_movable()
+                                        })
+                                        .map(|s| s.t);
+                                    if side == Color::White {
+                                        times.min().unwrap_or(0)
+                                    } else {
+                                        times.max().unwrap_or(self.engine.history().horizon())
+                                    }
+                                } else {
+                                    self.engine.history().horizon()
+                                }
+                            }
                         }
                     }
                 });
@@ -970,5 +1006,62 @@ mod tests {
             GameRecord::load(&game.record.to_text()).unwrap().0,
             game.engine
         );
+    }
+    #[test]
+    fn time_war_selection_uses_inversion_and_bounds_without_growing_boards() {
+        let mut game = GameUi::with_start(
+            GameRules::default(),
+            StartingPosition::TimeWar { separation: 9 },
+        );
+        assert_eq!(game.times(), (0..=9).rev().collect::<Vec<_>>());
+        assert_eq!(game.jump_to, Some(0));
+        game.choose(*game.engine.board(0).unwrap().get_piece(4, 1).unwrap());
+        assert_eq!(
+            game.selected.as_ref().unwrap().direction,
+            TimeDirection::Future
+        );
+        let mv = *game
+            .selected
+            .as_ref()
+            .unwrap()
+            .moves
+            .iter()
+            .find(|m| m.sq == Sq(4, 3))
+            .unwrap();
+        game.record
+            .apply(&mut game.engine, Command::Move { mv, from: Sq(4, 1) })
+            .unwrap();
+        game.clear_selection();
+        game.choose(*game.engine.board(9).unwrap().get_piece(4, 6).unwrap());
+        let selected = game.selected.as_ref().unwrap();
+        assert_eq!(selected.direction, TimeDirection::Past);
+        assert!(!selected.moves.is_empty());
+        assert!(selected.moves.iter().all(|m| m.to_past()));
+        assert_eq!(
+            GameRecord::load(&game.record.to_text()).unwrap().0,
+            game.engine
+        );
+    }
+
+    #[test]
+    fn time_war_network_replay_focuses_the_players_army() {
+        for (side, t) in [(Color::White, 0), (Color::Black, 9)] {
+            let mut game = GameUi::default();
+            game.online.enabled = true;
+            game.online.side = Some(side);
+            game.online.starting_position = StartingPosition::TimeWar { separation: 9 };
+            game.begin_network_replay(&[]);
+            finish_import(&mut game);
+            assert!(!game.online.fatal, "{}", game.online.status.text());
+            assert_eq!(game.jump_to, Some(t));
+            assert_eq!(
+                game.engine.history().starting_position(),
+                game.online.starting_position
+            );
+            assert_eq!(
+                game.record.starting_position(),
+                game.online.starting_position
+            );
+        }
     }
 }

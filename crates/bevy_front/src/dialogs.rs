@@ -225,6 +225,7 @@ pub fn draw(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState, art:
                 "The current game will be reset."
             ));
             crate::tempfish::settings(ui, &mut game.new_game_bot);
+            crate::view::starting_position_controls(ui, &mut game.new_game_start);
             crate::view::rule_controls(ui, &mut game.new_game_rules);
             ui.horizontal(|ui| {
                 if icon_button(
@@ -232,7 +233,7 @@ pub fn draw(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState, art:
                     Icon::Check,
                     crate::tr!("Начать новую партию", "Start new game"),
                     false,
-                    true,
+                    game.new_game_start.is_valid(),
                 )
                 .clicked()
                 {
@@ -244,7 +245,7 @@ pub fn draw(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState, art:
                             ..Default::default()
                         },
                         new_game_bot: game.new_game_bot,
-                        ..GameUi::new(game.new_game_rules)
+                        ..GameUi::with_start(game.new_game_rules, game.new_game_start)
                     };
                 }
                 if icon_button(ui, Icon::Close, crate::tr!("Отмена", "Cancel"), false, true)

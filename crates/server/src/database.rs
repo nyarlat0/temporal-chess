@@ -32,6 +32,7 @@ pub(crate) struct ReadyGame {
     pub(crate) pending: Option<CommandProposal>,
     pub(crate) chain_info_activation: bool,
     pub(crate) global_reaction_reset: bool,
+    pub(crate) time_war_separation: Option<usize>,
     pub(crate) auth: AuthenticatedPlayer,
     pub(crate) revision: u64,
     pub(crate) history: Vec<String>,
@@ -74,6 +75,7 @@ struct RoomRow {
     causal_gaps: bool, // Legacy rooms with this removed option cannot be replayed.
     chain_info_activation: bool,
     global_reaction_reset: bool,
+    time_war_separation: Option<i32>,
     game_id: String,
     white_token_hash: Option<Vec<u8>>,
     black_token_hash: Option<Vec<u8>>,
@@ -91,8 +93,15 @@ impl Repository {
         chain_info_activation: bool,
         global_reaction_reset: bool,
         engine_revision: &str,
+        time_war_separation: Option<usize>,
     ) -> Result<ReadyGame, RepositoryError> {
         validate_engine_revision(engine_revision)?;
+        if time_war_separation.is_some_and(|n| !(3..=255).contains(&n) || n % 2 == 0) {
+            return Err(client_error(
+                "invalid_starting_position",
+                "Time War separation must be odd and between 3 and 255.",
+            ));
+        }
         let side = resolve_side(preference);
         let player_token = generate_token();
         let token_hash = hash_token(&player_token);
@@ -105,8 +114,8 @@ impl Repository {
             };
             let result = sqlx::query(
                 "INSERT INTO games
-                    (game_id, white_token_hash, black_token_hash, revision, chain_info_activation, global_reaction_reset, engine_revision)
-                 VALUES ($1, $2, $3, 0, $4, $5, $6)
+                    (game_id, white_token_hash, black_token_hash, revision, chain_info_activation, global_reaction_reset, engine_revision, time_war_separation)
+                 VALUES ($1, $2, $3, 0, $4, $5, $6, $7)
                  ON CONFLICT (game_id) DO NOTHING",
             )
             .bind(&game_id)
@@ -115,6 +124,7 @@ impl Repository {
             .bind(chain_info_activation)
             .bind(global_reaction_reset)
             .bind(engine_revision)
+            .bind(time_war_separation.map(|n| n as i32))
             .execute(&self.pool)
             .await?;
             if result.rows_affected() == 1 {
@@ -123,6 +133,7 @@ impl Repository {
                     pending: None,
                     chain_info_activation,
                     global_reaction_reset,
+                    time_war_separation,
                     auth: AuthenticatedPlayer {
                         game_id,
                         side,
@@ -159,7 +170,7 @@ impl Repository {
         let game_id = normalize_game_id(game_id)?;
         let mut transaction = self.pool.begin().await?;
         let mut room = sqlx::query_as::<_, RoomRow>(
-            "SELECT game_id, white_token_hash, black_token_hash, revision, causal_gaps, chain_info_activation, global_reaction_reset, engine_revision
+            "SELECT game_id, white_token_hash, black_token_hash, revision, causal_gaps, chain_info_activation, global_reaction_reset, engine_revision, time_war_separation
              FROM games WHERE game_id = $1 FOR UPDATE",
         )
         .bind(&game_id)
@@ -256,6 +267,7 @@ impl Repository {
             pending,
             chain_info_activation: room.chain_info_activation,
             global_reaction_reset: room.global_reaction_reset,
+            time_war_separation: room.time_war_separation.map(|n| n as usize),
             auth: AuthenticatedPlayer {
                 game_id: room.game_id,
                 side,
@@ -499,7 +511,7 @@ async fn locked_room(
     game_id: &str,
 ) -> Result<RoomRow, RepositoryError> {
     sqlx::query_as::<_, RoomRow>(
-        "SELECT game_id, white_token_hash, black_token_hash, revision, causal_gaps, chain_info_activation, global_reaction_reset, engine_revision
+        "SELECT game_id, white_token_hash, black_token_hash, revision, causal_gaps, chain_info_activation, global_reaction_reset, engine_revision, time_war_separation
          FROM games WHERE game_id = $1 FOR UPDATE",
     )
     .bind(game_id)

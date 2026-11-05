@@ -12,7 +12,7 @@ use std::{
 use temporal_chess_engine::{
     ENGINE_REVISION,
     engine::Engine,
-    model::{Color, GameRules},
+    model::{Color, GameRules, StartingPosition},
     record::{Command, GameRecord},
 };
 use temporal_chess_protocol::{
@@ -23,6 +23,7 @@ use web_time::Instant;
 
 pub struct OnlineState {
     pub rules: GameRules,
+    pub starting_position: StartingPosition,
     pub enabled: bool,
     pub ready: bool,
     pub waiting: bool,
@@ -43,6 +44,7 @@ impl Default for OnlineState {
     fn default() -> Self {
         Self {
             rules: GameRules::default(),
+            starting_position: StartingPosition::Standard,
             enabled: false,
             ready: false,
             waiting: false,
@@ -328,6 +330,7 @@ pub fn poll(
                     game.online.room = None;
                     ClientMessage::CreateGame {
                         engine_revision: ENGINE_REVISION.to_owned(),
+                        time_war_separation: game.online.starting_position.fixed_end(),
                         chain_info_activation: game.online.rules.chain_info_activation,
                         global_reaction_reset: game.online.rules.global_reaction_reset,
                         protocol: PROTOCOL_VERSION,
@@ -497,6 +500,7 @@ pub fn poll(
 fn receive(client: &mut MultiplayerClient, game: &mut GameUi, message: ServerMessage) {
     match message {
         ServerMessage::GameReady {
+            time_war_separation,
             engine_revision,
             pending,
             chain_info_activation,
@@ -513,6 +517,19 @@ fn receive(client: &mut MultiplayerClient, game: &mut GameUi, message: ServerMes
                 game.online.fatal = true;
                 game.online.ready = false;
                 game.online.status = crate::i18n::server_error("engine_revision_mismatch", "");
+                return;
+            }
+            game.online.starting_position = time_war_separation
+                .map_or(StartingPosition::Standard, |separation| {
+                    StartingPosition::TimeWar { separation }
+                });
+            if !game.online.starting_position.is_valid() {
+                game.online.fatal = true;
+                game.online.ready = false;
+                game.online.status = crate::message!(
+                    "Некорректная стартовая позиция комнаты",
+                    "Invalid room starting position"
+                );
                 return;
             }
             game.online.rules = GameRules {
@@ -789,6 +806,7 @@ pub fn panel(ui: &mut egui::Ui, game: &mut GameUi) {
             .show(ui, |ui| {
                 ui.add_enabled_ui(idle, |ui| {
                     ui.label(crate::tr!("Создать новую комнату", "Create a new room"));
+                    crate::view::starting_position_controls(ui, &mut game.online.starting_position);
                     crate::view::rule_controls(ui, &mut game.online.rules);
                     ui.horizontal(|ui| {
                         ui.selectable_value(
@@ -808,7 +826,10 @@ pub fn panel(ui: &mut egui::Ui, game: &mut GameUi) {
                         );
                     });
                     if ui
-                        .button(crate::tr!("Создать комнату", "Create room"))
+                        .add_enabled(
+                            game.online.starting_position.is_valid(),
+                            egui::Button::new(crate::tr!("Создать комнату", "Create room")),
+                        )
                         .clicked()
                     {
                         game.online.action = Some(Action::Create);

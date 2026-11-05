@@ -1,15 +1,15 @@
-//! Portable, append-only commands starting from the standard initial position.
+//! Portable, append-only commands starting from an explicit initial position.
 //! Recorded moves in History can be replaced or cancelled; they are not a replay log.
 use crate::{
     engine::{Engine, EngineErr},
     model::{
         Castling, Color, GameRules, Move, MoveEffect, PieceAt, PieceId, PieceKind, Promotion, Sq,
-        TimeDirection,
+        StartingPosition, TimeDirection,
     },
 };
 use std::fmt;
 
-const HEADER: &str = "NOLAN-CHESS 3";
+const HEADER: &str = "NOLAN-CHESS 4";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command {
@@ -29,6 +29,7 @@ pub enum Command {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct GameRecord {
     rules: GameRules,
+    starting_position: StartingPosition,
     commands: Vec<Command>,
     pieces: Vec<Option<RecordedPiece>>,
 }
@@ -61,6 +62,16 @@ impl GameRecord {
             ..Self::default()
         }
     }
+    pub fn with_start(rules: GameRules, starting_position: StartingPosition) -> Self {
+        Self {
+            rules,
+            starting_position,
+            ..Self::default()
+        }
+    }
+    pub fn starting_position(&self) -> StartingPosition {
+        self.starting_position
+    }
     pub fn rules(&self) -> GameRules {
         self.rules
     }
@@ -87,6 +98,7 @@ impl GameRecord {
                     Some((
                         Self {
                             rules: self.rules,
+                            starting_position: self.starting_position,
                             commands: self.commands[..index].to_vec(),
                             pieces: self.pieces[..index].to_vec(),
                         },
@@ -102,7 +114,10 @@ impl GameRecord {
     /// Successful commands are retained even when reconciliation removes the
     /// initiating move from History: replay needs the command and its effects.
     pub fn apply(&mut self, engine: &mut Engine, command: Command) -> Result<(), EngineErr> {
-        if !self.commands.is_empty() && self.rules != engine.history().rules() {
+        if !self.commands.is_empty()
+            && (self.rules != engine.history().rules()
+                || self.starting_position != engine.history().starting_position())
+        {
             return Err(EngineErr::InvalidHistory(
                 "record rules differ from engine rules",
             ));
@@ -142,6 +157,7 @@ impl GameRecord {
             }
         }
         self.rules = engine.history().rules();
+        self.starting_position = engine.history().starting_position();
         self.commands.push(command);
         self.pieces.push(piece);
         Ok(())
@@ -161,6 +177,12 @@ impl GameRecord {
                 "off"
             },
         );
+        match self.starting_position {
+            StartingPosition::Standard => text.push_str("start standard\n"),
+            StartingPosition::TimeWar { separation } => {
+                text.push_str(&format!("start time_war {separation}\n"))
+            }
+        }
         for command in &self.commands {
             text.push_str(&format!("{command}\n"));
         }
@@ -202,7 +224,7 @@ impl GameRecord {
                     }
                 }
             }
-            HEADER => {
+            "NOLAN-CHESS 3" | HEADER => {
                 let mut read_option = |name: &str| -> Result<bool, RecordError> {
                     let (n, value) = lines
                         .next()
@@ -221,14 +243,44 @@ impl GameRecord {
             _ => {
                 return Err(error(
                     line,
-                    format!("Ожидался заголовок {HEADER}, NOLAN-CHESS 2 или NOLAN-CHESS 1"),
+                    format!(
+                        "Ожидался заголовок {HEADER}, NOLAN-CHESS 3, NOLAN-CHESS 2 или NOLAN-CHESS 1"
+                    ),
                 ));
             }
         };
-        let mut engine = Engine::new(rules)
+        let starting_position = if header == HEADER {
+            let (n, start) = lines
+                .next()
+                .ok_or_else(|| error(line, "Missing starting position".into()))?;
+            let fields: Vec<_> = start.split_whitespace().collect();
+            let position = match fields.as_slice() {
+                ["start", "standard"] => StartingPosition::Standard,
+                ["start", "time_war", distance] => StartingPosition::TimeWar {
+                    separation: number(distance).map_err(|e| error(n, e))?,
+                },
+                _ => {
+                    return Err(error(
+                        n,
+                        "Expected start standard or start time_war N".into(),
+                    ));
+                }
+            };
+            if !position.is_valid() {
+                return Err(error(
+                    n,
+                    "Time War separation must be odd and between 3 and 255".into(),
+                ));
+            }
+            position
+        } else {
+            StartingPosition::Standard
+        };
+        let mut engine = Engine::with_start(rules, starting_position)
+            .map_err(|e| error(line, e.to_string()))?
             .with_interactive_calculation()
             .map_err(|e| error(line, e.to_string()))?;
-        let mut record = Self::new(rules);
+        let mut record = Self::with_start(rules, starting_position);
         for (line, text) in lines {
             if record.commands.len() >= 10_000 {
                 return Err(error(line, "Больше 10000 команд".into()));

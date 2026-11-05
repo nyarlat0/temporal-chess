@@ -41,6 +41,9 @@ impl Engine {
                         .iter()
                         .filter(|p| p.color != side && p.can_move() && p.is_movable())
                     {
+                        if !self.time_direction_available(*enemy, direction) {
+                            continue;
+                        }
                         let target = self.move_board(*enemy, direction)?;
                         if enemy.basic_moves(&target).contains(&king.sq) {
                             match direction {
@@ -61,6 +64,25 @@ impl Engine {
 
     /// Whether an opponent still owes an ordinary move in existing past time.
     pub fn has_past_debt(&self, side: Color) -> bool {
+        // In a finite two-front game the remote army's starting board is not
+        // this side's present. Its natural frontier advances from its own end.
+        let fixed = self.history.starting_position.fixed_end().is_some();
+        let times = self
+            .history
+            .worldlines
+            .iter()
+            .flat_map(|line| line.iter())
+            .filter(|state| {
+                state.alive && state.color == side && Color::from_board(state.t) == side
+            })
+            .map(|state| state.t);
+        let frontier = if fixed && side == Color::Black {
+            times.min().unwrap_or(self.history.horizon)
+        } else if fixed {
+            times.max().unwrap_or(0)
+        } else {
+            self.history.horizon
+        };
         self.history
             .worldlines
             .iter()
@@ -70,7 +92,11 @@ impl Engine {
                     && state.color == side
                     && state.rights.ordinary
                     && Color::from_board(state.t) == side
-                    && state.t < self.history.horizon
+                    && if fixed && side == Color::Black {
+                        state.t > frontier
+                    } else {
+                        state.t < frontier
+                    }
             })
     }
 

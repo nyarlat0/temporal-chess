@@ -150,7 +150,10 @@ impl Engine {
             };
             // Keep the endpoint on its earliest own-color board so the
             // player can still react and turn it back towards the future.
-            if !(bf_piv.inverted && bf_piv.t <= bf_piv.color.first_board()) {
+            if self
+                .passive_successor(&self.history.worldlines[bf_piv.origin][bf_piv.age])
+                .is_some()
+            {
                 self.apply_route(bf_piv, wait, horizon)?;
                 let source = self.history.worldlines[bf_piv.origin][bf_piv.age].clone();
                 self.relocate_from(bf_piv.origin, bf_piv.age + 1, &source);

@@ -173,6 +173,7 @@ async fn handle_client_message(
     }
     match message {
         ClientMessage::CreateGame {
+            time_war_separation,
             protocol,
             engine_revision,
             side,
@@ -189,6 +190,7 @@ async fn handle_client_message(
                     chain_info_activation,
                     global_reaction_reset,
                     &engine_revision,
+                    time_war_separation,
                 )
                 .await
             {
@@ -209,6 +211,7 @@ async fn handle_client_message(
                             pending: ready.pending,
                             chain_info_activation: ready.chain_info_activation,
                             global_reaction_reset: ready.global_reaction_reset,
+                            time_war_separation: ready.time_war_separation,
                             created: true,
                             game_id: ready.auth.game_id.clone(),
                             player_token: ready.auth.player_token.clone(),
@@ -267,6 +270,7 @@ async fn handle_client_message(
                             pending: ready.pending,
                             chain_info_activation: ready.chain_info_activation,
                             global_reaction_reset: ready.global_reaction_reset,
+                            time_war_separation: ready.time_war_separation,
                             created: false,
                             game_id: ready.auth.game_id.clone(),
                             player_token: ready.auth.player_token.clone(),
@@ -475,6 +479,7 @@ mod tests {
             .send(
                 &state,
                 ClientMessage::CreateGame {
+                    time_war_separation: None,
                     protocol: PROTOCOL_VERSION,
                     engine_revision: hash.clone(),
                     chain_info_activation: false,

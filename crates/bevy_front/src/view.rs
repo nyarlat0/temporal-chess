@@ -226,7 +226,19 @@ fn sidebar(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, art: &P
     }
     ui.separator();
     ui.horizontal(|ui| {
-        ui.strong(crate::tr!("Лента времени", "Timeline"));
+        ui.strong(
+            if game
+                .engine
+                .history()
+                .starting_position()
+                .fixed_end()
+                .is_some()
+            {
+                "Time War"
+            } else {
+                crate::tr!("Лента времени", "Timeline")
+            },
+        );
         ui.colored_label(SUBTLE, format!("0 — {}", game.engine.history().horizon()));
     });
     ui.horizontal(|ui| {
@@ -615,6 +627,47 @@ pub fn piece_name(kind: PieceKind) -> &'static str {
 
 fn square_name(sq: temporal_chess_engine::model::Sq) -> String {
     format!("{}{}", char::from(b'a' + sq.0 as u8), sq.1 + 1)
+}
+
+pub fn starting_position_controls(
+    ui: &mut egui::Ui,
+    position: &mut temporal_chess_engine::model::StartingPosition,
+) {
+    use temporal_chess_engine::model::{MAX_TIME_WAR_SEPARATION, StartingPosition};
+    egui::ComboBox::from_label(crate::tr!("Стартовая позиция", "Starting position"))
+        .selected_text(match position {
+            StartingPosition::Standard => crate::tr!("Обычная", "Standard"),
+            StartingPosition::TimeWar { .. } => "Time War",
+        })
+        .show_ui(ui, |ui| {
+            ui.selectable_value(
+                position,
+                StartingPosition::Standard,
+                crate::tr!("Обычная", "Standard"),
+            );
+            let time_war = match *position {
+                StartingPosition::TimeWar { .. } => *position,
+                _ => StartingPosition::TimeWar { separation: 9 },
+            };
+            ui.selectable_value(position, time_war, "Time War");
+        });
+    if let StartingPosition::TimeWar { separation } = position {
+        ui.horizontal(|ui| {
+            ui.label(crate::tr!("Разнос по времени", "Time separation"));
+            ui.add(
+                egui::DragValue::new(separation)
+                    .range(3..=MAX_TIME_WAR_SEPARATION)
+                    .speed(2.0),
+            );
+        });
+        ui.small(crate::tr!("Нечётное число от 3 до 255. Белые — на 0, чёрные — на N. Границы истории фиксированы.", "Odd number from 3 to 255. White starts at 0, Black at N. The timeline has fixed bounds."));
+        if *separation % 2 == 0 {
+            ui.colored_label(
+                egui::Color32::LIGHT_RED,
+                crate::tr!("Введите нечётное число", "Enter an odd number"),
+            );
+        }
+    }
 }
 
 pub fn rule_controls(ui: &mut egui::Ui, rules: &mut temporal_chess_engine::model::GameRules) {

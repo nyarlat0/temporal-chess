@@ -322,6 +322,7 @@ fn oncoming_tracking_uses_orientation_even_when_inverted_piece_knows_more_future
     let engine = Engine {
         history: History {
             rules: Default::default(),
+            starting_position: Default::default(),
             worldlines: vec![
                 vec![ordinary, ordinary_next].into(),
                 vec![inverted, inverted_next, inverted_last].into(),
