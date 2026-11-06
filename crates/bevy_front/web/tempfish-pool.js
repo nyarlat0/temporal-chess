@@ -23,9 +23,10 @@ function receive(index, data) {
         current.result = JSON.parse(data.result);
     } else if (data.type === 'error') fail(job, data.error);
 }
-export function start(record, nodes) {
+export function start(record, nodes, requested = 0) {
     if (current && !current.result.done) destroy();
-    const count = Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 2) - 2));
+    const count = Math.max(1, Math.min(32, requested || (navigator.hardwareConcurrency || 2) - 2));
+    if (workers.length && workers.length !== count + 1) destroy();
     current = { id: ++sequence, result: blank(), ready: new Set() };
     try {
         if (!workers.length) {

@@ -21,11 +21,33 @@ impl Engine {
     /// before continuing, so no conflict is resolved against stale projections.
     pub(super) fn build_boards(&mut self, through: usize) -> Result<ValidRes, EngineErr> {
         self.projection.boards.clear();
+        self.extend_boards(through)
+    }
+
+    /// Reuse a checked prefix only within one reconciliation pass. The caller
+    /// must discard it as soon as any history edit occurs.
+    pub(super) fn extend_boards(&mut self, through: usize) -> Result<ValidRes, EngineErr> {
+        use std::ops::Bound::{Excluded, Included, Unbounded};
+        // Preserve build_boards' barrier view: it queries after clearing boards.
+        let prefix = std::mem::take(&mut self.projection.boards);
         let limit = self.calculation_barrier().unwrap_or(through).min(through);
+        self.projection.boards = prefix;
+        if self
+            .projection
+            .boards
+            .last_key_value()
+            .is_some_and(|(&t, _)| t > limit)
+        {
+            self.projection.boards.retain(|&t, _| t <= limit);
+        }
+        let after = self.projection.boards.last_key_value().map(|(&t, _)| t);
+        if after.is_some_and(|t| t >= limit) {
+            return Ok(ValidRes::Unchanged);
+        }
         let times: Vec<_> = self
             .projection
             .preboards
-            .range(..=limit)
+            .range((after.map_or(Unbounded, Excluded), Included(limit)))
             .map(|(&t, _)| t)
             .collect();
         for t in times {

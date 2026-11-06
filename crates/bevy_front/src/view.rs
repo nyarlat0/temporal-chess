@@ -285,7 +285,7 @@ fn sidebar(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, art: &P
         ))
         .small(),
     );
-    if !game.online.enabled && !game.bot.settings.enabled {
+    if !game.online.enabled && game.bot.settings.human_side().is_none() {
         ui.add_enabled(
             idle,
             egui::Checkbox::new(

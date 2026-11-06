@@ -199,8 +199,8 @@ impl GameUi {
     pub fn finish_travel(&mut self, fallback: usize) {
         let side = if self.online.enabled {
             self.online.side.unwrap_or(self.engine.turn())
-        } else if self.bot.settings.enabled {
-            self.bot.settings.human
+        } else if let Some(human) = self.bot.settings.human_side() {
+            human
         } else {
             self.engine.turn()
         };

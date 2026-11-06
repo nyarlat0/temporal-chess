@@ -42,7 +42,7 @@ if (!isMainThread) {
     try {
         let record = header + 'start standard\n';
         for (let i = 0; i < 3; i++) {
-            const id = pool.start(record, 200);
+            const id = pool.start(record, 200, [1, 3, 6][i]);
             const result = await wait(id, r => r.done);
             assert.ok(result.nodes <= 200);
             assert.ok(result.command);
@@ -60,7 +60,7 @@ if (!isMainThread) {
         assert.ok(stopped.nodes <= 100000);
         assert.equal(stopped.command, progress.command);
         assert.ok(stopped.command);
-        const id = pool.start(header + 'start time_war 5\n', 50);
+        const id = pool.start(header + 'start time_war 5\n', 50, 1);
         const final = await wait(id, r => r.done);
         assert.ok(final.nodes <= 50 && final.command);
         console.log('Worker/WASM checks passed: parallel search, replay reuse, global budgets, cancellation, stale replies, Time War.');

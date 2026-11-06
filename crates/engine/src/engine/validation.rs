@@ -1,4 +1,6 @@
+use super::MoveId;
 use crate::pieces::Sq;
+use std::collections::BTreeSet;
 
 use super::{Engine, EngineErr, ShortPieceId, ValidRes};
 
@@ -24,9 +26,16 @@ impl Engine {
     }
 
     /// Cancel one invalid move in chronological/causal order, then rebuild.
-    fn validate_moves(&mut self) -> Result<ValidRes, EngineErr> {
+    fn validate_moves(
+        &mut self,
+        verified: &mut BTreeSet<MoveId>,
+        reuse: bool,
+    ) -> Result<ValidRes, EngineErr> {
         let barrier = self.calculation_barrier();
-        for (id, mv) in self.history.moves.clone() {
+        for (&id, &mv) in &self.history.moves {
+            if verified.contains(&id) {
+                continue;
+            }
             if barrier.is_some_and(|limit| mv.t > limit) {
                 continue;
             }
@@ -58,15 +67,45 @@ impl Engine {
                     .map_err(|e| e.during(format!("cancelling {mv:?}")))?;
                 return Ok(ValidRes::HistChanged);
             }
+            // candidates_for reads the source, both adjacent destinations and
+            // immutable history/preboards (including en passant evidence).
+            // Once this whole neighbourhood is resolved, later prefix growth
+            // cannot change its answer. Never reuse across a history mutation.
+            if reuse
+                && [mv.t.checked_sub(1), mv.t.checked_add(1)]
+                    .into_iter()
+                    .flatten()
+                    .all(|t| self.preboard(t).is_none() || self.board(t).is_some())
+            {
+                verified.insert(id);
+            }
         }
         Ok(ValidRes::Unchanged)
     }
 
     /// Restore one dead suffix whose original collision has disappeared.
     /// Later collisions will be resolved on the next pass, from fresh boards.
-    fn resurrect(&mut self) -> Result<ValidRes, EngineErr> {
+    fn resurrect(
+        &mut self,
+        candidates: &[usize],
+        checked: &mut BTreeSet<usize>,
+        reuse: bool,
+    ) -> Result<ValidRes, EngineErr> {
         let barrier = self.calculation_barrier();
-        for wid in 0..self.history.worldlines.len() {
+        for &wid in candidates {
+            if checked.contains(&wid) {
+                continue;
+            }
+            // The first dead state and its collision/EP causes stay fixed in
+            // this pass. Revisit only while its board is still unavailable.
+            if reuse
+                && self.history.worldlines[wid]
+                    .iter()
+                    .find(|s| !s.alive)
+                    .is_none_or(|s| self.board(s.t).is_some())
+            {
+                checked.insert(wid);
+            }
             let Some(age) = self.revival_age(wid) else {
                 continue;
             };
@@ -154,6 +193,15 @@ impl Engine {
     }
 
     fn reconcile_boards(&mut self) -> Result<ValidRes, EngineErr> {
+        self.reconcile_boards_reusing_prefix(true)
+    }
+
+    fn reconcile_boards_reusing_prefix(&mut self, reuse: bool) -> Result<ValidRes, EngineErr> {
+        let mut verified = BTreeSet::new();
+        let mut checked_deaths = BTreeSet::new();
+        let candidates: Vec<_> = (0..self.history.worldlines.len())
+            .filter(|&wid| !reuse || self.history.worldlines[wid].iter().any(|s| !s.alive))
+            .collect();
         // Advance the validation frontier chronologically. Building every board
         // first would resolve future collisions before discovering an earlier
         // cancelled move, and destroy exactly the preboards the UI must expose.
@@ -162,17 +210,66 @@ impl Engine {
         } else {
             vec![self.history.horizon]
         };
+        self.projection.boards.clear();
         for through in times {
             if self.calculation_barrier().is_some_and(|t| through > t) {
                 break;
             }
-            if self.build_boards(through)? == ValidRes::HistChanged
-                || self.validate_moves()? == ValidRes::HistChanged
-                || self.resurrect()? == ValidRes::HistChanged
+            let built = if reuse {
+                self.extend_boards(through)?
+            } else {
+                self.build_boards(through)?
+            };
+            if built == ValidRes::HistChanged
+                || self.validate_moves(&mut verified, reuse)? == ValidRes::HistChanged
+                || self.resurrect(&candidates, &mut checked_deaths, reuse)? == ValidRes::HistChanged
             {
                 return Ok(ValidRes::HistChanged);
             }
         }
         Ok(ValidRes::Unchanged)
+    }
+}
+
+#[cfg(test)]
+mod reuse_tests {
+    use super::*;
+    use crate::record::{Command, GameRecord};
+
+    fn compare_passes(mut position: Engine) {
+        position.update_bufs().unwrap();
+        let mut reference = position.clone();
+        let optimized = position.reconcile_boards_reusing_prefix(true);
+        let original = reference.reconcile_boards_reusing_prefix(false);
+        assert_eq!(optimized, original);
+        assert_eq!(position, reference);
+    }
+    #[test]
+    fn reuse_matches_rebuilding_after_temporal_moves_collisions_and_cancellations() {
+        for text in [
+            include_str!("../../tests/fixtures/castling_rook_collision.nolan"),
+            "NOLAN-CHESS 4\nchain_info_activation on\nglobal_reaction_reset on\nstart time_war 5\nmove 0 12:0:0 e2 e4 + normal\nmove 5 28:5:0 e7 e5 - normal\n",
+        ] {
+            let (end, journal) = GameRecord::load(text).unwrap();
+            compare_passes(end);
+            let mut engine = Engine::with_start(journal.rules(), journal.starting_position())
+                .unwrap()
+                .with_interactive_calculation()
+                .unwrap();
+            let mut record = GameRecord::with_start(journal.rules(), journal.starting_position());
+            for &command in journal.commands() {
+                if let Command::Move { mv, .. } = command {
+                    let mut intermediate = engine.clone();
+                    intermediate.history.calculation.acknowledged.clear();
+                    intermediate.history.calculation.responsible = Some(intermediate.turn);
+                    if intermediate.apply_move_inner(mv).is_ok() {
+                        intermediate.turn = intermediate.turn.opposite();
+                        compare_passes(intermediate);
+                    }
+                }
+                record.apply(&mut engine, command).unwrap();
+                compare_passes(engine.clone());
+            }
+        }
     }
 }

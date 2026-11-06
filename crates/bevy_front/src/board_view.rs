@@ -120,8 +120,8 @@ pub fn ribbon(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt) {
     game.facing.update(
         if game.online.enabled {
             game.online.side == Some(Color::Black)
-        } else if game.bot.settings.enabled {
-            game.bot.settings.human == Color::Black
+        } else if let Some(human) = game.bot.settings.human_side() {
+            human == Color::Black
         } else if game.local_auto_flip {
             game.displayed_turn() == Color::Black
         } else {

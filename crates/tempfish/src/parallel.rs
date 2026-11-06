@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc};
 use temporal_chess_engine::{engine::Engine, model::Color, record::Command};
 
+pub const MAX_THREADS: usize = 32;
 const QUANTUM: u64 = 128;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Work {
@@ -340,7 +341,7 @@ pub fn run(
     std::thread::scope(|scope| {
         let (tx, rx) = mpsc::channel();
         let mut senders = vec![];
-        for id in 0..threads.clamp(1, 8) {
+        for id in 0..threads.clamp(1, MAX_THREADS) {
             let (work_tx, work_rx) = mpsc::channel::<Work>();
             senders.push(work_tx);
             let tx = tx.clone();
