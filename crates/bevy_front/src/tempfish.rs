@@ -1,5 +1,5 @@
-//! Local bot driver. Native search runs on the compute pool; WASM advances the
-//! same search in small frame slices. Results are checked against their source
+//! Local bot driver. Native root workers and browser Web Workers search
+//! concurrently; an incremental browser fallback remains available. Results are checked against their source
 //! position before publishing through the normal controller/journal path.
 use crate::controller::GameUi;
 use bevy::prelude::*;
@@ -11,8 +11,38 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
-use tempfish::{Limits, NODE_BUDGETS, Search, SearchResult};
+#[cfg(target_arch = "wasm32")]
+use tempfish::Search;
+use tempfish::{Limits, NODE_BUDGETS, SearchResult};
 use temporal_chess_engine::{engine::Engine, model::Color, record::Command};
+
+#[cfg(target_arch = "wasm32")]
+mod web {
+    use wasm_bindgen::prelude::*;
+    #[wasm_bindgen]
+    unsafe extern "C" {
+        #[wasm_bindgen(catch,js_namespace=globalThis,js_name=tempfishStart)]
+        pub fn start(record: &str, nodes: u32) -> Result<u32, JsValue>;
+        #[wasm_bindgen(catch,js_namespace=globalThis,js_name=tempfishPoll)]
+        pub fn poll(id: u32) -> Result<String, JsValue>;
+        #[wasm_bindgen(js_namespace=globalThis,js_name=tempfishStop)]
+        pub fn stop(id: u32);
+        #[wasm_bindgen(js_namespace=globalThis,js_name=tempfishCancel)]
+        pub fn cancel(id: u32);
+    }
+}
+#[cfg(target_arch = "wasm32")]
+#[derive(serde::Deserialize)]
+struct WebResult {
+    done: bool,
+    command: Option<String>,
+    score: i32,
+    depth: u8,
+    nodes: u64,
+    cache_hits: u64,
+    rejected: u64,
+    error: Option<String>,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Settings {
@@ -57,39 +87,46 @@ struct Job {
     #[cfg(not(target_arch = "wasm32"))]
     depth: Arc<AtomicU64>,
     #[cfg(target_arch = "wasm32")]
-    search: Search,
+    search: Option<Search>,
+    #[cfg(target_arch = "wasm32")]
+    web_job: Option<u32>,
 }
 impl Drop for Job {
     fn drop(&mut self) {
         #[cfg(not(target_arch = "wasm32"))]
         self.stop.store(true, Ordering::Relaxed);
+        #[cfg(target_arch = "wasm32")]
+        if let Some(id) = self.web_job {
+            web::cancel(id);
+        }
     }
 }
 impl Job {
-    fn new(root: Engine, settings: Settings) -> Self {
-        let search = Search::new(
-            root.clone(),
-            Limits {
-                nodes: NODE_BUDGETS[settings.budget.min(NODE_BUDGETS.len() - 1)],
-                ..Default::default()
-            },
-        );
+    fn new(
+        root: Engine,
+        settings: Settings,
+        record: &temporal_chess_engine::record::GameRecord,
+    ) -> Self {
+        let limits = Limits {
+            nodes: NODE_BUDGETS[settings.budget.min(NODE_BUDGETS.len() - 1)],
+            ..Default::default()
+        };
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let mut search = search;
+            let _ = record;
+            let position = root.clone();
             let stop = Arc::new(AtomicBool::new(false));
             let nodes = Arc::new(AtomicU64::new(0));
             let depth = Arc::new(AtomicU64::new(0));
             let (cancel, count, completed) = (stop.clone(), nodes.clone(), depth.clone());
             let task = AsyncComputeTaskPool::get_or_init(TaskPool::new).spawn(async move {
                 let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    while !search.is_done() && !cancel.load(Ordering::Relaxed) {
-                        search.step();
-                        let result = search.result();
+                    let threads = std::thread::available_parallelism()
+                        .map_or(1, |n| n.get().saturating_sub(1).clamp(1, 4));
+                    tempfish::parallel::run(position, limits, threads, &cancel, |result| {
                         count.store(result.nodes, Ordering::Relaxed);
                         completed.store(result.completed_depth as u64, Ordering::Relaxed);
-                    }
-                    search.result()
+                    })
                 }));
                 outcome.unwrap_or_else(|_| SearchResult {
                     first_error: Some("TempFish: engine panicked during search".into()),
@@ -107,10 +144,13 @@ impl Job {
         }
         #[cfg(target_arch = "wasm32")]
         {
+            let web_job = web::start(&record.to_text(), limits.nodes as u32).ok();
+            let search = web_job.is_none().then(|| Search::new(root.clone(), limits));
             Self {
                 root,
                 settings,
                 search,
+                web_job,
             }
         }
     }
@@ -126,17 +166,55 @@ impl Job {
         }
         #[cfg(target_arch = "wasm32")]
         {
+            if let Some(id) = self.web_job {
+                if state.move_now {
+                    web::stop(id);
+                }
+                match web::poll(id).and_then(|text| {
+                    serde_json::from_str::<WebResult>(&text)
+                        .map_err(|e| wasm_bindgen::JsValue::from_str(&e.to_string()))
+                }) {
+                    Ok(report) => {
+                        state.nodes = report.nodes;
+                        state.depth = report.depth;
+                        if report.done {
+                            return Some(SearchResult {
+                                command: report.command.and_then(|s| s.parse().ok()),
+                                score: report.score,
+                                completed_depth: report.depth,
+                                nodes: report.nodes,
+                                cache_hits: report.cache_hits,
+                                rejected: report.rejected,
+                                first_error: report.error,
+                            });
+                        }
+                        return None;
+                    }
+                    Err(_) => {
+                        web::cancel(id);
+                        self.web_job = None;
+                        self.search = Some(Search::new(
+                            self.root.clone(),
+                            Limits {
+                                nodes: NODE_BUDGETS
+                                    [self.settings.budget.min(NODE_BUDGETS.len() - 1)],
+                                ..Default::default()
+                            },
+                        ));
+                    }
+                }
+            }
+            let search = self.search.as_mut().expect("browser fallback");
             if state.move_now {
-                self.search.finish_now();
+                search.finish_now();
             }
             let start = web_time::Instant::now();
-            while !self.search.is_done() && start.elapsed().as_millis() < 6 {
-                self.search.step();
+            while !search.is_done() && start.elapsed().as_millis() < 6 {
+                search.step();
             }
-            let result = self.search.result();
-            state.nodes = result.nodes;
-            state.depth = result.completed_depth;
-            self.search.is_done().then_some(result)
+            state.nodes = search.nodes();
+            state.depth = search.completed_depth();
+            search.is_done().then(|| search.result())
         }
     }
 }
@@ -220,7 +298,11 @@ pub fn poll(mut runner: ResMut<Runner>, mut game: ResMut<GameUi>, mut contexts: 
         game.bot.depth = 0;
         game.bot.move_now = false;
         game.clear_selection();
-        runner.job = Some(Job::new(game.engine.clone(), game.bot.settings));
+        runner.job = Some(Job::new(
+            game.engine.clone(),
+            game.bot.settings,
+            &game.record,
+        ));
     }
     game.bot.thinking = true;
     let result = runner.job.as_mut().unwrap().poll(&mut game.bot);
@@ -277,7 +359,7 @@ pub fn settings(ui: &mut egui::Ui, config: &mut Settings) {
     ui.label(crate::tr_format!(
         "Узлов: {}",
         "Nodes: {}",
-        NODE_BUDGETS[config.budget]
+        NODE_BUDGETS[config.budget.min(NODE_BUDGETS.len() - 1)]
     ));
     ui.small(crate::tr!(
         "Больше узлов — сильнее игра, дольше расчёт.",
@@ -369,7 +451,7 @@ mod tests {
             human: Color::Black,
             budget: 0,
         };
-        let mut job = Job::new(game.engine.clone(), settings);
+        let mut job = Job::new(game.engine.clone(), settings, &game.record);
         let mut state = BotState::default();
         let start = std::time::Instant::now();
         let result = loop {

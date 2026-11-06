@@ -13,7 +13,7 @@ pub use worldline::{CausalGap, Worldline};
 
 pub const MAX_TIME_WAR_SEPARATION: usize = 255;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum StartingPosition {
     #[default]
     Standard,
@@ -48,7 +48,7 @@ impl StartingPosition {
 }
 
 /// Independent, immutable options for a game. Both are off in standard play.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct GameRules {
     pub chain_info_activation: bool,
     pub global_reaction_reset: bool,
@@ -76,7 +76,7 @@ impl MoveRights {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct State {
     pub t: usize,
     pub x: usize,
@@ -125,14 +125,14 @@ pub struct ShortPieceId {
     pub age: usize,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Castling {
     Long,
     Short,
 }
 
 /// Direction selected for this move, independently of the previous move.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TimeDirection {
     Future,
     Past,
@@ -155,7 +155,7 @@ impl TimeDirection {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Promotion {
     Knight,
     Bishop,
@@ -177,7 +177,7 @@ impl Promotion {
 }
 
 /// Special moves are mutually exclusive; promotion to a king is unrepresentable.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum MoveEffect {
     Normal,
     Castle(Castling),
@@ -185,7 +185,7 @@ pub enum MoveEffect {
     Promote(Promotion),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Move {
     pub pid: PieceId,
     pub t: usize,

@@ -45,6 +45,13 @@ impl Engine {
 
     /// Commit the move, temporal edits, reconciliation and turn change atomically.
     pub fn apply_new_mv(&mut self, mv: Move) -> Result<(), EngineErr> {
+        *self = self.after_move(mv)?;
+        Ok(())
+    }
+
+    /// Exact public move semantics on a single owned branch. Analysis callers
+    /// avoid cloning once outside the transaction and then again inside it.
+    pub fn after_move(&self, mv: Move) -> Result<Self, EngineErr> {
         if self.outcome().is_some() {
             return Err(EngineErr::GameOver);
         }
@@ -55,7 +62,7 @@ impl Engine {
         if !self.possible_moves(piece.origin, piece.age)?.contains(&mv) {
             return Err(EngineErr::WrongMove);
         }
-        self.transaction(|candidate| {
+        self.fork_transaction(|candidate| {
             candidate
                 .apply_admitted_move(mv, piece)
                 .map_err(|e| e.during(format!("applying {mv:?}")))?;

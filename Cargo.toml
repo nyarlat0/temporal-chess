@@ -1,10 +1,16 @@
 [workspace]
-members = ["crates/engine", "crates/bevy_front", "crates/protocol", "crates/server", "crates/tempfish"]
+members = ["crates/engine", "crates/bevy_front", "crates/protocol", "crates/server", "crates/tempfish", "crates/tempfish_web"]
 default-members = ["crates/bevy_front"]
 resolver = "3"
 
 [profile.dev]
 debug = 0
+
+[profile.dev.package.tempfish]
+opt-level = 3
+
+[profile.dev.package.temporal-chess-engine]
+opt-level = 3
 
 [profile.dev.package."*"]
 opt-level = 2
@@ -12,6 +18,12 @@ opt-level = 2
 [profile.release]
 opt-level = 3
 strip = true
+
+[profile.web-release.package.tempfish]
+opt-level = 3
+
+[profile.web-release.package.temporal-chess-engine]
+opt-level = 3
 
 [profile.web-release]
 inherits = "release"

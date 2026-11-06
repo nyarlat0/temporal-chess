@@ -297,3 +297,96 @@ fn time_war_search_uses_fixed_timeline_and_replayable_actions() {
     }
     assert_eq!(GameRecord::load(&record.to_text()).unwrap().0, engine);
 }
+
+#[test]
+fn parallel_root_split_matches_exhaustive_with_free_turns_and_small_leases() {
+    use crate::parallel::{Coordinator, Worker};
+    for side in [Color::White, Color::Black] {
+        let line = |color, sq| {
+            let a = State::new(PieceKind::N, color, sq);
+            let b = a.prolongate().unwrap();
+            let c = b.prolongate().unwrap();
+            vec![a, b, c]
+        };
+        let engine = Engine::from_worldlines(
+            vec![line(Color::White, Sq(1, 0)), line(Color::Black, Sq(6, 7))],
+            side,
+        )
+        .unwrap();
+        let mut coordinator = Coordinator::new(
+            engine.clone(),
+            Limits {
+                depth: 2,
+                nodes: 100_000,
+            },
+        );
+        while !coordinator.is_prepared() {
+            coordinator.prepare_step();
+        }
+        let mut workers: Vec<_> = (0..3).map(|_| Worker::new(engine.clone())).collect();
+        for _ in 0..100_000 {
+            if coordinator.is_done() {
+                break;
+            }
+            // Deliberately report out of order, like independently timed threads.
+            let tasks: Vec<_> = (0..3)
+                .filter_map(|i| coordinator.next_work(i).map(|w| (i, w)))
+                .collect();
+            for (id, work) in tasks.into_iter().rev() {
+                let report = workers[id].run(work.clone(), || false);
+                assert!(report.nodes <= work.nodes);
+                coordinator.accept(id, report);
+            }
+        }
+        assert!(coordinator.is_done());
+        let result = coordinator.result();
+        assert_eq!(result.completed_depth, 2);
+        assert_eq!(result.score, exhaustive(&engine, 2, 0));
+        assert!(result.command.is_some());
+    }
+}
+
+#[test]
+fn parallel_budget_is_global_and_one_node_still_returns_a_move() {
+    for budget in [1, 20, 50, 200, 801] {
+        let engine = Engine::default().with_interactive_calculation().unwrap();
+        let result = crate::parallel::run(
+            engine.clone(),
+            Limits {
+                nodes: budget,
+                ..Default::default()
+            },
+            3,
+            &std::sync::atomic::AtomicBool::new(false),
+            |_| {},
+        );
+        assert!(result.nodes <= budget, "{} > {budget}", result.nodes);
+        let mut next = engine;
+        GameRecord::default()
+            .apply(&mut next, result.command.unwrap())
+            .unwrap();
+    }
+}
+
+#[test]
+fn single_clone_move_branch_matches_journal_and_preserves_root() {
+    for text in [
+        "NOLAN-CHESS 1",
+        "NOLAN-CHESS 1\nmove 0 12:0:0 e2 e4 + normal\nmove 1 30:1:0 g7 g6 + normal\n",
+        "NOLAN-CHESS 4\nchain_info_activation on\nglobal_reaction_reset on\nstart time_war 5\n",
+    ] {
+        let (engine, record) = GameRecord::load(text).unwrap();
+        let saved = engine.clone();
+        for command in commands(&engine) {
+            let mut expected = engine.clone();
+            let mut journal = record.clone();
+            let result = journal.apply(&mut expected, command);
+            match (result, successor(&engine, command)) {
+                (Ok(()), Ok(actual)) => assert_eq!(actual, expected),
+                (Err(a), Err(b)) => assert_eq!(a.to_string(), b),
+                pair => panic!("{pair:?}"),
+            }
+            assert_eq!(engine, saved);
+        }
+    }
+}

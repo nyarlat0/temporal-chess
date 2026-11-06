@@ -8,8 +8,14 @@ use temporal_chess_engine::{
     record::{Command, GameRecord},
 };
 
-pub const MAX_DEPTH: u8 = 6;
-pub const NODE_BUDGETS: [u64; 5] = [50, 200, 800, 3_000, 10_000];
+use std::sync::Arc;
+mod cache;
+pub use cache::Cache;
+use cache::{Bound, Solved};
+pub mod parallel;
+
+pub const MAX_DEPTH: u8 = 32;
+pub const NODE_BUDGETS: [u64; 7] = [50, 200, 800, 3_000, 10_000, 30_000, 100_000];
 
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
@@ -35,11 +41,16 @@ pub struct SearchResult {
     pub completed_depth: u8,
     pub nodes: u64,
     pub rejected: u64,
+    pub cache_hits: u64,
     pub first_error: Option<String>,
 }
 
 struct Frame {
-    engine: Engine,
+    engine: Arc<Engine>,
+    key: u64,
+    probed: bool,
+    original_alpha: i32,
+    original_beta: i32,
     depth: u8,
     ply: u8,
     incoming: Option<Command>,
@@ -54,7 +65,7 @@ struct Frame {
 }
 impl Frame {
     fn new(
-        engine: Engine,
+        engine: Arc<Engine>,
         depth: u8,
         ply: u8,
         incoming: Option<Command>,
@@ -66,8 +77,13 @@ impl Frame {
         } else {
             vec![]
         };
+        let key = engine.analysis_key();
         Self {
             engine,
+            key,
+            probed: false,
+            original_alpha: alpha,
+            original_beta: beta,
             depth,
             ply,
             incoming,
@@ -84,7 +100,9 @@ impl Frame {
 }
 
 pub struct Search {
-    root: Engine,
+    root: Arc<Engine>,
+    cache: Cache,
+    fixed_depth: bool,
     target_depth: u8,
     node_limit: u64,
     iteration: u8,
@@ -94,10 +112,13 @@ pub struct Search {
 }
 impl Search {
     pub fn new(engine: Engine, limits: Limits) -> Self {
+        let engine = Arc::new(engine);
         let score = evaluate(&engine, 0);
         let frame = Frame::new(engine.clone(), 1, 0, None, -INF, INF);
         Self {
             root: engine,
+            cache: Cache::default(),
+            fixed_depth: false,
             target_depth: limits.depth.clamp(1, MAX_DEPTH),
             node_limit: limits.nodes.max(1),
             iteration: 1,
@@ -108,6 +129,45 @@ impl Search {
             },
             done: false,
         }
+    }
+    /// An exact-depth subtree for a root-split worker. Scores retain root ply.
+    pub(crate) fn subtree(
+        engine: Arc<Engine>,
+        depth: u8,
+        alpha: i32,
+        beta: i32,
+        cache: Cache,
+    ) -> Self {
+        Self {
+            root: engine.clone(),
+            cache,
+            fixed_depth: true,
+            target_depth: depth,
+            node_limit: u64::MAX,
+            iteration: depth,
+            stack: vec![Frame::new(engine, depth, 1, None, alpha, beta)],
+            result: SearchResult::default(),
+            done: false,
+        }
+    }
+    pub(crate) fn take_cache(&mut self) -> Cache {
+        std::mem::take(&mut self.cache)
+    }
+    pub fn nodes(&self) -> u64 {
+        self.result.nodes
+    }
+    pub fn completed_depth(&self) -> u8 {
+        self.result.completed_depth
+    }
+    pub(crate) fn needs_node(&self) -> bool {
+        self.stack.last().is_some_and(|f| {
+            f.probed
+                && f.depth > 0
+                && f.engine.outcome().is_none()
+                && f.ordered
+                && f.alpha < f.beta
+                && f.cursor < f.commands.len()
+        })
     }
     pub fn is_done(&self) -> bool {
         self.done
@@ -135,6 +195,29 @@ impl Search {
             return;
         }
         let frame = self.stack.last_mut().expect("active search frame");
+        if !frame.probed {
+            frame.probed = true;
+            if let Some(entry) = self.cache.entry(frame.key, &frame.engine) {
+                if let Some(solved) = entry.solved.filter(|s| s.depth == frame.depth) {
+                    let score = score_from_cache(solved.score, frame.ply);
+                    let usable = match solved.bound {
+                        Bound::Exact => true,
+                        Bound::Lower => score >= frame.beta,
+                        Bound::Upper => score <= frame.alpha,
+                    };
+                    if usable {
+                        self.result.cache_hits += 1;
+                        frame.best = entry.best.map(|c| (c, score));
+                        self.finish_frame(score);
+                        return;
+                    }
+                }
+                if let Some(commands) = &entry.commands {
+                    frame.commands = commands.clone();
+                    frame.generated = frame.sources.len();
+                }
+            }
+        }
         if frame.depth == 0 || frame.engine.outcome().is_some() {
             let score = evaluate(&frame.engine, frame.ply);
             self.finish_frame(score);
@@ -142,10 +225,6 @@ impl Search {
         }
         // Finish the last leaf before stopping so a one-node budget can still
         // produce a command. Rejected candidates consume budget as well.
-        if self.result.nodes >= self.node_limit {
-            self.done = true;
-            return;
-        }
         if let Some(&piece) = frame.sources.get(frame.generated) {
             frame.generated += 1;
             match frame.engine.possible_moves(piece.origin, piece.age) {
@@ -199,9 +278,19 @@ impl Search {
             if frame.engine.can_decline_reactions() {
                 frame.commands.push(Command::DeclineReactions);
             }
-            frame
-                .commands
-                .sort_by_cached_key(|command| std::cmp::Reverse(priority(&frame.engine, *command)));
+            let preferred = self
+                .cache
+                .entry(frame.key, &frame.engine)
+                .and_then(|e| e.best);
+            frame.commands.sort_by_cached_key(|command| {
+                std::cmp::Reverse((
+                    Some(*command) == preferred,
+                    priority(&frame.engine, *command),
+                ))
+            });
+            frame.commands.dedup();
+            self.cache
+                .commands(frame.key, frame.engine.clone(), frame.commands.clone());
             frame.ordered = true;
             return;
         }
@@ -212,21 +301,37 @@ impl Search {
             self.finish_frame(score);
             return;
         }
-        let command = frame.commands[frame.cursor];
-        frame.cursor += 1;
-        let mut next = frame.engine.clone();
-        self.result.nodes += 1;
-        // The exact public command path also handles losing paradoxes and
-        // commands which erase themselves during history reconciliation.
-        if let Err(error) = GameRecord::new(next.history().rules()).apply(&mut next, command) {
-            if matches!(command, Command::Move { .. }) {
-                self.result
-                    .first_error
-                    .get_or_insert_with(|| error.to_string());
-            }
-            self.result.rejected += 1;
+        if self.result.nodes >= self.node_limit {
+            self.done = true;
             return;
         }
+        let command = frame.commands[frame.cursor];
+        frame.cursor += 1;
+        self.result.nodes += 1;
+        let cached = self
+            .cache
+            .entry(frame.key, &frame.engine)
+            .and_then(|e| e.children.get(&command))
+            .cloned();
+        let next = if let Some(next) = cached {
+            self.result.cache_hits += 1;
+            next
+        } else {
+            let next = successor(&frame.engine, command).map(Arc::new);
+            self.cache
+                .child(frame.key, frame.engine.clone(), command, next.clone());
+            next
+        };
+        let next = match next {
+            Ok(next) => next,
+            Err(error) => {
+                if matches!(command, Command::Move { .. }) {
+                    self.result.first_error.get_or_insert(error);
+                }
+                self.result.rejected += 1;
+                return;
+            }
+        };
         if next == frame.engine {
             return;
         }
@@ -243,6 +348,23 @@ impl Search {
 
     fn finish_frame(&mut self, score: i32) {
         let frame = self.stack.pop().unwrap();
+        let bound = if score <= frame.original_alpha {
+            Bound::Upper
+        } else if score >= frame.original_beta {
+            Bound::Lower
+        } else {
+            Bound::Exact
+        };
+        self.cache.solved(
+            frame.key,
+            frame.engine.clone(),
+            frame.best.map(|(c, _)| c),
+            Solved {
+                depth: frame.depth,
+                score: score_to_cache(score, frame.ply),
+                bound,
+            },
+        );
         if let Some(parent) = self.stack.last_mut() {
             let maximizing = parent.engine.turn() == Color::White;
             if parent.best.is_none_or(|(_, best)| {
@@ -263,7 +385,8 @@ impl Search {
             self.result.command = frame.best.map(|(command, _)| command);
             self.result.score = score;
             self.result.completed_depth = self.iteration;
-            if self.iteration == self.target_depth
+            if self.fixed_depth
+                || self.iteration == self.target_depth
                 || self.result.command.is_none()
                 || score.abs() >= MATE - MAX_DEPTH as i32
             {
@@ -283,6 +406,40 @@ impl Search {
     }
 }
 
+fn successor(engine: &Engine, command: Command) -> Result<Engine, String> {
+    if let Command::Move { mv, from } = command {
+        if !engine
+            .piece_state(mv.source())
+            .is_some_and(|s| s.alive && s.x == from.0 && s.y == from.1)
+        {
+            return Err("piece occurrence is absent or cannot act".into());
+        }
+        return engine.after_move(mv).map_err(|e| e.to_string());
+    }
+    let mut next = engine.clone();
+    GameRecord::new(next.history().rules())
+        .apply(&mut next, command)
+        .map_err(|e| e.to_string())?;
+    Ok(next)
+}
+fn score_to_cache(score: i32, ply: u8) -> i32 {
+    if score >= MATE - MAX_DEPTH as i32 {
+        score + ply as i32
+    } else if score <= -MATE + MAX_DEPTH as i32 {
+        score - ply as i32
+    } else {
+        score
+    }
+}
+fn score_from_cache(score: i32, ply: u8) -> i32 {
+    if score >= MATE - MAX_DEPTH as i32 {
+        score - ply as i32
+    } else if score <= -MATE + MAX_DEPTH as i32 {
+        score + ply as i32
+    } else {
+        score
+    }
+}
 fn value(kind: PieceKind) -> i32 {
     match kind {
         PieceKind::P { .. } => 100,

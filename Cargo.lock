@@ -5965,7 +5965,18 @@ dependencies = [
 name = "tempfish"
 version = "0.1.0"
 dependencies = [
+ "serde",
  "temporal-chess-engine",
+]
+
+[[package]]
+name = "tempfish-web"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tempfish",
+ "temporal-chess-engine",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -5976,11 +5987,13 @@ dependencies = [
  "bevy_egui",
  "ewebsock",
  "resvg",
+ "serde",
  "serde_json",
  "sha2",
  "tempfish",
  "temporal-chess-engine",
  "temporal-chess-protocol",
+ "wasm-bindgen",
  "web-sys",
  "web-time",
 ]

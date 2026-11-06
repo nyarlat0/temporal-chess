@@ -4,14 +4,14 @@ use super::{MoveId, State};
 
 /// A causal discontinuity while an unfinished journey owes its existing future.
 /// Keys, unlike ages, survive insertion of states into this or an outer loop.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct CausalGap {
     pub entry: MoveId,
     pub after: MoveId,
     pub resume: Option<MoveId>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Worldline {
     pub(crate) states: Vec<State>,
     pub(crate) gaps: Vec<CausalGap>,

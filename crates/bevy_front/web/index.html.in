@@ -53,6 +53,8 @@
     });
     try {
       if (!document.createElement('canvas').getContext('webgl2')) throw new Error(pageText('Браузер не поддерживает WebGL2.', 'Your browser does not support WebGL2.'));
+      const bot = await import('./releases/__NOLAN_RELEASE__/tempfish-pool.js');
+      Object.assign(globalThis, { tempfishStart: bot.start, tempfishPoll: bot.poll, tempfishStop: bot.stop, tempfishCancel: bot.cancel });
       const { default: init } = await import('./releases/__NOLAN_RELEASE__/nolan.js');
       await init();
     } catch (error) {

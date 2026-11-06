@@ -13,27 +13,27 @@ pub enum CaptureOutcome {
     Unresolved,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum WinReason {
     Checkmate,
     KingCaptured,
     Paradox,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum GameOutcome {
     Victory { winner: Color, reason: WinReason },
     Stalemate,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum WaitingReason {
     NoActivePieces,
     OpponentPastMoves,
     KingUnderAttack,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum GameStatus {
     #[default]
     Ongoing,
@@ -63,7 +63,7 @@ pub enum CalculationStatus {
     Paused { t: usize, side: Color },
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub(super) struct Calculation {
     pub interactive: bool,
     pub acknowledged: Vec<PieceAt>,
@@ -73,14 +73,14 @@ pub(super) struct Calculation {
 
 /// Physical worldline edits caused by one cancellation, including a castling rook.
 /// Reaction flags alone are not evidence that a continuation affects history.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(super) struct Cancellation {
     pub source: PieceAt,
     pub lines: Vec<(usize, Worldline, Worldline)>,
 }
 
 /// Authoritative state. Board projections and lookup tables are never stored here.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct History {
     pub(super) rules: crate::model::GameRules,
     pub(super) starting_position: crate::model::StartingPosition,
@@ -129,6 +129,44 @@ pub struct Engine {
 }
 
 impl Engine {
+    /// Bucket key for analysis caches. Callers must also compare the full Engine
+    /// before reusing a result: hashes are not identity proofs, and projections
+    /// may expose different calculation frontiers for the same history.
+    pub fn analysis_key(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hash = std::hash::DefaultHasher::new();
+        self.history.hash(&mut hash);
+        self.turn.hash(&mut hash);
+        hash.finish()
+    }
+
+    /// Conservative cache weight, counting states, remembered identities,
+    /// cancellation snapshots and projected board cells. Not game logic.
+    pub fn analysis_weight(&self) -> usize {
+        fn line_weight(line: &Worldline) -> usize {
+            line.iter()
+                .map(|s| 1 + s.informed.len() + s.remembered.len() + s.loop_pivots.len())
+                .sum::<usize>()
+                + line.gaps().len()
+        }
+        self.history
+            .worldlines
+            .iter()
+            .map(line_weight)
+            .sum::<usize>()
+            + self
+                .history
+                .calculation
+                .cancellations
+                .iter()
+                .flat_map(|c| &c.lines)
+                .map(|(_, a, b)| line_weight(a) + line_weight(b))
+                .sum::<usize>()
+            + 64 * (self.projection.boards.len() + self.projection.preboards.len())
+            + self.history.moves.len() * 4
+            + self.history.targets.values().map(Vec::len).sum::<usize>()
+    }
+
     pub fn status(&self) -> GameStatus {
         self.history.status
     }
@@ -173,6 +211,14 @@ impl Engine {
         &mut self,
         command: impl FnOnce(&mut Self) -> Result<(), EngineErr>,
     ) -> Result<(), EngineErr> {
+        *self = self.fork_transaction(command)?;
+        Ok(())
+    }
+
+    pub(super) fn fork_transaction(
+        &self,
+        command: impl FnOnce(&mut Self) -> Result<(), EngineErr>,
+    ) -> Result<Self, EngineErr> {
         if self.outcome().is_some() {
             return Err(EngineErr::GameOver);
         }
@@ -185,18 +231,16 @@ impl Engine {
                 .finish_command(actor)
                 .map_err(|e| e.during("adjudicating the resulting position"))
         }) {
-            Ok(()) => {
-                *self = candidate;
-                Ok(())
-            }
+            Ok(()) => Ok(candidate),
             Err(EngineErr::InfLoop) => {
                 // Keep the last coherent timeline, but publish the loss. This is
                 // a completed game command, not a retryable invalid move.
-                self.history.status = GameStatus::Finished(GameOutcome::Victory {
+                let mut previous = self.clone();
+                previous.history.status = GameStatus::Finished(GameOutcome::Victory {
                     winner: actor.opposite(),
                     reason: WinReason::Paradox,
                 });
-                Ok(())
+                Ok(previous)
             }
             Err(error) => Err(error),
         }

@@ -20,7 +20,7 @@ cd "$repo_root"
 # Make the artifact location deterministic even when a global Cargo config sets it.
 build_target=${CARGO_TARGET_DIR:-"$repo_root/target"}
 export CARGO_TARGET_DIR="$build_target"
-"$cargo_command" build --locked --profile web-release -p temporal-chess-bevy --target wasm32-unknown-unknown
+"$cargo_command" build --locked --profile web-release -p temporal-chess-bevy -p tempfish-web --target wasm32-unknown-unknown
 mkdir -p dist
 stage=$(mktemp -d "$repo_root/dist/.web-build.XXXXXX")
 trap 'rm -rf -- "$stage"' EXIT
@@ -32,11 +32,19 @@ trap 'rm -rf -- "$stage"' EXIT
     --enable-sign-ext --enable-nontrapping-float-to-int --enable-bulk-memory \
     -o "$stage/optimized.wasm"
 mv "$stage/optimized.wasm" "$stage/nolan_bg.wasm"
+"$bindgen_command" --target web --no-typescript --remove-name-section --remove-producers-section \
+    --out-dir "$stage" --out-name tempfish "$build_target/wasm32-unknown-unknown/web-release/tempfish_web.wasm"
+"$opt_command" "$stage/tempfish_bg.wasm" -O3 \
+    --enable-multivalue --enable-mutable-globals --enable-reference-types \
+    --enable-sign-ext --enable-nontrapping-float-to-int --enable-bulk-memory \
+    -o "$stage/tempfish-optimized.wasm"
+mv "$stage/tempfish-optimized.wasm" "$stage/tempfish_bg.wasm"
+install -m 0644 crates/bevy_front/web/tempfish-worker.js crates/bevy_front/web/tempfish-pool.js "$stage/"
 install -m 0644 crates/bevy_front/web/favicon.svg "$stage/favicon.svg"
-release_id=$(cat "$stage/nolan.js" "$stage/nolan_bg.wasm" "$stage/favicon.svg" | sha256sum | cut -c 1-16)
+release_id=$(cat "$stage/nolan.js" "$stage/nolan_bg.wasm" "$stage/favicon.svg" "$stage/tempfish.js" "$stage/tempfish_bg.wasm" "$stage/tempfish-worker.js" "$stage/tempfish-pool.js" | sha256sum | cut -c 1-16)
 release_dir="$repo_root/dist/web/releases/$release_id"
 mkdir -p "$release_dir"
-for name in nolan.js nolan_bg.wasm favicon.svg; do
+for name in nolan.js nolan_bg.wasm favicon.svg tempfish.js tempfish_bg.wasm tempfish-worker.js tempfish-pool.js; do
     gzip -9 -n -c "$stage/$name" > "$stage/$name.gz"
     "$brotli_command" --quality=11 --force --output="$stage/$name.br" "$stage/$name"
     install -m 0644 "$stage/$name" "$stage/$name.gz" "$stage/$name.br" "$release_dir/"

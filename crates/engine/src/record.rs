@@ -11,7 +11,7 @@ use std::fmt;
 
 const HEADER: &str = "NOLAN-CHESS 4";
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Command {
     Move {
         mv: Move,
