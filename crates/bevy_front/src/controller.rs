@@ -94,7 +94,7 @@ pub struct GameUi {
     pub import_text: String,
     pub import_error: Option<crate::i18n::Message>,
     pub replay_job: Option<ReplayJob>,
-    pub pending_square: Option<(usize, Sq)>,
+    pub pending_square: Option<(usize, Sq, bool)>,
     pub pending_move: Option<Move>,
 }
 
@@ -349,8 +349,12 @@ impl GameUi {
         if let Some(mv) = self.pending_move.take() {
             self.play(mv);
         }
-        if let Some((t, sq)) = self.pending_square.take() {
-            self.click_square(t, sq);
+        if let Some((t, sq, reverse)) = self.pending_square.take() {
+            if reverse {
+                self.click_square_with_direction(t, sq, true);
+            } else {
+                self.click_square(t, sq);
+            }
         }
     }
 
@@ -420,6 +424,10 @@ impl GameUi {
     }
 
     pub fn click_square(&mut self, t: usize, sq: Sq) {
+        self.click_square_with_direction(t, sq, false);
+    }
+
+    fn click_square_with_direction(&mut self, t: usize, sq: Sq, reverse: bool) {
         if !self.promotion.is_empty()
             || self.confirm_restart
             || !self.overlapping.is_empty()
@@ -428,6 +436,18 @@ impl GameUi {
             || self.playback_busy()
             || self.facing.animating()
         {
+            return;
+        }
+        if reverse && !self.worldline_mode && !self.inspect_mode {
+            let pieces: Vec<_> = self.pieces(t).into_iter().filter(|p| p.sq == sq).collect();
+            if let Some(piece) = pieces.iter().find(|p| self.selectable(**p)) {
+                self.choose(*piece);
+                if let Some(selection) = &mut self.selected {
+                    selection.direction = TimeDirection::from_inverted(!piece.inverted);
+                }
+            } else if pieces.is_empty() {
+                self.toggle_direction();
+            }
             return;
         }
         if self.worldline_mode {
@@ -479,6 +499,11 @@ impl GameUi {
                     to_t: t,
                 };
                 self.submit(command);
+                return;
+            }
+            let clicked_selected = selection.piece.t == t && selection.piece.sq == sq;
+            self.clear_selection();
+            if clicked_selected {
                 return;
             }
         }
@@ -901,6 +926,60 @@ mod tests {
         game.playback_destination = game.active_times().first().copied();
         game.finish_travel(0);
         assert_eq!(game.jump_to, game.active_times().first().copied());
+    }
+
+    #[test]
+    fn invalid_left_click_clears_or_selects_another_active_piece() {
+        for square in [Sq(4, 1), Sq(3, 1), Sq(4, 6), Sq(0, 3)] {
+            let mut game = GameUi::default();
+            game.click_square(0, Sq(4, 1));
+            game.click_square(0, square);
+            if square == Sq(3, 1) {
+                assert_eq!(game.selected.as_ref().unwrap().piece.sq, square);
+            } else {
+                assert!(game.selected.is_none());
+            }
+            assert!(game.record.commands().is_empty());
+        }
+    }
+
+    #[test]
+    fn middle_click_selects_opposite_to_piece_orientation_without_playing() {
+        let mut game = GameUi::default();
+        game.click_square(0, Sq(4, 1));
+        game.click_square_with_direction(0, Sq(3, 1), true);
+        assert_eq!(game.selected.as_ref().unwrap().piece.sq, Sq(3, 1));
+        assert_eq!(
+            game.selected.as_ref().unwrap().direction,
+            TimeDirection::Past
+        );
+        game.click_square_with_direction(0, Sq(3, 1), true);
+        assert_eq!(
+            game.selected.as_ref().unwrap().direction,
+            TimeDirection::Past
+        );
+        assert!(game.record.commands().is_empty());
+        game.engine = Engine::with_start(
+            Default::default(),
+            temporal_chess_engine::model::StartingPosition::TimeWar { separation: 9 },
+        )
+        .unwrap();
+        let pawn = *game.engine.board(0).unwrap().get_piece(4, 1).unwrap();
+        let mv = game
+            .engine
+            .possible_moves(pawn.origin, pawn.age)
+            .unwrap()
+            .into_iter()
+            .find(|mv| mv.sq == Sq(4, 3))
+            .unwrap();
+        game.engine.apply_new_mv(mv).unwrap();
+        game.clear_selection();
+        game.click_square_with_direction(9, Sq(4, 6), true);
+        assert_eq!(
+            game.selected.as_ref().unwrap().direction,
+            TimeDirection::Future
+        );
+        assert!(game.selected.as_ref().unwrap().piece.inverted);
     }
 
     #[test]

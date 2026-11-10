@@ -206,13 +206,14 @@ pub fn ribbon(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt) {
         if !covered_by_transition {
             paint_board(&board_painter, game, art, t, board, cell, hovered);
         }
+        let reverse = crate::input::clicked_by(&response, egui::PointerButton::Middle);
         if !moving
             && game.viewport.scroll.is_none()
-            && crate::input::clicked(&response)
+            && (crate::input::clicked(&response) || reverse)
             && let Some(pos) = response.interact_pointer_pos()
         {
             // Apply next Update, never halfway through drawing a history frame.
-            game.pending_square = Some((t, square_at(board, cell, pos, flipped)));
+            game.pending_square = Some((t, square_at(board, cell, pos, flipped), reverse));
             ui.ctx().request_repaint();
         }
     }

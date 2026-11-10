@@ -88,7 +88,13 @@ pub fn handle(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState) {
         if escape || (right_click && !shell.zoom_gesture) {
             game.clear_selection();
         }
-        if toggle {
+        if toggle
+            && !ctx.input(|i| {
+                i.pointer
+                    .interact_pos()
+                    .is_some_and(|pos| shell.ribbon_rect.contains(pos))
+            })
+        {
             game.toggle_direction();
         }
     }
@@ -127,11 +133,15 @@ pub fn handle(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState) {
 
 /// A layout retry must not execute a button action or board click twice.
 pub fn clicked(response: &egui::Response) -> bool {
-    if !response.clicked() {
+    clicked_by(response, PointerButton::Primary)
+}
+
+pub fn clicked_by(response: &egui::Response, button: PointerButton) -> bool {
+    if !response.clicked_by(button) {
         return false;
     }
     let frame = response.ctx.cumulative_frame_nr();
-    let key = response.id.with("handled_click_frame");
+    let key = response.id.with(("handled_click_frame", button as u8));
     response.ctx.data_mut(|data| {
         if data.get_temp::<u64>(key) == Some(frame) {
             return false;
