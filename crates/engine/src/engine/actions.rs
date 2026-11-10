@@ -90,8 +90,8 @@ impl Engine {
         Ok(piece)
     }
 
-    /// Internal probes check spatial rules without recursively probing inverse
-    /// safety. Public commands are admitted through `possible_moves` above.
+    /// Internal probes use the same spatial candidates as public commands.
+    /// Threats to kings do not restrict commands; actual captures end the game.
     pub(super) fn apply_move_inner(&mut self, mv: Move) -> Result<(), EngineErr> {
         let piece = self.move_source(mv)?;
         if !self.candidate_moves(piece.origin, piece.age)?.contains(&mv) {
@@ -148,7 +148,8 @@ impl Engine {
         self.history.horizon = horizon;
         self.apply_route(piece, mv, horizon)?;
         if let Some(rook) = rook {
-            // Castling never inserts a backward segment; both source ages remain valid.
+            // The king and rook have separate worldlines, so editing the king
+            // does not invalidate the saved source age of the rook.
             self.apply_route(rook, mv, horizon)?;
         }
         for idle in idle_endpoints {

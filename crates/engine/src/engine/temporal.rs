@@ -185,7 +185,10 @@ impl Engine {
         let line = &self.history.worldlines[piece.origin];
         if Color::from_board(line[age].t) != piece.color
             && (age + 1 == line.len() || line.gap_after(age).is_some())
-            && let Some(waiting) = self.passive_successor(&line[age])
+            && let Some(waiting) = match self.boundary_return(line[age].t, mv.direction) {
+                Some(direction) => line[age].step(direction),
+                None => self.passive_successor(&line[age]),
+            }
             && waiting.t <= horizon
         {
             self.advance_route(piece.origin, age, waiting)?;

@@ -67,23 +67,32 @@ impl Engine {
         )
     }
 
-    /// A command must also leave room for the passive tick to the next own-color
-    /// board. This generalizes the existing prohibition on moving past t=0/1.
+    /// Spatial arrivals may touch a boundary: their mandatory next tick rebounds.
     pub(super) fn time_direction_available(
         &self,
         piece: crate::model::PieceView,
         direction: TimeDirection,
     ) -> bool {
-        if direction == TimeDirection::Past && piece.t <= 1 {
-            return false;
+        direction.step(piece.t).is_some_and(|t| {
+            self.history
+                .starting_position
+                .fixed_end()
+                .is_none_or(|end| t <= end)
+        })
+    }
+
+    pub(super) fn boundary_return(
+        &self,
+        t: usize,
+        direction: TimeDirection,
+    ) -> Option<TimeDirection> {
+        match direction {
+            TimeDirection::Past if t == 0 => Some(TimeDirection::Future),
+            TimeDirection::Future if self.history.starting_position.fixed_end() == Some(t) => {
+                Some(TimeDirection::Past)
+            }
+            _ => None,
         }
-        if let Some(end) = self.history.starting_position.fixed_end() {
-            return direction
-                .step(piece.t)
-                .and_then(|t| direction.step(t))
-                .is_some_and(|t| t <= end);
-        }
-        true
     }
 
     pub(super) fn passive_successor(&self, state: &State) -> Option<State> {

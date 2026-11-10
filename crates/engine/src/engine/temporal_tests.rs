@@ -400,7 +400,7 @@ fn a_backward_pawn_capture_survives_validation_and_undo_restores_the_victim() {
 }
 
 #[test]
-fn king_safety_is_checked_on_the_selected_target_board() {
+fn king_can_enter_attacked_squares_in_either_time_direction() {
     let white: Vec<_> = line(4)
         .into_iter()
         .map(|state| State {
@@ -433,7 +433,7 @@ fn king_safety_is_checked_on_the_selected_target_board() {
                 .any(|mv| mv.direction == direction && mv.sq == allowed)
         );
         assert!(
-            !moves
+            moves
                 .iter()
                 .any(|mv| mv.direction == direction && mv.sq == attacked)
         );

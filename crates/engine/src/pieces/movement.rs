@@ -182,19 +182,22 @@ impl PieceView {
         self.castling_moves_with_safety(board, board)
     }
 
-    /// Occupancy and rook availability belong to the destination board;
+    /// Occupancy belongs to the destination board; the rook belongs to the source.
     /// attacks along the king's path belong to the position the player sees.
     pub(crate) fn castling_moves_with_safety(
         &self,
         board: &Board,
         safety: &Board,
     ) -> Vec<(Sq, Castling)> {
-        self.castling_moves_with_attacks(board, |sq| safety.is_attacked(self.color.opposite(), sq))
+        self.castling_moves_with_attacks(board, safety, |sq| {
+            safety.is_attacked(self.color.opposite(), sq)
+        })
     }
 
     pub(crate) fn castling_moves_with_attacks(
         &self,
         board: &Board,
+        source: &Board,
         threatened: impl Fn(Sq) -> bool,
     ) -> Vec<(Sq, Castling)> {
         let mut v = Vec::new();
@@ -222,7 +225,7 @@ impl PieceView {
         }
 
         // ---- queen-side (long) ----
-        if let Some(rook) = board.get_piece(a, home_y)
+        if let Some(rook) = source.get_piece(a, home_y)
             && rook.color == self.color
             && let PieceKind::R { moved: false } = rook.kind
             // squares between rook and king empty: b, c, d
@@ -234,7 +237,7 @@ impl PieceView {
         }
 
         // ---- king-side (short) ----
-        if let Some(rook) = board.get_piece(h, home_y)
+        if let Some(rook) = source.get_piece(h, home_y)
             && rook.color == self.color
             && let PieceKind::R { moved: false } = rook.kind
             // squares between empty: f, g

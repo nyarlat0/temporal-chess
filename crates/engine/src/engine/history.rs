@@ -110,6 +110,30 @@ impl Engine {
             EngineErr::InvalidHistory("cancelled move source is missing")
                 .during(format!("cancelling {mv:?}"))
         })?;
+        if mv
+            .direction
+            .step(mv.t)
+            .and_then(|t| self.boundary_return(t, mv.direction))
+            .is_some()
+        {
+            // A rebound exists only because of this spatial move. Cancelling
+            // it must not turn passive waiting into another boundary crossing.
+            if let Some(rook) = self.castling_rook(mv, bf_piv)? {
+                self.remove_past_route(rook)?;
+                self.history.worldlines[rook.origin][rook.age].rights = super::MoveRights {
+                    ordinary: self.history.worldlines[rook.origin][rook.age].alive,
+                    ..Default::default()
+                };
+            }
+            self.remove_past_route(bf_piv)?;
+            let state = &mut self.history.worldlines[bf_piv.origin][bf_piv.age];
+            state.rights = super::MoveRights {
+                ordinary: state.alive,
+                ..Default::default()
+            };
+            self.update_bufs()?;
+            return Ok(());
+        }
         self.undo_castling_rook(mv, bf_piv)?;
         if mv.to_past() != bf_piv.inverted {
             if mv.to_past() {

@@ -33,9 +33,6 @@ impl Engine {
                     let Some(source) = source_t.and_then(|time| self.board(time)) else {
                         continue;
                     };
-                    if direction == TimeDirection::Past && source.time() <= 1 {
-                        continue;
-                    }
                     for enemy in source
                         .pieces()
                         .iter()
@@ -143,9 +140,6 @@ impl Engine {
                 }
             }
             for mv in prepared.candidate_moves(piece.origin, piece.age)? {
-                if !prepared.inverse_safe(mv, side) {
-                    continue;
-                }
                 let mut probe = prepared.clone();
                 let result = probe.apply_move_inner(mv).and_then(|()| {
                     probe.turn = side.opposite();

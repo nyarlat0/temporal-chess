@@ -200,3 +200,50 @@ fn impossible_future_knight_move_is_cancelled_before_declaring_paradox() {
     assert_eq!(record.commands().last(), Some(&command));
     assert_eq!(GameRecord::load(&record.to_text()).unwrap().0, engine);
 }
+
+#[test]
+fn checked_side_can_use_rook_information_reaction_to_capture_knight() {
+    use temporal_chess_engine::model::{Color, PieceKind};
+    let text = include_str!("fixtures/check_rook_reaction.nolan");
+    // The original journal contains d1-c1 onto the passively continued white
+    // bishop. Frontier occupancy now correctly rejects that old command.
+    assert_eq!(GameRecord::load(text).unwrap_err().line, 25);
+    let corrected = text.replace(
+        "move 16 3:16:0 d1 c1 + normal",
+        "move 16 3:16:0 d1 e2 + normal",
+    );
+    let corrected = corrected.replace(
+        "move 5 16:23:0 a8 a6 - normal",
+        "move 5 24:23:0 a7 a6 - normal",
+    );
+    let (engine, record) = GameRecord::load(&corrected).unwrap();
+    assert!(engine.checks(Color::White).unwrap().is_check());
+    let captures: Vec<_> = engine
+        .move_sources()
+        .filter(|p| matches!(p.kind, PieceKind::R { .. }) && p.rights.new_information)
+        .flat_map(|p| {
+            engine
+                .possible_moves(p.origin, p.age)
+                .unwrap()
+                .into_iter()
+                .map(move |mv| (p, mv))
+        })
+        .filter(|(_, mv)| {
+            engine
+                .move_capture_target(*mv)
+                .is_some_and(|p| p.kind == PieceKind::N)
+        })
+        .collect();
+    assert!(
+        !captures.is_empty(),
+        "an information-active rook must be able to capture the knight"
+    );
+    for (p, mv) in captures {
+        let mut next = engine.clone();
+        let mut journal = record.clone();
+        journal
+            .apply(&mut next, Command::Move { mv, from: p.sq })
+            .unwrap();
+        assert_eq!(GameRecord::load(&journal.to_text()).unwrap().0, next);
+    }
+}

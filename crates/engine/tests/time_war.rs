@@ -162,19 +162,14 @@ fn both_boundaries_keep_reserves_and_allow_return_but_never_escape() {
     let knight = *engine.board(8).unwrap().get_piece(6, 0).unwrap();
     let moves = engine.possible_moves(knight.origin, knight.age).unwrap();
     assert!(!moves.is_empty());
-    assert!(moves.iter().all(|mv| mv.direction == TimeDirection::Past));
-    let mut forbidden = moves[0];
-    forbidden.direction = TimeDirection::Future;
-    let snapshot = engine.clone();
-    assert!(engine.apply_new_mv(forbidden).is_err());
-    assert_eq!(engine, snapshot);
+    assert!(moves.iter().any(|mv| mv.direction == TimeDirection::Future));
     play(
         &mut engine,
         &mut record,
         8,
         Sq(6, 0),
         Sq(5, 2),
-        TimeDirection::Past,
+        TimeDirection::Future,
     );
     assert!(
         engine
@@ -192,19 +187,14 @@ fn both_boundaries_keep_reserves_and_allow_return_but_never_escape() {
     let knight = *engine.board(1).unwrap().get_piece(1, 7).unwrap();
     let moves = engine.possible_moves(knight.origin, knight.age).unwrap();
     assert!(!moves.is_empty());
-    assert!(moves.iter().all(|mv| mv.direction == TimeDirection::Future));
-    let mut forbidden = moves[0];
-    forbidden.direction = TimeDirection::Past;
-    let snapshot = engine.clone();
-    assert!(engine.apply_new_mv(forbidden).is_err());
-    assert_eq!(engine, snapshot);
+    assert!(moves.iter().any(|mv| mv.direction == TimeDirection::Past));
     play(
         &mut engine,
         &mut record,
         1,
         Sq(1, 7),
         Sq(2, 5),
-        TimeDirection::Future,
+        TimeDirection::Past,
     );
     assert!(
         engine
@@ -215,6 +205,12 @@ fn both_boundaries_keep_reserves_and_allow_return_but_never_escape() {
             .rights
             .ordinary
     );
+    let white = engine.board(8).unwrap().get_piece(5, 2).unwrap();
+    assert!(white.inverted && white.rights.ordinary);
+    let black = engine.board(1).unwrap().get_piece(2, 5).unwrap();
+    assert!(!black.inverted && black.rights.ordinary);
+    assert!(engine.board(9).unwrap().get_piece(5, 2).is_some());
+    assert!(engine.board(0).unwrap().get_piece(2, 5).is_some());
     assert_eq!(GameRecord::load(&record.to_text()).unwrap().0, engine);
     assert_eq!(engine.history().horizon(), 9);
 }
@@ -325,4 +321,147 @@ fn starting_position_and_options_round_trip_even_without_commands() {
         )
         .is_err()
     );
+}
+
+#[test]
+fn castling_at_white_frontier_uses_source_rook_and_replays() {
+    let (mut engine, mut record) = GameRecord::load(CASTLING_FRONTIER).unwrap();
+    let before = engine.clone();
+    assert!(engine.board(11).unwrap().pieces().is_empty());
+    let king = *engine.board(10).unwrap().get_piece(4, 0).unwrap();
+    let castle = engine
+        .possible_moves(king.origin, king.age)
+        .unwrap()
+        .into_iter()
+        .find(|mv| mv.castling() == Some(temporal_chess_engine::model::Castling::Short))
+        .expect("the rook on t=10 participates even though t=11 is empty");
+    record
+        .apply(
+            &mut engine,
+            Command::Move {
+                mv: castle,
+                from: king.sq,
+            },
+        )
+        .unwrap();
+    for (x, wid) in [(6, 4), (5, 7)] {
+        assert_eq!(
+            engine.board(11).unwrap().get_piece(x, 0).unwrap().origin,
+            wid
+        );
+    }
+    assert_eq!(GameRecord::load(&record.to_text()).unwrap().0, engine);
+    assert_eq!(
+        Engine::from_history(engine.history().clone(), engine.turn())
+            .unwrap()
+            .history(),
+        engine.history()
+    );
+    let (prefix, _) = record.without_last_move().unwrap();
+    assert_eq!(GameRecord::load(&prefix.to_text()).unwrap().0, before);
+}
+
+const CASTLING_FRONTIER: &str = "NOLAN-CHESS 4
+chain_info_activation off
+global_reaction_reset on
+start time_war 23
+move 0 14:0:0 g2 g3 + normal
+move 23 17:23:0 b8 c6 - normal
+move 2 6:2:0 g1 f3 + normal
+move 21 28:23:0 e7 e5 - normal
+move 4 5:4:0 f1 g2 + normal
+move 19 22:23:0 g8 f6 - normal
+move 6 11:6:0 d2 d4 + normal
+move 17 27:23:0 d7 d5 - normal
+move 8 1:8:0 b1 c3 + normal
+move 15 21:23:0 f8 d6 - normal";
+
+#[test]
+fn inverted_black_castles_at_past_frontier_and_replays() {
+    let text = format!("{CASTLING_FRONTIER}\nmove 10 12:10:0 e2 e4 + normal");
+    let (mut engine, mut record) = GameRecord::load(&text).unwrap();
+    let before = engine.clone();
+    assert!(
+        engine
+            .board(12)
+            .unwrap()
+            .pieces()
+            .iter()
+            .all(|p| p.color == Color::White)
+    );
+    let king = *engine.board(13).unwrap().get_piece(4, 7).unwrap();
+    let rook = *engine.board(13).unwrap().get_piece(7, 7).unwrap();
+    assert!(king.inverted && rook.inverted);
+    let castle = engine
+        .possible_moves(king.origin, king.age)
+        .unwrap()
+        .into_iter()
+        .find(|mv| {
+            mv.castling() == Some(temporal_chess_engine::model::Castling::Short)
+                && mv.direction == TimeDirection::Past
+        })
+        .expect("inverted king and rook can castle backwards");
+    record
+        .apply(
+            &mut engine,
+            Command::Move {
+                mv: castle,
+                from: king.sq,
+            },
+        )
+        .unwrap();
+    for (x, wid) in [(6, king.origin), (5, rook.origin)] {
+        let p = engine.board(12).unwrap().get_piece(x, 7).unwrap();
+        assert_eq!(p.origin, wid);
+        assert!(p.inverted);
+    }
+    assert_eq!(GameRecord::load(&record.to_text()).unwrap().0, engine);
+    assert_eq!(
+        Engine::from_history(engine.history().clone(), engine.turn())
+            .unwrap()
+            .history(),
+        engine.history()
+    );
+    let (prefix, _) = record.without_last_move().unwrap();
+    assert_eq!(GameRecord::load(&prefix.to_text()).unwrap().0, before);
+}
+
+#[test]
+fn frontier_move_generation_includes_passive_friendly_blockers() {
+    for (t, color, direction) in [
+        (0, Color::White, TimeDirection::Future),
+        (9, Color::Black, TimeDirection::Past),
+    ] {
+        let mut engine = game(9);
+        if color == Color::Black {
+            play(
+                &mut engine,
+                &mut GameRecord::default(),
+                0,
+                Sq(4, 1),
+                Sq(4, 3),
+                TimeDirection::Future,
+            );
+        }
+        let pieces = engine.board(t).unwrap().pieces();
+        let mut count = 0;
+        for piece in pieces.iter().filter(|p| p.color == color) {
+            for mv in engine
+                .possible_moves(piece.origin, piece.age)
+                .unwrap()
+                .into_iter()
+                .filter(|mv| mv.direction == direction)
+            {
+                let mut next = engine.clone();
+                next.apply_new_mv(mv).unwrap();
+                assert_eq!(
+                    next.history().moves().get(&mv.id()),
+                    Some(&mv),
+                    "frontier move must not immediately cancel: {mv:?}"
+                );
+                count += 1;
+            }
+        }
+        assert_eq!(count, 20, "only normal opening moves fit through the army");
+    }
 }

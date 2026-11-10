@@ -572,7 +572,23 @@ impl GameUi {
             self.remote_focus = None;
             self.transition_queue.clear();
             if let Some(first) = &self.transition
-                && let Some(next_t) = mv.direction.step(first.to_t)
+                && let Some(next_t) = self
+                    .engine
+                    .history()
+                    .worldlines()
+                    .get(mv.pid.wid)
+                    .and_then(|line| {
+                        line.windows(3)
+                            .find(|states| {
+                                states[0].t == mv.t
+                                    && temporal_chess_engine::model::PieceId::from_state(
+                                        &states[0], mv.pid.wid,
+                                    ) == mv.pid
+                                    && states[1].t == first.to_t
+                            })
+                            .map(|states| states[2].t)
+                    })
+                    .or_else(|| mv.direction.step(first.to_t))
                 && let Some(second) =
                     BoardTransition::between(&self.engine, &self.engine, first.to_t, next_t, None)
             {

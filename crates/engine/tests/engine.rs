@@ -503,3 +503,58 @@ fn orthodox_opening_has_four_hundred_two_ply_sequences() {
     }
     assert_eq!(leaves, 400);
 }
+
+#[test]
+fn check_does_not_restrict_moves_and_royal_capture_still_ends_game() {
+    let mut engine = Engine::from_worldlines(
+        vec![
+            vec![State::new(
+                PieceKind::K { moved: false },
+                Color::White,
+                Sq(4, 0),
+            )],
+            vec![State::new(
+                PieceKind::R { moved: false },
+                Color::White,
+                Sq(7, 0),
+            )],
+            vec![State::new(
+                PieceKind::K { moved: false },
+                Color::Black,
+                Sq(0, 7),
+            )],
+            vec![State::new(
+                PieceKind::R { moved: false },
+                Color::Black,
+                Sq(4, 7),
+            )],
+        ],
+        Color::White,
+    )
+    .unwrap();
+    assert!(engine.checks(Color::White).unwrap().is_check());
+    let moves = engine.possible_moves(0, 0).unwrap();
+    assert!(
+        moves.iter().any(|mv| mv.sq == Sq(4, 1) && !mv.to_past()),
+        "king may enter an attacked square"
+    );
+    assert!(
+        moves
+            .iter()
+            .any(|mv| mv.castling() == Some(Castling::Short)),
+        "check does not forbid castling"
+    );
+    play(&mut engine, Sq(7, 0), Sq(7, 1));
+    assert!(
+        engine.outcome().is_none(),
+        "leaving check does not itself lose"
+    );
+    play(&mut engine, Sq(4, 7), Sq(4, 0));
+    assert_eq!(
+        engine.outcome(),
+        Some(temporal_chess_engine::engine::GameOutcome::Victory {
+            winner: Color::Black,
+            reason: temporal_chess_engine::engine::WinReason::KingCaptured,
+        })
+    );
+}

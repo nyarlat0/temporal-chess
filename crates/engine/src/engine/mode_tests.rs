@@ -21,7 +21,10 @@ fn inverted_continuation_stops_on_first_own_board() {
         assert_eq!(endpoint.t, boundary);
         assert!(endpoint.rights.ordinary);
         assert!(endpoint.prolongate().is_none());
-        assert!(endpoint.step(TimeDirection::Past).is_none());
+        assert_eq!(
+            endpoint.step(TimeDirection::Past).map(|s| s.t),
+            if color == Color::Black { Some(0) } else { None }
+        );
         assert_eq!(
             endpoint.step(TimeDirection::Future).unwrap().t,
             boundary + 1

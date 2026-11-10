@@ -392,3 +392,204 @@ fn collision_policy_covers_colors_directions_and_future_knowledge() {
         ]
     );
 }
+
+#[test]
+fn castling_separates_source_participants_from_destination_occupancy() {
+    use crate::board::Board;
+    let king = PieceView::from_state(
+        &State::new(PieceKind::K { moved: false }, Color::White, Sq(4, 0)),
+        0,
+        0,
+    );
+    let rook = PieceView::from_state(
+        &State::new(PieceKind::R { moved: false }, Color::White, Sq(7, 0)),
+        1,
+        0,
+    );
+    let mut source = Board::empty(10);
+    source.add_piece(king);
+    source.add_piece(rook);
+    let destination = Board::empty(11);
+    let moves = |source: &Board, destination: &Board| {
+        king.castling_moves_with_attacks(destination, source, |_| false)
+    };
+    assert_eq!(
+        moves(&source, &destination),
+        vec![(Sq(6, 0), Castling::Short)]
+    );
+    let mut missing = source.clone();
+    missing.remove_piece(rook.sq);
+    let mut future_rook = destination.clone();
+    future_rook.add_piece(rook);
+    assert!(moves(&missing, &future_rook).is_empty());
+    for kind in [PieceKind::R { moved: true }, PieceKind::B] {
+        let mut invalid = missing.clone();
+        invalid.add_piece(PieceView { kind, ..rook });
+        assert!(moves(&invalid, &destination).is_empty());
+    }
+    for x in [5, 6] {
+        let mut blocked = destination.clone();
+        blocked.add_piece(PieceView {
+            sq: Sq(x, 0),
+            ..rook
+        });
+        assert!(moves(&source, &blocked).is_empty());
+    }
+    for x in [4, 5, 6] {
+        assert!(
+            king.castling_moves_with_attacks(&destination, &source, |sq| sq == Sq(x, 0))
+                .is_empty()
+        );
+    }
+    let moved_king = PieceView {
+        kind: PieceKind::K { moved: true },
+        ..king
+    };
+    assert!(
+        moved_king
+            .castling_moves_with_attacks(&destination, &source, |_| false)
+            .is_empty()
+    );
+}
+
+#[test]
+fn backward_castling_requires_two_inverted_participants_and_can_be_cancelled() {
+    for color in [Color::White, Color::Black] {
+        for side in [Castling::Short, Castling::Long] {
+            for (king_inv, rook_inv) in [(false, false), (false, true), (true, false), (true, true)]
+            {
+                let y = if color == Color::White { 0 } else { 7 };
+                let rook_x = if side == Castling::Short { 7 } else { 0 };
+                let t = 4 + color.first_board();
+                let states = [
+                    (PieceKind::K { moved: false }, 4, king_inv),
+                    (PieceKind::R { moved: false }, rook_x, rook_inv),
+                ]
+                .into_iter()
+                .map(|(kind, x, inverted)| {
+                    let mut state = State::new(kind, color, Sq(x, y));
+                    state.t = t;
+                    state.fut_seen = t;
+                    state.inverted = inverted;
+                    state.rights.ordinary = true;
+                    let mut next = state.prolongate().unwrap();
+                    next.rights.ordinary = false;
+                    vec![state, next]
+                })
+                .collect();
+                let mut engine = Engine::from_worldlines(states, color).unwrap();
+                let castle = engine
+                    .possible_moves(0, 0)
+                    .unwrap()
+                    .into_iter()
+                    .find(|mv| mv.castling() == Some(side) && mv.to_past());
+                assert_eq!(
+                    castle.is_some(),
+                    king_inv && rook_inv,
+                    "{color:?} {side:?} king={king_inv} rook={rook_inv}"
+                );
+                if let Some(castle) = castle {
+                    engine.apply_new_mv(castle).unwrap();
+                    let arrival = engine.get_piv(1, 1).unwrap();
+                    assert_eq!(arrival.t, t - 1);
+                    assert_eq!(
+                        arrival.sq,
+                        Sq(if side == Castling::Short { 5 } else { 3 }, y)
+                    );
+                    engine.undo_last_mv(arrival).unwrap();
+                    engine.reconcile().unwrap();
+                    assert!(!engine.history.moves.contains_key(&castle.id()));
+                    for (wid, x) in [(0, 4), (1, rook_x)] {
+                        let restored = engine.get_piv(wid, 1).unwrap();
+                        assert_eq!(restored.sq, Sq(x, y));
+                        assert!(restored.inverted);
+                        assert_eq!(
+                            restored.kind,
+                            if wid == 0 {
+                                PieceKind::K { moved: false }
+                            } else {
+                                PieceKind::R { moved: false }
+                            }
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn cancelling_boundary_move_removes_its_automatic_turn() {
+    for color in [Color::White, Color::Black] {
+        let mut engine = Engine::with_start(
+            Default::default(),
+            crate::model::StartingPosition::TimeWar { separation: 3 },
+        )
+        .unwrap();
+        engine.turn = color;
+        let (from_t, t, x, y, direction) = if color == Color::White {
+            (0, 2, 6, 0, TimeDirection::Future)
+        } else {
+            (3, 1, 6, 7, TimeDirection::Past)
+        };
+        let piece = *engine.board(from_t).unwrap().get_piece(x, y).unwrap();
+        engine.skip_ordinary(Engine::piece_at(piece), t).unwrap();
+        let piece = *engine.board(t).unwrap().get_piece(x, y).unwrap();
+        let mv = engine
+            .possible_moves(piece.origin, piece.age)
+            .unwrap()
+            .into_iter()
+            .find(|mv| {
+                mv.direction == direction
+                    && mv.sq == Sq(5, if color == Color::White { 2 } else { 5 })
+            })
+            .unwrap();
+        engine.apply_new_mv(mv).unwrap();
+        let line = &engine.history.worldlines[piece.origin];
+        assert_eq!(line[piece.age + 2].t, t);
+        assert_ne!(line[piece.age + 2].inverted, piece.inverted);
+        engine.undo_mv(mv.id()).unwrap();
+        engine.reconcile().unwrap();
+        let line = &engine.history.worldlines[piece.origin];
+        assert_eq!(line.len(), piece.age + 1);
+        assert!(line[piece.age].rights.ordinary);
+        assert_eq!(line[piece.age].inverted, piece.inverted);
+    }
+}
+
+#[test]
+fn black_rebounds_at_zero_in_standard_game_without_bouncing_idle_piece() {
+    let mut knight = State::new(PieceKind::N, Color::Black, Sq(6, 7));
+    knight.t = 1;
+    knight.fut_seen = 1;
+    knight.inverted = true;
+    knight.rights.ordinary = true;
+    let mut idle = knight.clone();
+    idle.x = 1;
+    let mut engine = Engine::from_worldlines(
+        vec![
+            vec![knight],
+            vec![idle],
+            vec![State::new(
+                PieceKind::P { moved: false },
+                Color::White,
+                Sq(0, 1),
+            )],
+        ],
+        Color::Black,
+    )
+    .unwrap();
+    let mv = engine
+        .possible_moves(0, 0)
+        .unwrap()
+        .into_iter()
+        .find(|mv| mv.to_past() && mv.sq == Sq(5, 5))
+        .unwrap();
+    engine.apply_new_mv(mv).unwrap();
+    let line = &engine.history.worldlines[0];
+    assert_eq!(line.iter().map(|s| s.t).collect::<Vec<_>>(), vec![1, 0, 1]);
+    assert!(!line[2].inverted && line[2].rights.ordinary);
+    assert_eq!(line[2].loop_turn, 1);
+    assert_eq!(engine.history.worldlines[1].len(), 1);
+    assert!(engine.history.worldlines[1][0].rights.ordinary);
+}

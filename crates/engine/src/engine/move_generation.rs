@@ -20,7 +20,7 @@ impl Engine {
                 ..piece
             });
             return piece
-                .castling_moves_with_attacks(&board, |_| false)
+                .castling_moves_with_attacks(&board, &board, |_| false)
                 .contains(&(mv.sq, castling));
         }
         if matches!(piece.kind, PieceKind::P { .. }) && piece.sq.0 != mv.sq.0 {
@@ -69,6 +69,30 @@ impl Engine {
             None => return Err(EngineErr::AbsentBoard),
         };
         let mut board = selected.clone();
+        // In Time War a frontier board already exists but is still empty.
+        // Include the ordinary endpoints that this shared turn will continue,
+        // using their own orientation (not the mover's chosen direction).
+        if self.history.starting_position.fixed_end().is_some() {
+            for (wid, line) in self.history.worldlines.iter().enumerate() {
+                let age = line.len() - 1;
+                let state = &line[age];
+                let idle = PieceView::from_state(state, wid, age);
+                if wid == piece.origin
+                    || state.t != piece.t
+                    || !state.alive
+                    || !state.rights.ordinary
+                    || !idle.same_order(piece)
+                {
+                    continue;
+                }
+                if let Some(next) = self.passive_successor(state)
+                    && Some(next.t) == target_time
+                    && board.is_empty(idle.sq)
+                {
+                    board.add_piece(PieceView::from_state(&next, wid, age + 1));
+                }
+            }
+        }
         if target_exists {
             let state = &self.history.worldlines[piece.origin][piece.age];
             if let Some(next) = state.step(direction) {
@@ -123,20 +147,7 @@ impl Engine {
     /// Candidate movement is evaluated on t+1 (or t when absent) / t-1.
     /// Turn ownership and the reason a piece may act are checked by the command.
     pub fn possible_moves(&self, wid: usize, age: usize) -> Result<Vec<Move>, EngineErr> {
-        let mut moves = self.candidate_moves(wid, age)?;
-        let piece = self.get_piv(wid, age).ok_or(EngineErr::WrongPiece)?;
-        if piece.can_move()
-            && piece.is_movable()
-            && self
-                .history
-                .worldlines
-                .iter()
-                .flat_map(|line| line.iter())
-                .any(|s| s.alive && s.color == piece.color && matches!(s.kind, PieceKind::K { .. }))
-        {
-            moves.retain(|mv| self.inverse_safe(*mv, piece.color));
-        }
-        Ok(moves)
+        self.candidate_moves(wid, age)
     }
 
     /// Capture marker for a candidate, using exactly the same temporal target
@@ -295,11 +306,19 @@ impl Engine {
             for square in piece.basic_moves(&board) {
                 directed.push(candidate(square, direction, MoveEffect::Normal));
             }
-            // Preserve the prototype's forward-only castling rule.
-            if direction == TimeDirection::Future {
-                for (square, castling) in piece.castling_moves_with_attacks(&board, |sq| {
-                    self.spatially_attacked(source, piece.color.opposite(), sq)
-                }) {
+            // Backward castling requires both participants to already be inverted.
+            if direction == TimeDirection::Future || piece.inverted {
+                for (square, castling) in
+                    piece.castling_moves_with_attacks(&board, source, |_| false)
+                {
+                    let rook_x = if castling == Castling::Long { 0 } else { 7 };
+                    if direction == TimeDirection::Past
+                        && !source
+                            .get_piece(rook_x, piece.sq.1)
+                            .is_some_and(|rook| rook.inverted)
+                    {
+                        continue;
+                    }
                     directed.push(candidate(square, direction, MoveEffect::Castle(castling)));
                 }
             }
@@ -335,47 +354,8 @@ impl Engine {
                     })
                     .collect();
             }
-            directed.retain(|mv| {
-                // Royal capture ends the game. In particular an available
-                // inverse capture cannot be suppressed by an unrelated check.
-                if board.get_piece(mv.sq.0, mv.sq.1).is_some_and(|target| {
-                    target.color != piece.color && matches!(target.kind, PieceKind::K { .. })
-                }) {
-                    return true;
-                }
-                // Geometry and occupancy use the actual destination board, but
-                // forward king safety must not import future-only attackers.
-                // Simulate the spatial move in the source position, both when
-                // offering a new move and when revalidating a recorded one.
-                // A backward move still checks the existing past destination.
-                let mut pretend = if direction == TimeDirection::Future {
-                    let mut known = source.clone();
-                    known.remove_piece(piece.sq);
-                    known
-                } else {
-                    board.clone()
-                };
-                pretend.remove_piece(mv.sq);
-                if let Some(square) = mv.en_passant() {
-                    pretend.remove_piece(square);
-                }
-                if let Some(castling) = mv.castling() {
-                    let rook_x = match castling {
-                        Castling::Long => 0,
-                        Castling::Short => 7,
-                    };
-                    if let Some(rook) = pretend.get_piece(rook_x, piece.sq.1).copied() {
-                        pretend.remove_piece(rook.sq);
-                        pretend.add_piece(rook.apply_mv(*mv));
-                    }
-                }
-                pretend.add_piece(piece.apply_mv(*mv));
-                pretend
-                    .pieces
-                    .iter()
-                    .filter(|p| p.color == piece.color && matches!(p.kind, PieceKind::K { .. }))
-                    .all(|king| !self.spatially_attacked(&pretend, piece.color.opposite(), king.sq))
-            });
+            // Checks are informational: even a move leaving the king attacked
+            // can repair its history after reconciliation. Never reject it here.
             moves.extend(directed);
         }
         Ok(moves)
@@ -412,68 +392,5 @@ impl Engine {
             // not invent a new opportunity to move.
             !piece.inverted && next.t > self.history.horizon() && next.alive && next.is_movable()
         })
-    }
-
-    pub(super) fn inverse_safe(&self, mv: Move, side: Color) -> bool {
-        // A future-only threat is information the player does not yet have.
-        // This extra restriction applies only when a king is visibly checked
-        // on the board from which this command is played.
-        let Some(source) = self.board(mv.t) else {
-            return false;
-        };
-        let visible_check = source.pieces().iter().any(|king| {
-            king.color == side
-                && matches!(king.kind, PieceKind::K { .. })
-                && self.spatially_attacked(source, side.opposite(), king.sq)
-        });
-        if !visible_check {
-            return true;
-        }
-        let mut probe = self.clone();
-        probe.turn = side;
-        probe.history.calculation.interactive = false;
-        let result = probe.apply_move_inner(mv).and_then(|()| {
-            probe.turn = side.opposite();
-            probe.reconcile()
-        });
-        match result {
-            Err(EngineErr::InfLoop) => true, // The existing paradox loss still applies.
-            Err(_) => false,
-            Ok(()) => {
-                if probe
-                    .history
-                    .worldlines
-                    .iter()
-                    .flat_map(|line| line.iter())
-                    .any(|s| !s.alive && s.color != side && matches!(s.kind, PieceKind::K { .. }))
-                {
-                    return true; // Actual royal capture already ends the game.
-                }
-                // Inspect only the opponent's immediate reply board, not all
-                // threats against unrelated royal occurrences in history.
-                // Replies may capture backward on t or forward on t+2 (with
-                // the usual source-board fallback when t+2 does not yet exist).
-                let Some(reply_board) = mv.t.checked_add(1).and_then(|t| probe.board(t)) else {
-                    return true;
-                };
-                for enemy in reply_board
-                    .pieces()
-                    .iter()
-                    .filter(|piece| piece.color != side && piece.can_move() && piece.is_movable())
-                {
-                    let Ok(replies) = probe.candidate_moves(enemy.origin, enemy.age) else {
-                        return false;
-                    };
-                    if replies.into_iter().any(|reply| {
-                        probe.move_capture_target(reply).is_some_and(|victim| {
-                            victim.color == side && matches!(victim.kind, PieceKind::K { .. })
-                        })
-                    }) {
-                        return false;
-                    }
-                }
-                true
-            }
-        }
     }
 }

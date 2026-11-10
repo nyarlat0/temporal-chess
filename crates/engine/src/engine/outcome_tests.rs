@@ -2,7 +2,7 @@ use super::*;
 use crate::model::{Color, PieceKind, Sq};
 
 #[test]
-fn reported_bishop_opening_is_checkmate_without_an_automatic_pass() {
+fn reported_bishop_opening_keeps_turn_and_allows_replies_under_check() {
     for interactive in [false, true] {
         let mut engine = Engine::default();
         if interactive {
@@ -22,13 +22,7 @@ fn reported_bishop_opening_is_checkmate_without_an_automatic_pass() {
         assert_eq!(engine.history.horizon(), 6);
         assert_eq!(engine.turn(), Color::White);
         assert!(engine.checks(Color::White).unwrap().is_check());
-        assert_eq!(
-            engine.outcome(),
-            Some(GameOutcome::Victory {
-                winner: Color::Black,
-                reason: WinReason::Checkmate
-            })
-        );
+        assert!(engine.outcome().is_none());
         roundtrip(&engine);
     }
 }
@@ -240,7 +234,7 @@ fn ordinary_royal_capture_finishes_and_locks_the_game() {
 }
 
 #[test]
-fn king_escape_exposing_its_past_is_rejected_but_existing_inverse_capture_still_wins() {
+fn king_escape_exposing_its_past_is_allowed_and_inverse_capture_still_wins() {
     let mut king = line(PieceKind::K { moved: true }, Color::White, Sq(0, 0), 2);
     king[0].rights.ordinary = true; // A real past reserve prevents immediate mate in this fixture.
     king[2].rights.ordinary = true;
@@ -254,8 +248,7 @@ fn king_escape_exposing_its_past_is_rejected_but_existing_inverse_capture_still_
         Color::White,
     )
     .unwrap();
-    // Construct the attempted escape directly: the new command API must refuse
-    // it even though the arrival square is spatially safe.
+    // An unsafe escape is playable; only the actual capture loses.
     engine.turn = Color::White;
     let mv = Move {
         pid: PieceId::from_state(&engine.history.worldlines[0][2], 0),
@@ -264,14 +257,8 @@ fn king_escape_exposing_its_past_is_rejected_but_existing_inverse_capture_still_
         direction: TimeDirection::Future,
         effect: MoveEffect::Normal,
     };
-    let before = engine.clone();
-    assert!(!engine.possible_moves(0, 2).unwrap().contains(&mv));
-    assert_eq!(engine.apply_new_mv(mv), Err(EngineErr::WrongMove));
-    assert_eq!(engine, before);
-    // A pre-existing unsafe history still permits the actual royal capture.
-    engine.apply_move_inner(mv).unwrap();
-    engine.turn = Color::Black;
-    engine.reconcile().unwrap();
+    assert!(engine.possible_moves(0, 2).unwrap().contains(&mv));
+    engine.apply_new_mv(mv).unwrap();
     assert_eq!(engine.turn(), Color::Black);
     assert_eq!(engine.get_piv(0, 3).unwrap().sq, Sq(1, 0));
     assert!(!engine.get_piv(2, 3).unwrap().inverted);
@@ -335,7 +322,7 @@ fn two_sides_without_active_pieces_wait_without_a_false_stalemate_or_loop() {
 }
 
 #[test]
-fn interposing_only_on_the_future_board_cannot_leave_a_past_royal_capture() {
+fn interposing_only_on_the_future_board_is_allowed_despite_past_threat() {
     let mut bishop = line(PieceKind::B, Color::White, Sq(1, 3), 3);
     bishop[2].rights.ordinary = true;
     let mut rook = line(PieceKind::R { moved: true }, Color::Black, Sq(0, 7), 3);
@@ -356,10 +343,8 @@ fn interposing_only_on_the_future_board_cannot_leave_a_past_royal_capture() {
         .into_iter()
         .find(|mv| mv.direction == TimeDirection::Future && mv.sq == Sq(0, 4))
         .unwrap();
-    assert!(!engine.possible_moves(2, 2).unwrap().contains(&mv));
-    let before = engine.clone();
-    assert_eq!(engine.apply_new_mv(mv), Err(EngineErr::WrongMove));
-    assert_eq!(engine, before);
+    assert!(engine.possible_moves(2, 2).unwrap().contains(&mv));
+    engine.apply_new_mv(mv).unwrap();
 }
 
 #[test]
@@ -700,13 +685,7 @@ fn an_inverted_wait_extends_the_line_without_preserving_a_future_copy() {
 }
 
 #[test]
-fn a_paradoxical_knight_reply_does_not_prevent_checkmate() {
+fn checked_bishop_opening_has_other_playable_replies() {
     let (engine, _) = crate::record::GameRecord::load("NOLAN-CHESS 2\ncausal_gaps off\nmove 0 11:0:0 d2 d4 + normal\nmove 1 28:1:0 e7 e5 + normal\nmove 2 6:2:0 g1 f3 + normal\nmove 3 21:3:0 f8 b4 + normal\n").unwrap();
-    assert_eq!(
-        engine.outcome(),
-        Some(GameOutcome::Victory {
-            winner: Color::Black,
-            reason: WinReason::Checkmate,
-        })
-    );
+    assert!(engine.outcome().is_none());
 }

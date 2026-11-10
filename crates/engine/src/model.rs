@@ -379,13 +379,16 @@ impl State {
     /// Creates a new state from the last in the world line,
     /// OR from last in the time-loop
     pub fn prolongate(&self) -> Option<Self> {
+        if self.inverted && self.t <= self.color.first_board() {
+            return None;
+        }
         self.step(TimeDirection::from_inverted(self.inverted))
     }
 
     /// Advance subjective age by one tick in the requested direction.
     /// A pivot is crossed strictly after its time, and only going forward.
     pub fn step(&self, direction: TimeDirection) -> Option<Self> {
-        if direction == TimeDirection::Past && self.t <= self.color.first_board() {
+        if direction == TimeDirection::Past && self.t == 0 {
             return None;
         }
         let mut new_st = self.shallow_cp();
