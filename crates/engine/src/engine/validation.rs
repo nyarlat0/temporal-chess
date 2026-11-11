@@ -147,6 +147,11 @@ impl Engine {
     /// Reach a fixed point of collision resolution, move validation and revival.
     /// Cycle detection uses the source state, including dead pieces and move records.
     pub(super) fn reconcile(&mut self) -> Result<(), EngineErr> {
+        self.reconcile_with_auto_wait(true)
+    }
+
+    pub(super) fn reconcile_with_auto_wait(&mut self, auto: bool) -> Result<(), EngineErr> {
+        let mut auto_waited = Vec::new();
         let mut seen = Vec::new();
         loop {
             if seen.contains(&self.history) {
@@ -176,6 +181,12 @@ impl Engine {
                     .filter(|&t| t <= limit)
                     .filter_map(|t| self.make_board(t).ok().map(|board| (t, board)))
                     .collect();
+                if auto && self.auto_wait_blocked_endpoint(&mut auto_waited)? {
+                    continue;
+                }
+                if self.acknowledge_auto_wait(&auto_waited)? {
+                    continue;
+                }
                 return Ok(());
             }
             if self.reconcile_boards()? == ValidRes::HistChanged {
@@ -186,6 +197,12 @@ impl Engine {
             // Only reaction flags changed. Reproject them for all board times.
             self.update_bufs()?;
             if self.build_boards(self.history.horizon)? == ValidRes::HistChanged {
+                continue;
+            }
+            if self.acknowledge_auto_wait(&auto_waited)? {
+                continue;
+            }
+            if auto && self.auto_wait_blocked_endpoint(&mut auto_waited)? {
                 continue;
             }
             return Ok(());

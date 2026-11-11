@@ -147,6 +147,9 @@ fn sidebar(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, art: &P
             });
         });
     let rules = game.engine.history().rules();
+    if rules.wait_before_move {
+        ui.small(crate::tr!("Ожидание до хода", "Wait before move"));
+    }
     if rules.chain_info_activation {
         ui.small(crate::tr!("Цепная инфоактивация", "Chain info-activation"));
     }
@@ -515,13 +518,19 @@ fn details_panel(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, a
                 for row in range {
                     let index = commands.len() - 1 - row;
                     let (text, t) = match commands[index] {
-                        temporal_chess_engine::record::Command::Move { mv, from } => (
+                        temporal_chess_engine::record::Command::Move { mv, from }
+                        | temporal_chess_engine::record::Command::MoveAndWait {
+                            mv, from, ..
+                        } => (
                             format!(
                                 "({}, {}) -> ({}, {})",
                                 square_name(from),
                                 mv.t,
                                 square_name(mv.sq),
-                                mv.direction.step(mv.t).unwrap_or(mv.t)
+                                commands[index]
+                                    .wait_until()
+                                    .or_else(|| mv.direction.step(mv.t))
+                                    .unwrap_or(mv.t)
                             ),
                             mv.t,
                         ),
@@ -562,8 +571,7 @@ fn details_panel(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, a
                                         ..Default::default()
                                     },
                                 );
-                                if let temporal_chess_engine::record::Command::Move { mv, .. } =
-                                    commands[index]
+                                if let Some(mv) = commands[index].spatial_move()
                                     && mv.to_past() != piece.inverted
                                 {
                                     let (arrow, response) = ui.allocate_exact_size(
@@ -671,6 +679,14 @@ pub fn starting_position_controls(
 }
 
 pub fn rule_controls(ui: &mut egui::Ui, rules: &mut temporal_chess_engine::model::GameRules) {
+    ui.checkbox(
+        &mut rules.wait_before_move,
+        crate::tr!("Разрешить ожидание до хода", "Enable wait before move"),
+    )
+    .on_hover_text(crate::tr!(
+        "Разрешает отдельно протаскивать фигуры. Авто-ожидание заблокированных фигур выключается.",
+        "Allows separate waits before moving. Disables automatic waits for blocked pieces."
+    ));
     ui.checkbox(
         &mut rules.chain_info_activation,
         crate::tr!("Цепная инфоактивация", "Chain info-activation"),

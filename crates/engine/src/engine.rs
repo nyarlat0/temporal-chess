@@ -6,6 +6,7 @@ mod collisions;
 mod history;
 mod initialization;
 mod move_generation;
+mod move_wait;
 mod outcome;
 mod skipping;
 mod temporal;

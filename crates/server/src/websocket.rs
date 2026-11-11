@@ -179,6 +179,7 @@ async fn handle_client_message(
             side,
             chain_info_activation,
             global_reaction_reset,
+            wait_before_move,
         } => {
             if !check_handshake(protocol, authenticated, sender) {
                 return;
@@ -189,6 +190,7 @@ async fn handle_client_message(
                     side,
                     chain_info_activation,
                     global_reaction_reset,
+                    wait_before_move,
                     &engine_revision,
                     time_war_separation,
                 )
@@ -211,6 +213,7 @@ async fn handle_client_message(
                             pending: ready.pending,
                             chain_info_activation: ready.chain_info_activation,
                             global_reaction_reset: ready.global_reaction_reset,
+                            wait_before_move: ready.wait_before_move,
                             time_war_separation: ready.time_war_separation,
                             created: true,
                             game_id: ready.auth.game_id.clone(),
@@ -270,6 +273,7 @@ async fn handle_client_message(
                             pending: ready.pending,
                             chain_info_activation: ready.chain_info_activation,
                             global_reaction_reset: ready.global_reaction_reset,
+                            wait_before_move: ready.wait_before_move,
                             time_war_separation: ready.time_war_separation,
                             created: false,
                             game_id: ready.auth.game_id.clone(),
@@ -484,6 +488,7 @@ mod tests {
                     engine_revision: hash.clone(),
                     chain_info_activation: false,
                     global_reaction_reset: false,
+                    wait_before_move: false,
                     side: SidePreference::White,
                 },
             )

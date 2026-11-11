@@ -32,6 +32,7 @@ pub(crate) struct ReadyGame {
     pub(crate) pending: Option<CommandProposal>,
     pub(crate) chain_info_activation: bool,
     pub(crate) global_reaction_reset: bool,
+    pub(crate) wait_before_move: bool,
     pub(crate) time_war_separation: Option<usize>,
     pub(crate) auth: AuthenticatedPlayer,
     pub(crate) revision: u64,
@@ -75,6 +76,7 @@ struct RoomRow {
     causal_gaps: bool, // Legacy rooms with this removed option cannot be replayed.
     chain_info_activation: bool,
     global_reaction_reset: bool,
+    wait_before_move: bool,
     time_war_separation: Option<i32>,
     game_id: String,
     white_token_hash: Option<Vec<u8>>,
@@ -92,6 +94,7 @@ impl Repository {
         preference: SidePreference,
         chain_info_activation: bool,
         global_reaction_reset: bool,
+        wait_before_move: bool,
         engine_revision: &str,
         time_war_separation: Option<usize>,
     ) -> Result<ReadyGame, RepositoryError> {
@@ -114,8 +117,8 @@ impl Repository {
             };
             let result = sqlx::query(
                 "INSERT INTO games
-                    (game_id, white_token_hash, black_token_hash, revision, chain_info_activation, global_reaction_reset, engine_revision, time_war_separation)
-                 VALUES ($1, $2, $3, 0, $4, $5, $6, $7)
+                    (game_id, white_token_hash, black_token_hash, revision, chain_info_activation, global_reaction_reset, engine_revision, time_war_separation, wait_before_move)
+                 VALUES ($1, $2, $3, 0, $4, $5, $6, $7, $8)
                  ON CONFLICT (game_id) DO NOTHING",
             )
             .bind(&game_id)
@@ -125,6 +128,7 @@ impl Repository {
             .bind(global_reaction_reset)
             .bind(engine_revision)
             .bind(time_war_separation.map(|n| n as i32))
+            .bind(wait_before_move)
             .execute(&self.pool)
             .await?;
             if result.rows_affected() == 1 {
@@ -133,6 +137,7 @@ impl Repository {
                     pending: None,
                     chain_info_activation,
                     global_reaction_reset,
+                    wait_before_move,
                     time_war_separation,
                     auth: AuthenticatedPlayer {
                         game_id,
@@ -170,7 +175,7 @@ impl Repository {
         let game_id = normalize_game_id(game_id)?;
         let mut transaction = self.pool.begin().await?;
         let mut room = sqlx::query_as::<_, RoomRow>(
-            "SELECT game_id, white_token_hash, black_token_hash, revision, causal_gaps, chain_info_activation, global_reaction_reset, engine_revision, time_war_separation
+            "SELECT game_id, white_token_hash, black_token_hash, revision, causal_gaps, chain_info_activation, global_reaction_reset, engine_revision, time_war_separation, wait_before_move
              FROM games WHERE game_id = $1 FOR UPDATE",
         )
         .bind(&game_id)
@@ -267,6 +272,7 @@ impl Repository {
             pending,
             chain_info_activation: room.chain_info_activation,
             global_reaction_reset: room.global_reaction_reset,
+            wait_before_move: room.wait_before_move,
             time_war_separation: room.time_war_separation.map(|n| n as usize),
             auth: AuthenticatedPlayer {
                 game_id: room.game_id,
@@ -511,7 +517,7 @@ async fn locked_room(
     game_id: &str,
 ) -> Result<RoomRow, RepositoryError> {
     sqlx::query_as::<_, RoomRow>(
-        "SELECT game_id, white_token_hash, black_token_hash, revision, causal_gaps, chain_info_activation, global_reaction_reset, engine_revision, time_war_separation
+        "SELECT game_id, white_token_hash, black_token_hash, revision, causal_gaps, chain_info_activation, global_reaction_reset, engine_revision, time_war_separation, wait_before_move
          FROM games WHERE game_id = $1 FOR UPDATE",
     )
     .bind(game_id)

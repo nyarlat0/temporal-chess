@@ -106,6 +106,14 @@ impl Engine {
 
     /// Build a scenario from worldlines, validating and projecting it immediately.
     pub fn from_worldlines(worldlines: Vec<Vec<State>>, turn: Color) -> Result<Self, EngineErr> {
+        Self::from_worldlines_with_rules(worldlines, turn, GameRules::default())
+    }
+
+    pub fn from_worldlines_with_rules(
+        worldlines: Vec<Vec<State>>,
+        turn: Color,
+        rules: GameRules,
+    ) -> Result<Self, EngineErr> {
         let horizon = worldlines
             .iter()
             .flatten()
@@ -114,7 +122,7 @@ impl Engine {
             .unwrap_or(0);
         Self::from_history(
             History {
-                rules: Default::default(),
+                rules,
                 starting_position: StartingPosition::Standard,
                 worldlines: worldlines.into_iter().map(Into::into).collect(),
                 moves: BTreeMap::new(),

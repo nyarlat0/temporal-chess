@@ -39,6 +39,7 @@ fn offered_moves_are_accepted_through_temporal_play_and_replay() {
             ..Default::default()
         },
         GameRules {
+            wait_before_move: false,
             chain_info_activation: true,
             global_reaction_reset: true,
         },
@@ -245,5 +246,69 @@ fn checked_side_can_use_rook_information_reaction_to_capture_knight() {
             .apply(&mut next, Command::Move { mv, from: p.sq })
             .unwrap();
         assert_eq!(GameRecord::load(&journal.to_text()).unwrap().0, next);
+        for until in engine.possible_move_waits(mv).unwrap() {
+            let mut next = engine.clone();
+            let mut journal = record.clone();
+            journal
+                .apply(
+                    &mut next,
+                    Command::MoveAndWait {
+                        mv,
+                        from: p.sq,
+                        until,
+                    },
+                )
+                .unwrap();
+            assert_eq!(GameRecord::load(&journal.to_text()).unwrap().0, next);
+        }
+    }
+}
+
+#[test]
+fn every_offered_wait_is_an_atomic_playable_command_in_time_war() {
+    use temporal_chess_engine::model::StartingPosition;
+    for wait_before_move in [false, true] {
+        let rules = GameRules {
+            wait_before_move,
+            ..Default::default()
+        };
+        let start = StartingPosition::TimeWar { separation: 5 };
+        let mut engine = Engine::with_start(rules, start)
+            .unwrap()
+            .with_interactive_calculation()
+            .unwrap();
+        let mut record = GameRecord::with_start(rules, start);
+        for _ in 0..4 {
+            let mut continuation = None;
+            let mut count = 0;
+            for piece in engine.move_sources() {
+                for mv in engine.possible_moves(piece.origin, piece.age).unwrap() {
+                    for until in engine.possible_move_waits(mv).unwrap_or_default() {
+                        let mut next = engine.clone();
+                        let mut journal = record.clone();
+                        let command = Command::MoveAndWait {
+                            mv,
+                            from: piece.sq,
+                            until,
+                        };
+                        journal
+                            .apply(&mut next, command)
+                            .unwrap_or_else(|e| panic!("{command}: {e}\n{}", record.to_text()));
+                        assert_eq!(journal.commands().len(), record.commands().len() + 1);
+                        assert_eq!(GameRecord::load(&journal.to_text()).unwrap().0, next);
+                        if next.outcome().is_none() {
+                            continuation = Some((next, journal));
+                        }
+                        count += 1;
+                    }
+                }
+            }
+            assert!(count > 0);
+            let Some((next, journal)) = continuation else {
+                break;
+            };
+            engine = next;
+            record = journal;
+        }
     }
 }

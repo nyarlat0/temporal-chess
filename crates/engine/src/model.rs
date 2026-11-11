@@ -47,9 +47,10 @@ impl StartingPosition {
     }
 }
 
-/// Independent, immutable options for a game. Both are off in standard play.
+/// Independent, immutable options for a game. All are off by default.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct GameRules {
+    pub wait_before_move: bool,
     pub chain_info_activation: bool,
     pub global_reaction_reset: bool,
 }

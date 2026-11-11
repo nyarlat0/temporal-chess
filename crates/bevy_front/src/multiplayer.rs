@@ -103,7 +103,7 @@ fn validate_proposal(
     let command: Command = proposal.command.parse()?;
     // Bounds belong to the clients too: the server does not parse chess commands.
     let source = match command {
-        Command::Move { mv, .. } => Some(mv.source()),
+        Command::Move { mv, .. } | Command::MoveAndWait { mv, .. } => Some(mv.source()),
         Command::Advance { source, to_t, .. } => {
             if to_t > engine.history().horizon() {
                 return Err("board is unavailable".into());
@@ -333,6 +333,7 @@ pub fn poll(
                         time_war_separation: game.online.starting_position.fixed_end(),
                         chain_info_activation: game.online.rules.chain_info_activation,
                         global_reaction_reset: game.online.rules.global_reaction_reset,
+                        wait_before_move: game.online.rules.wait_before_move,
                         protocol: PROTOCOL_VERSION,
                         side: game.online.preference,
                     }
@@ -447,7 +448,8 @@ pub fn poll(
         && !game.facing.animating()
     {
         if let Some((revision, text)) = client.accepted.front()
-            && let Ok(Command::Move { mv, .. }) = text.parse::<Command>()
+            && let Ok(command) = text.parse::<Command>()
+            && let Some(mv) = command.spatial_move()
             && game.online.side != Some(game.engine.turn())
         {
             if game.remote_focus != Some(*revision) {
@@ -505,6 +507,7 @@ fn receive(client: &mut MultiplayerClient, game: &mut GameUi, message: ServerMes
             pending,
             chain_info_activation,
             global_reaction_reset,
+            wait_before_move,
             game_id,
             player_token,
             side,
@@ -535,6 +538,7 @@ fn receive(client: &mut MultiplayerClient, game: &mut GameUi, message: ServerMes
             game.online.rules = GameRules {
                 chain_info_activation,
                 global_reaction_reset,
+                wait_before_move,
             };
             let key = token_key(&game.online.endpoint, &game_id);
             client.tokens.insert(key.clone(), player_token.clone());

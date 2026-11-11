@@ -73,6 +73,7 @@ fn inversion_discards_future_in_every_reaction_mode() {
             let mut engine =
                 Engine::from_worldlines(vec![timeline(Color::White, 8)], Color::White).unwrap();
             engine.history.rules = crate::model::GameRules {
+                wait_before_move: false,
                 chain_info_activation,
                 global_reaction_reset,
             };
@@ -97,6 +98,7 @@ fn records_keep_independent_rules_and_reject_removed_gap_mode() {
     for chain_info_activation in [false, true] {
         for global_reaction_reset in [false, true] {
             let rules = crate::model::GameRules {
+                wait_before_move: false,
                 chain_info_activation,
                 global_reaction_reset,
             };

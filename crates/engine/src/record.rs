@@ -9,10 +9,15 @@ use crate::{
 };
 use std::fmt;
 
-const HEADER: &str = "NOLAN-CHESS 4";
+const HEADER: &str = "NOLAN-CHESS 5";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Command {
+    MoveAndWait {
+        mv: Move,
+        from: Sq,
+        until: usize,
+    },
     Move {
         mv: Move,
         from: Sq,
@@ -94,19 +99,17 @@ impl GameRecord {
             .enumerate()
             .rev()
             .find_map(|(index, command)| {
-                if let Command::Move { mv, .. } = command {
-                    Some((
+                command.spatial_move().map(|mv| {
+                    (
                         Self {
                             rules: self.rules,
                             starting_position: self.starting_position,
                             commands: self.commands[..index].to_vec(),
                             pieces: self.pieces[..index].to_vec(),
                         },
-                        *mv,
-                    ))
-                } else {
-                    None
-                }
+                        mv,
+                    )
+                })
             })
     }
 
@@ -123,7 +126,7 @@ impl GameRecord {
             ));
         }
         let piece = match command {
-            Command::Move { mv, .. } => {
+            Command::Move { mv, .. } | Command::MoveAndWait { mv, .. } => {
                 engine.piece_state(mv.source()).map(|state| RecordedPiece {
                     kind: state.kind,
                     color: state.color,
@@ -140,6 +143,10 @@ impl GameRecord {
             Command::Continue | Command::DeclineReactions => None,
         };
         match command {
+            Command::MoveAndWait { mv, from, until } => {
+                check_source(engine, mv.source(), from)?;
+                *engine = engine.after_move_with_wait(mv, until)?;
+            }
             Command::DeclineReactions => engine.decline_reactions()?,
             Command::Move { mv, from } => {
                 check_source(engine, mv.source(), from)?;
@@ -177,6 +184,14 @@ impl GameRecord {
                 "off"
             },
         );
+        text.push_str(&format!(
+            "wait_before_move {}\n",
+            if self.rules.wait_before_move {
+                "on"
+            } else {
+                "off"
+            }
+        ));
         match self.starting_position {
             StartingPosition::Standard => text.push_str("start standard\n"),
             StartingPosition::TimeWar { separation } => {
@@ -206,13 +221,19 @@ impl GameRecord {
             .next()
             .ok_or_else(|| error(1, "Пустая запись партии".into()))?;
         let rules = match header {
-            "NOLAN-CHESS 1" => GameRules::default(),
+            "NOLAN-CHESS 1" => GameRules {
+                wait_before_move: true,
+                ..Default::default()
+            },
             "NOLAN-CHESS 2" => {
                 let (line, mode) = lines
                     .next()
                     .ok_or_else(|| error(line, "Не указан режим causal_gaps".into()))?;
                 match mode {
-                    "causal_gaps off" => GameRules::default(),
+                    "causal_gaps off" => GameRules {
+                        wait_before_move: true,
+                        ..Default::default()
+                    },
                     "causal_gaps on" => {
                         return Err(error(line, "Режим причинных разрывов удалён".into()));
                     }
@@ -224,7 +245,7 @@ impl GameRecord {
                     }
                 }
             }
-            "NOLAN-CHESS 3" | HEADER => {
+            "NOLAN-CHESS 3" | "NOLAN-CHESS 4" | HEADER => {
                 let mut read_option = |name: &str| -> Result<bool, RecordError> {
                     let (n, value) = lines
                         .next()
@@ -238,18 +259,23 @@ impl GameRecord {
                 GameRules {
                     chain_info_activation: read_option("chain_info_activation")?,
                     global_reaction_reset: read_option("global_reaction_reset")?,
+                    wait_before_move: if header == HEADER {
+                        read_option("wait_before_move")?
+                    } else {
+                        true
+                    },
                 }
             }
             _ => {
                 return Err(error(
                     line,
                     format!(
-                        "Ожидался заголовок {HEADER}, NOLAN-CHESS 3, NOLAN-CHESS 2 или NOLAN-CHESS 1"
+                        "Ожидался заголовок {HEADER}, NOLAN-CHESS 4, NOLAN-CHESS 3, NOLAN-CHESS 2 или NOLAN-CHESS 1"
                     ),
                 ));
             }
         };
-        let starting_position = if header == HEADER {
+        let starting_position = if matches!(header, HEADER | "NOLAN-CHESS 4") {
             let (n, start) = lines
                 .next()
                 .ok_or_else(|| error(line, "Missing starting position".into()))?;
@@ -311,6 +337,9 @@ fn piece(id: PieceId) -> String {
 impl fmt::Display for Command {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
+            Command::MoveAndWait { mv, from, until } => {
+                write!(f, "{} wait {}", Command::Move { mv, from }, until)
+            }
             Command::Move { mv, from } => {
                 let effect = match mv.effect {
                     MoveEffect::Normal => "normal".into(),
@@ -384,6 +413,16 @@ fn parse_piece(text: &str) -> Result<PieceId, String> {
 }
 fn parse(text: &str) -> Result<Command, String> {
     let fields: Vec<_> = text.split_whitespace().collect();
+    if let ["move", _, _, _, _, _, _, "wait", until] = fields.as_slice() {
+        let Command::Move { mv, from } = parse(&fields[..7].join(" "))? else {
+            unreachable!()
+        };
+        return Ok(Command::MoveAndWait {
+            mv,
+            from,
+            until: number(until)?,
+        });
+    }
     match fields.as_slice() {
         ["move", t, pid, from, to, direction, effect] => {
             let direction = match *direction {
@@ -426,6 +465,21 @@ fn parse(text: &str) -> Result<Command, String> {
         ["continue"] => Ok(Command::Continue),
         ["decline"] => Ok(Command::DeclineReactions),
         _ => Err("Неизвестная команда или неверное количество полей".into()),
+    }
+}
+
+impl Command {
+    pub fn spatial_move(self) -> Option<Move> {
+        match self {
+            Self::Move { mv, .. } | Self::MoveAndWait { mv, .. } => Some(mv),
+            _ => None,
+        }
+    }
+    pub fn wait_until(self) -> Option<usize> {
+        match self {
+            Self::MoveAndWait { until, .. } => Some(until),
+            _ => None,
+        }
     }
 }
 

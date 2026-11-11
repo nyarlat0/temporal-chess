@@ -4,6 +4,9 @@ impl Engine {
     /// Structurally valid waiting destinations for UI previews. Just like
     /// possible_moves, final causality checks are performed by the command.
     pub fn possible_skips(&self, source: PieceAt) -> Vec<usize> {
+        if !self.history.rules.wait_before_move {
+            return Vec::new();
+        }
         self.timeline_times()
             .filter(|&t| t != source.t)
             .filter(|&t| {
@@ -16,6 +19,9 @@ impl Engine {
     /// Does not consume a player's turn or another piece's rights. Staying at
     /// the same time cannot relinquish a right.
     pub fn skip_ordinary(&mut self, source: PieceAt, to_t: usize) -> Result<(), EngineErr> {
+        if !self.history.rules.wait_before_move {
+            return Err(EngineErr::WrongMove);
+        }
         self.transaction(|candidate| candidate.skip_with_information(source, to_t))
     }
 
@@ -27,7 +33,18 @@ impl Engine {
         source: PieceAt,
         to_t: usize,
     ) -> Result<(), EngineErr> {
+        self.skip_with_information_mode(source, to_t, true, self.turn)
+    }
+
+    pub(super) fn skip_with_information_mode(
+        &mut self,
+        source: PieceAt,
+        to_t: usize,
+        auto: bool,
+        reconcile_turn: crate::model::Color,
+    ) -> Result<(), EngineErr> {
         self.skip_inner(source, to_t)?;
+        self.turn = reconcile_turn;
         let location = self.projection.pieces[&source];
         let mut traversed = Vec::new();
         for state in &self.history.worldlines[location.wid][location.age..] {
@@ -40,7 +57,7 @@ impl Engine {
             }
         }
         loop {
-            self.reconcile()?;
+            self.reconcile_with_auto_wait(auto)?;
             let mut learned = false;
             for id in &traversed {
                 if let Some(location) = self.projection.pieces.get(id) {

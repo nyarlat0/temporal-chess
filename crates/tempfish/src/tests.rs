@@ -21,6 +21,15 @@ fn commands(engine: &Engine) -> Vec<Command> {
                 .into_iter()
                 .map(|mv| Command::Move { mv, from: piece.sq }),
         );
+        for mv in engine.possible_moves(piece.origin, piece.age).unwrap() {
+            for until in engine.possible_move_waits(mv).unwrap_or_default() {
+                commands.push(Command::MoveAndWait {
+                    mv,
+                    from: piece.sq,
+                    until,
+                });
+            }
+        }
         let source = PieceAt {
             piece: PieceId::from_piv(piece),
             t: piece.t,
@@ -74,6 +83,7 @@ fn node_budget_is_bounded_and_selected_action_replays_in_every_ruleset() {
     for chain_info_activation in [false, true] {
         for global_reaction_reset in [false, true] {
             let rules = GameRules {
+                wait_before_move: false,
                 chain_info_activation,
                 global_reaction_reset,
             };
@@ -100,9 +110,13 @@ fn alpha_beta_matches_exhaustive_search_including_same_side_free_actions() {
         vec![start, middle, last]
     };
     for turn in [Color::White, Color::Black] {
-        let engine = Engine::from_worldlines(
+        let engine = Engine::from_worldlines_with_rules(
             vec![line(Color::White, Sq(1, 0)), line(Color::Black, Sq(6, 7))],
             turn,
+            GameRules {
+                wait_before_move: true,
+                ..Default::default()
+            },
         )
         .unwrap();
         if turn == Color::White {

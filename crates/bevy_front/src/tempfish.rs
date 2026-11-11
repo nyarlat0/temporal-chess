@@ -320,7 +320,7 @@ pub fn poll(mut runner: ResMut<Runner>, mut game: ResMut<GameUi>, mut contexts: 
             game.viewport.scroll = None;
             return;
         }
-        if let Command::Move { mv, .. } = pending.command {
+        if let Some(mv) = pending.command.spatial_move() {
             if !pending.focused {
                 pending.focused = true;
                 game.remote_focus = Some(u64::MAX);

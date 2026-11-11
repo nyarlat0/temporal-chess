@@ -21,7 +21,7 @@ async fn two_client_consensus_persists_and_commits_exactly_once() {
     let hash = "a".repeat(64);
     let new_hash = "b".repeat(64);
     let white = repo
-        .create_game(SidePreference::White, false, false, &hash, None)
+        .create_game(SidePreference::White, false, false, false, &hash, None)
         .await
         .unwrap()
         .auth;
@@ -192,18 +192,20 @@ async fn two_client_consensus_keeps_independent_room_rules() {
     for chain in [false, true] {
         for global in [false, true] {
             let created = repo
-                .create_game(SidePreference::White, chain, global, &hash, Some(9))
+                .create_game(SidePreference::White, chain, global, chain, &hash, Some(9))
                 .await
                 .unwrap();
             assert_eq!(
                 (created.chain_info_activation, created.global_reaction_reset),
                 (chain, global)
             );
+            assert_eq!(created.wait_before_move, chain);
             let joined = repo
                 .join_game(&created.auth.game_id, None, &hash, false)
                 .await
                 .unwrap();
             assert_eq!(joined.time_war_separation, Some(9));
+            assert_eq!(joined.wait_before_move, chain);
             assert_eq!(
                 (joined.chain_info_activation, joined.global_reaction_reset),
                 (chain, global)
@@ -218,6 +220,7 @@ async fn two_client_consensus_keeps_independent_room_rules() {
                 .await
                 .unwrap();
             assert_eq!(resumed.time_war_separation, Some(9));
+            assert_eq!(resumed.wait_before_move, chain);
             assert_eq!(
                 (resumed.chain_info_activation, resumed.global_reaction_reset),
                 (chain, global)

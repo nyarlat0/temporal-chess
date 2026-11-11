@@ -30,6 +30,7 @@ pub fn handle(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState) {
         game.import_open = false;
         game.confirm_restart = false;
         game.promotion.clear();
+        game.move_wait_until = None;
         game.overlapping.clear();
         shell.help_open = false;
     }

@@ -28,7 +28,7 @@ if (!isMainThread) {
         terminate() { this.worker.terminate(); }
     };
     const pool = await import(new URL('tempfish-pool.js', location));
-    const header = 'NOLAN-CHESS 4\nchain_info_activation off\nglobal_reaction_reset off\n';
+    const header = 'NOLAN-CHESS 5\nchain_info_activation off\nglobal_reaction_reset off\nwait_before_move off\n';
     async function wait(id, predicate) {
         const deadline = Date.now() + 60000;
         for (;;) {
@@ -63,6 +63,9 @@ if (!isMainThread) {
         const id = pool.start(header + 'start time_war 5\n', 50, 1);
         const final = await wait(id, r => r.done);
         assert.ok(final.nodes <= 50 && final.command);
+        const combined = pool.start(header + 'start time_war 9\nmove 0 12:0:0 e2 e4 + normal wait 6\n', 50, 1);
+        const combinedReply = await wait(combined, r => r.done);
+        assert.ok(combinedReply.command && combinedReply.nodes <= 50);
         console.log('Worker/WASM checks passed: parallel search, replay reuse, global budgets, cancellation, stale replies, Time War.');
     } finally { pool.shutdown(); }
 }

@@ -228,11 +228,20 @@ impl Search {
         if let Some(&piece) = frame.sources.get(frame.generated) {
             frame.generated += 1;
             match frame.engine.possible_moves(piece.origin, piece.age) {
-                Ok(moves) => frame.commands.extend(
-                    moves
-                        .into_iter()
-                        .map(|mv| Command::Move { mv, from: piece.sq }),
-                ),
+                Ok(moves) => {
+                    for mv in moves {
+                        frame.commands.push(Command::Move { mv, from: piece.sq });
+                        if let Ok(times) = frame.engine.possible_move_waits(mv) {
+                            for until in times {
+                                frame.commands.push(Command::MoveAndWait {
+                                    mv,
+                                    from: piece.sq,
+                                    until,
+                                });
+                            }
+                        }
+                    }
+                }
                 Err(error) => {
                     self.result
                         .first_error
@@ -240,7 +249,7 @@ impl Search {
                     self.result.rejected += 1;
                 }
             }
-            if piece.rights.ordinary {
+            if piece.rights.ordinary && frame.engine.history().rules().wait_before_move {
                 let source = PieceAt {
                     piece: PieceId::from_piv(piece),
                     t: piece.t,
@@ -325,7 +334,7 @@ impl Search {
         let next = match next {
             Ok(next) => next,
             Err(error) => {
-                if matches!(command, Command::Move { .. }) {
+                if command.spatial_move().is_some() {
                     self.result.first_error.get_or_insert(error);
                 }
                 self.result.rejected += 1;
@@ -407,14 +416,18 @@ impl Search {
 }
 
 fn successor(engine: &Engine, command: Command) -> Result<Engine, String> {
-    if let Command::Move { mv, from } = command {
+    if let Command::Move { mv, from } | Command::MoveAndWait { mv, from, .. } = command {
         if !engine
             .piece_state(mv.source())
             .is_some_and(|s| s.alive && s.x == from.0 && s.y == from.1)
         {
             return Err("piece occurrence is absent or cannot act".into());
         }
-        return engine.after_move(mv).map_err(|e| e.to_string());
+        return match command.wait_until() {
+            Some(until) => engine.after_move_with_wait(mv, until),
+            None => engine.after_move(mv),
+        }
+        .map_err(|e| e.to_string());
     }
     let mut next = engine.clone();
     GameRecord::new(next.history().rules())
@@ -452,7 +465,7 @@ fn value(kind: PieceKind) -> i32 {
 }
 fn priority(engine: &Engine, command: Command) -> i32 {
     match command {
-        Command::Move { mv, .. } => {
+        Command::Move { mv, .. } | Command::MoveAndWait { mv, .. } => {
             let target_time = mv.direction.step(mv.t).unwrap_or(mv.t);
             let target = engine.board(target_time).or_else(|| engine.board(mv.t));
             let square = mv.en_passant().unwrap_or(mv.sq);

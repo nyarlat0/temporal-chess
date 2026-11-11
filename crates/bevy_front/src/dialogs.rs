@@ -158,6 +158,7 @@ pub fn draw(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState, art:
             if icon_button(ui, Icon::Close, crate::tr!("Отмена", "Cancel"), false, true).clicked()
             {
                 game.promotion.clear();
+                game.move_wait_until = None;
             }
         });
     }

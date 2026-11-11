@@ -282,7 +282,7 @@ impl Worker {
                 Err(e) => {
                     report.completed = true;
                     report.rejected = 1;
-                    if matches!(command, Command::Move { .. }) {
+                    if command.spatial_move().is_some() {
                         report.error = Some(e);
                     }
                     return report;

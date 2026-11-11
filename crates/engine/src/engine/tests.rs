@@ -522,7 +522,10 @@ fn backward_castling_requires_two_inverted_participants_and_can_be_cancelled() {
 fn cancelling_boundary_move_removes_its_automatic_turn() {
     for color in [Color::White, Color::Black] {
         let mut engine = Engine::with_start(
-            Default::default(),
+            crate::model::GameRules {
+                wait_before_move: true,
+                ..Default::default()
+            },
             crate::model::StartingPosition::TimeWar { separation: 3 },
         )
         .unwrap();

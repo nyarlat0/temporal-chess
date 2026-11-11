@@ -890,7 +890,7 @@ fn visible_moves(game: &GameUi, t: usize) -> Vec<(temporal_chess_engine::model::
         .iter()
         .rev()
         .filter_map(|command| {
-            if let Command::Move { mv, from } = command
+            if let Command::Move { mv, from } | Command::MoveAndWait { mv, from, .. } = command
                 && mv.t == t
                 && game
                     .engine

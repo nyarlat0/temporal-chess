@@ -307,6 +307,7 @@ fn reaction_modes_are_independent_and_preserve_ordinary_reserves() {
         for global_reaction_reset in [false, true] {
             let mut engine = observed(true);
             engine.history.rules = crate::model::GameRules {
+                wait_before_move: false,
                 chain_info_activation,
                 global_reaction_reset,
             };

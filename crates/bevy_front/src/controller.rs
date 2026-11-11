@@ -41,6 +41,7 @@ pub struct Selection {
     pub captures: Vec<(Move, PieceView)>,
     pub fatal_captures: Vec<(Move, PieceView)>,
     pub skips: Vec<usize>,
+    pub waits: Vec<(Move, usize)>,
 }
 
 impl Selection {
@@ -48,7 +49,11 @@ impl Selection {
         self.moves
             .iter()
             .copied()
-            .filter(|mv| mv.direction == self.direction && self.piece.t == t && mv.sq == square)
+            .filter(|mv| {
+                mv.direction == self.direction
+                    && (self.piece.t == t || self.waits.contains(&(*mv, t)))
+                    && mv.sq == square
+            })
             .collect()
     }
 
@@ -72,6 +77,7 @@ pub struct GameUi {
     pub worldline_selected: Option<usize>,
     pub inspected: Option<PieceAt>,
     pub promotion: Vec<Move>,
+    pub move_wait_until: Option<usize>,
     pub overlapping: Vec<PieceView>,
     pub notice: crate::i18n::Message,
     pub is_error: bool,
@@ -153,6 +159,7 @@ impl Default for GameUi {
             worldline_selected: None,
             inspected: None,
             promotion: Vec::new(),
+            move_wait_until: None,
             overlapping: Vec::new(),
             notice: crate::message!(
                 "Выберите фигуру. Здесь играют вдвоём за одним компьютером.",
@@ -244,6 +251,7 @@ impl GameUi {
     pub fn clear_selection(&mut self) {
         self.selected = None;
         self.promotion.clear();
+        self.move_wait_until = None;
         self.overlapping.clear();
         self.inspected = None;
     }
@@ -359,6 +367,7 @@ impl GameUi {
     }
 
     pub fn choose(&mut self, piece: PieceView) {
+        self.move_wait_until = None;
         if self.worldline_mode {
             self.worldline_selected = Some(piece.origin);
             self.overlapping.clear();
@@ -399,6 +408,16 @@ impl GameUi {
                             && identity(*victim) == identity(*target)
                     })
                 });
+                let waits = moves
+                    .iter()
+                    .flat_map(|&mv| {
+                        self.engine
+                            .possible_move_waits(mv)
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(move |t| (mv, t))
+                    })
+                    .collect();
                 self.selected = Some(Selection {
                     piece,
                     direction: TimeDirection::from_inverted(piece.inverted),
@@ -406,9 +425,10 @@ impl GameUi {
                     captures,
                     fatal_captures,
                     skips,
+                    waits,
                 });
                 self.message(
-                    crate::message!("ЛКМ — ход или ожидание. СКМ — направление. ПКМ — снять выделение.", "Left click: move or wait. Middle click: direction. Right click: clear selection."),
+                    crate::message!("Ход на исходной доске — без ожидания. На другой подсвеченной доске — ход с ожиданием до неё. СКМ — направление.", "Move on the source board without waiting, or choose a highlighted board to move and wait until then. Middle click: direction."),
                     false,
                 );
             }
@@ -483,6 +503,7 @@ impl GameUi {
             && let Some(selection) = &self.selected
         {
             let moves = selection.moves_to(t, sq);
+            self.move_wait_until = (t != selection.piece.t && !moves.is_empty()).then_some(t);
             if moves.len() > 1 {
                 self.promotion = moves;
                 return;
@@ -549,17 +570,22 @@ impl GameUi {
 
     pub fn play(&mut self, mv: Move) {
         if let Some(state) = self.engine.piece_state(mv.source()) {
-            self.submit(Command::Move {
-                mv,
-                from: Sq(state.x, state.y),
-            });
+            let from = Sq(state.x, state.y);
+            let command = match self.move_wait_until.take() {
+                Some(until) => Command::MoveAndWait { mv, from, until },
+                None => Command::Move { mv, from },
+            };
+            self.submit(command);
         }
     }
 
     /// Shared local/server-confirmed application path. Network requests never
     /// mutate the game optimistically: only acknowledged commands reach here.
     pub fn apply_confirmed(&mut self, command: Command) -> Result<(), String> {
-        let before = matches!(command, Command::Move { .. }).then(|| self.engine.clone());
+        let before = command
+            .spatial_move()
+            .is_some()
+            .then(|| self.engine.clone());
         let result = self.record.apply(&mut self.engine, command);
         self.finish_confirmed(command, before, result)
     }
@@ -567,7 +593,10 @@ impl GameUi {
     /// Publish the isolated result already approved by this client, after both
     /// players have voted and the server has durably appended the command.
     pub fn apply_prepared(&mut self, command: Command, engine: Engine, record: GameRecord) {
-        let before = matches!(command, Command::Move { .. }).then(|| self.engine.clone());
+        let before = command
+            .spatial_move()
+            .is_some()
+            .then(|| self.engine.clone());
         self.engine = engine;
         self.record = record;
         let _ = self.finish_confirmed(command, before, Ok(()));
@@ -580,7 +609,7 @@ impl GameUi {
         result: Result<(), temporal_chess_engine::engine::EngineErr>,
     ) -> Result<(), String> {
         let error = result.as_ref().err().map(ToString::to_string);
-        if let (Ok(()), Command::Move { mv, .. }, Some(before)) = (&result, command, before) {
+        if let (Ok(()), Some(mv), Some(before)) = (&result, command.spatial_move(), before) {
             self.transition = if matches!(
                 self.engine.outcome(),
                 Some(GameOutcome::Victory {
@@ -593,7 +622,7 @@ impl GameUi {
                 BoardTransition::new(&before, &self.engine, mv)
             };
             self.playback_turn = Some(before.turn());
-            self.playback_destination = mv.direction.step(mv.t);
+            self.playback_destination = command.wait_until().or_else(|| mv.direction.step(mv.t));
             self.remote_focus = None;
             self.transition_queue.clear();
             if let Some(first) = &self.transition
@@ -699,7 +728,7 @@ impl GameUi {
                 .record
                 .commands()
                 .iter()
-                .any(|command| matches!(command, Command::Move { .. }))
+                .any(|command| command.spatial_move().is_some())
     }
 
     pub fn undo_last_move(&mut self) {
@@ -897,6 +926,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn selecting_destination_board_submits_one_move_with_wait() {
+        let mut game = GameUi::with_start(
+            GameRules::default(),
+            StartingPosition::TimeWar { separation: 9 },
+        );
+        let before = game.engine.clone();
+        game.click_square(0, Sq(4, 1));
+        let selection = game.selected.as_ref().unwrap();
+        assert!(selection.skips.is_empty());
+        assert!(
+            selection
+                .moves_to(6, Sq(4, 3))
+                .iter()
+                .any(|mv| !mv.to_past())
+        );
+        assert_eq!(game.engine, before);
+        game.click_square(6, Sq(4, 3));
+        assert!(matches!(
+            game.record.commands(),
+            [Command::MoveAndWait { until: 6, .. }]
+        ));
+        assert_eq!(game.engine.turn(), Color::Black);
+        assert_eq!(game.playback_destination, Some(6));
+        assert!(game.engine.board(6).unwrap().get_piece(4, 3).is_some());
+        assert_eq!(
+            GameRecord::load(&game.record.to_text()).unwrap().0,
+            game.engine
+        );
+    }
+
+    #[test]
     fn camera_prefers_active_move_arrival_after_both_transitions() {
         let (engine, record) = GameRecord::load("NOLAN-CHESS 2\ncausal_gaps off\nmove 0 12:0:0 e2 e4 + normal\nmove 1 27:1:0 d7 d5 + normal\nmove 2 6:2:0 g1 f3 + normal\nmove 3 18:3:0 c8 f5 - normal\nmove 4 6:4:0 f3 e5 - normal\nmove 1 18:3:1 f5 h3 + normal\nadvance 2 6:4:1 e5 0").unwrap();
         let mut game = GameUi {
@@ -1052,12 +1112,20 @@ mod tests {
             line.push(line.last().unwrap().prolongate().unwrap());
         }
         let mut game = GameUi {
-            engine: Engine::from_worldlines(vec![line], Color::White).unwrap(),
+            engine: Engine::from_worldlines_with_rules(
+                vec![line],
+                Color::White,
+                GameRules {
+                    wait_before_move: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap(),
             ..GameUi::default()
         };
         game.jump_to = None;
         game.click_square(2, Sq(1, 0));
-        assert_eq!(game.selected.as_ref().unwrap().skips, [3, 4, 5, 6]);
+        assert_eq!(game.selected.as_ref().unwrap().skips, [4, 6]);
         game.click_square(4, Sq(1, 0));
         assert_eq!(game.engine.turn(), Color::White);
         assert_eq!(game.engine.history().horizon(), 6);

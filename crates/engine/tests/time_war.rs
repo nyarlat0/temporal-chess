@@ -6,7 +6,10 @@ use temporal_chess_engine::{
 
 fn game(n: usize) -> Engine {
     Engine::with_start(
-        GameRules::default(),
+        GameRules {
+            wait_before_move: true,
+            ..Default::default()
+        },
         StartingPosition::TimeWar { separation: n },
     )
     .unwrap()
@@ -285,6 +288,7 @@ fn starting_position_and_options_round_trip_even_without_commands() {
     for chain in [false, true] {
         for global in [false, true] {
             let rules = GameRules {
+                wait_before_move: false,
                 chain_info_activation: chain,
                 global_reaction_reset: global,
             };
