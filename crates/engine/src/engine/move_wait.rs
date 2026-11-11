@@ -102,7 +102,13 @@ impl Engine {
                     .moves
                     .get(&MoveId::from_state(state))
                     .is_some_and(|mv| mv.pid.wid == wid)
-                || !self.candidate_moves(wid, age)?.is_empty()
+            {
+                continue;
+            }
+            // An occupied causal slot cannot provide an independent move for
+            // this endpoint, even if its spatial geometry offers destinations.
+            if !self.history.moves.contains_key(&MoveId::from_state(state))
+                && !self.candidate_moves(wid, age)?.is_empty()
             {
                 continue;
             }
@@ -350,6 +356,43 @@ mod tests {
                 Color::White,
             );
             assert_eq!(engine.history.worldlines[0].len(), 2);
+        }
+    }
+
+    #[test]
+    fn occupied_slot_auto_waits_a_mobile_endpoint_without_replacing_the_move() {
+        for wait_before_move in [false, true] {
+            let mut engine = Engine::new(GameRules {
+                wait_before_move,
+                ..Default::default()
+            });
+            let mv = engine
+                .possible_moves(12, 0)
+                .unwrap()
+                .into_iter()
+                .find(|mv| mv.sq == Sq(4, 3) && !mv.to_past())
+                .unwrap();
+            engine.apply_new_mv(mv).unwrap();
+            // A terminal reaction left behind on a board whose causal slot
+            // belongs to another piece, with perfectly usable knight geometry.
+            engine.history.worldlines[6].states.truncate(1);
+            engine.history.worldlines[6][0].rights.ordinary = true;
+            engine.update_bufs().unwrap();
+            engine.build_boards(engine.history.horizon).unwrap();
+            assert!(!engine.candidate_moves(6, 0).unwrap().is_empty());
+            let moves = engine.history.moves.clone();
+            let mut waited = Vec::new();
+            assert_eq!(
+                engine.auto_wait_blocked_endpoint(&mut waited).unwrap(),
+                !wait_before_move
+            );
+            let last = engine.history.worldlines[6].last().unwrap();
+            assert_eq!(last.t, usize::from(!wait_before_move));
+            assert_eq!((last.x, last.y), (6, 0));
+            assert_eq!(engine.history.moves, moves);
+            assert_eq!(engine.turn(), Color::Black);
+            engine.reconcile().unwrap();
+            assert_eq!(engine.history.moves, moves);
         }
     }
 

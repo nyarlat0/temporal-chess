@@ -554,6 +554,7 @@ pub fn panel(ui: &mut egui::Ui, game: &mut GameUi) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(target_arch = "wasm32"))]
     use temporal_chess_engine::record::GameRecord;
 
     #[test]

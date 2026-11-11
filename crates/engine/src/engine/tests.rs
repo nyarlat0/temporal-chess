@@ -386,10 +386,7 @@ fn collision_policy_covers_colors_directions_and_future_knowledge() {
     informed.fut_seen = 3;
     assert_eq!(
         plan(informed, mover, target),
-        vec![
-            KillFrom(ShortPieceId { wid: 1, age: 1 }),
-            KillFrom(ShortPieceId { wid: 0, age: 2 })
-        ]
+        vec![KillFrom(ShortPieceId { wid: 1, age: 1 })]
     );
 }
 

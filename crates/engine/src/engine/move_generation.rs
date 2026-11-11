@@ -231,7 +231,7 @@ impl Engine {
     /// is a consequence of that old move, not a new obstacle that cancels it.
     /// This adjustment belongs only to revalidation, never to newly offered moves.
     fn restore_lost_arrival(&self, piece: PieceView, recorded: Move, board: &mut Board) {
-        use super::collision_rules::{CollisionEffect, collision_effects};
+        use super::collision_rules::CollisionEffect;
         let line = &self.history.worldlines[piece.origin];
         let Some(arrival) = line.get(piece.age + 1) else {
             return;
@@ -248,12 +248,12 @@ impl Engine {
         let Some(winner) = board.get_piece(arrival.x, arrival.y).copied() else {
             return;
         };
-        let Some(collision) = self.track_collision(victim, winner) else {
+        let Some(effects) = self.encounter_effects(victim, winner) else {
             return;
         };
-        let killed_on_arrival = collision_effects(collision).iter().any(|effect| {
+        let killed_on_arrival = effects.iter().any(|effect| {
             matches!(effect, CollisionEffect::KillFrom(id)
-                if id.wid == victim.origin && id.age == victim.age)
+                if id.wid == victim.origin && id.age <= victim.age)
         });
         if !killed_on_arrival {
             return;

@@ -31,13 +31,7 @@ pub(super) fn collision_effects(collision: PieceCollision) -> Vec<CollisionEffec
         }
     } else if oncoming {
         if bf_collider.sq != collider.sq && bf_collider.knows_future() {
-            vec![
-                kill(collided),
-                KillFrom(ShortPieceId {
-                    wid: collider.origin,
-                    age: collider.age + 1,
-                }),
-            ]
+            vec![kill(collided)]
         } else {
             vec![kill(collider)]
         }
