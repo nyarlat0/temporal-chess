@@ -41,8 +41,9 @@ if (!isMainThread) {
     }
     try {
         let record = header + 'start standard\n';
-        for (let i = 0; i < 3; i++) {
-            const id = pool.start(record, 200, [1, 3, 6][i]);
+        // The final two turns keep the same pool and its analysis caches.
+        for (const threads of [1, 3, 6, 6]) {
+            const id = pool.start(record, 200, threads);
             const result = await wait(id, r => r.done);
             assert.ok(result.nodes <= 200);
             assert.ok(result.command);

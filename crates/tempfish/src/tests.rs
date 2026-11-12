@@ -402,3 +402,138 @@ fn single_clone_move_branch_matches_journal_and_preserves_root() {
         }
     }
 }
+
+#[test]
+fn rerooted_search_reuses_completed_depths_without_changing_scores() {
+    let line = |color, sq| {
+        let a = State::new(PieceKind::N, color, sq);
+        let b = a.prolongate().unwrap();
+        let c = b.prolongate().unwrap();
+        vec![a, b, c]
+    };
+    let root = Engine::from_worldlines(
+        vec![line(Color::White, Sq(1, 0)), line(Color::Black, Sq(6, 7))],
+        Color::White,
+    )
+    .unwrap();
+    let mut previous = Search::new(
+        root.clone(),
+        Limits {
+            depth: 3,
+            nodes: 100_000,
+        },
+    );
+    while !previous.is_done() {
+        previous.step();
+    }
+    assert_eq!(previous.completed_depth(), 3);
+    let next = successor(&root, previous.result().command.unwrap()).unwrap();
+    let cold = solve(&next, 2, 100_000);
+    let mut warm = Search::with_cache(
+        next.clone(),
+        Limits {
+            depth: 2,
+            nodes: 100_000,
+        },
+        previous.take_cache(),
+    );
+    while !warm.is_done() {
+        warm.step();
+    }
+    let warm = warm.result();
+    assert_eq!(warm.completed_depth, cold.completed_depth);
+    assert_eq!(warm.score, cold.score);
+    assert_eq!(warm.score, exhaustive(&next, 2, 0));
+    assert!(warm.cache_hits > 0);
+    assert!(warm.nodes < cold.nodes, "warm={warm:?}; cold={cold:?}");
+    assert_eq!(
+        successor(&next, warm.command.unwrap())
+            .map(|e| exhaustive(&e, 1, 1))
+            .unwrap(),
+        warm.score
+    );
+    eprintln!(
+        "re-root: cold {} nodes, warm {} nodes, {} hits",
+        cold.nodes, warm.nodes, warm.cache_hits
+    );
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn parallel_memory_survives_the_opponents_next_turn() {
+    use crate::parallel::{Memory, run, run_with_memory};
+    use std::sync::atomic::AtomicBool;
+    let root = Engine::default();
+    let stop = AtomicBool::new(false);
+    let mut memory = Memory::default();
+    let initial = run_with_memory(
+        root.clone(),
+        Limits {
+            depth: 2,
+            nodes: 100_000,
+        },
+        2,
+        &stop,
+        &mut memory,
+        |_| {},
+    );
+    assert_eq!(initial.completed_depth, 2);
+    let next = successor(&root, initial.command.unwrap()).unwrap();
+    assert_ne!(root.turn(), next.turn());
+    let limits = Limits {
+        depth: 1,
+        nodes: 100_000,
+    };
+    let warm = run_with_memory(next.clone(), limits, 2, &stop, &mut memory, |_| {});
+    let cold = run(next.clone(), limits, 2, &stop, |_| {});
+    assert_eq!(
+        (warm.completed_depth, warm.score),
+        (cold.completed_depth, cold.score)
+    );
+    assert!(
+        warm.cache_hits > cold.cache_hits,
+        "warm={warm:?}; cold={cold:?}"
+    );
+    assert!(successor(&next, warm.command.unwrap()).is_ok());
+}
+
+#[test]
+fn worker_reset_keeps_finished_nodes_from_an_interrupted_branch() {
+    use crate::parallel::{Work, Worker};
+    let engine = Engine::default();
+    let command = commands(&engine)[0];
+    let next = successor(&engine, command).unwrap();
+    let reply = commands(&next)[0];
+    let mut worker = Worker::new(engine.clone());
+    let interrupted = worker.run(
+        Work {
+            id: 1,
+            command: command.to_string(),
+            depth: 3,
+            alpha: -INF,
+            beta: INF,
+            nodes: 8,
+        },
+        || false,
+    );
+    assert!(!interrupted.completed);
+    // Reset also clears the old assignment: root coordinators reuse numeric IDs.
+    worker.reset(next.clone());
+    let report = worker.run(
+        Work {
+            id: 1,
+            command: reply.to_string(),
+            depth: 1,
+            alpha: -INF,
+            beta: INF,
+            nodes: 128,
+        },
+        || false,
+    );
+    assert!(report.completed);
+    assert_eq!(
+        report.score,
+        Some(evaluate(&successor(&next, reply).unwrap(), 1))
+    );
+    assert!(report.error.is_none());
+}

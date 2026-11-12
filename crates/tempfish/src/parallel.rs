@@ -51,9 +51,12 @@ pub struct Coordinator {
 }
 impl Coordinator {
     pub fn new(engine: Engine, limits: Limits) -> Self {
+        Self::with_cache(engine, limits, Cache::default())
+    }
+    pub fn with_cache(engine: Engine, limits: Limits, cache: Cache) -> Self {
         let maximizing = engine.turn() == Color::White;
         Self {
-            preparation: Search::new(engine, limits),
+            preparation: Search::with_cache(engine, limits, cache),
             commands: vec![],
             scores: vec![],
             order: vec![],
@@ -73,6 +76,9 @@ impl Coordinator {
             result: SearchResult::default(),
         }
     }
+    pub fn take_cache(&mut self) -> Cache {
+        self.preparation.take_cache()
+    }
     pub fn prepare_step(&mut self) {
         if self.prepared || self.done {
             return;
@@ -80,6 +86,22 @@ impl Coordinator {
         if self.preparation.root.outcome().is_some() {
             self.done = true;
             return;
+        }
+        // Preparation generates commands only; never finish a cached root
+        // score through Search::step (which would consume the root frame).
+        let frame = &mut self.preparation.stack[0];
+        if !frame.probed {
+            frame.probed = true;
+            if let Some(commands) = self
+                .preparation
+                .cache
+                .entry(frame.key, &frame.engine)
+                .and_then(|entry| entry.commands.as_ref())
+            {
+                frame.commands = commands.clone();
+                frame.generated = frame.sources.len();
+                self.result.cache_hits += 1;
+            }
         }
         if !self.preparation.stack[0].ordered {
             self.preparation.step();
@@ -235,13 +257,32 @@ pub struct Worker {
 }
 impl Worker {
     pub fn new(engine: Engine) -> Self {
+        Self::with_cache(engine, Cache::default())
+    }
+    pub fn with_cache(engine: Engine, mut cache: Cache) -> Self {
+        cache.next_turn();
         let key = engine.analysis_key();
         Self {
             root: Arc::new(engine),
             key,
-            cache: Cache::default(),
+            cache,
             search: None,
             id: None,
+        }
+    }
+    /// Keep completed subtrees even if the previous node budget interrupted
+    /// the surrounding branch. Work IDs belong only to the new root.
+    pub fn reset(&mut self, engine: Engine) {
+        self.cache = self.take_cache();
+        self.cache.next_turn();
+        self.key = engine.analysis_key();
+        self.root = Arc::new(engine);
+    }
+    pub fn take_cache(&mut self) -> Cache {
+        self.id = None;
+        match self.search.take() {
+            Some(mut search) => search.take_cache(),
+            None => std::mem::take(&mut self.cache),
         }
     }
     pub fn run(&mut self, work: Work, cancelled: impl Fn() -> bool) -> Report {
@@ -322,33 +363,67 @@ impl Worker {
     }
 }
 
+/// Bounded per-worker search state, carried between consecutive turns.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Default)]
+pub struct Memory {
+    preparation: Cache,
+    workers: Vec<Cache>,
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 pub fn run(
     engine: Engine,
     limits: Limits,
     threads: usize,
     stop: &std::sync::atomic::AtomicBool,
+    progress: impl FnMut(&SearchResult),
+) -> SearchResult {
+    run_with_memory(
+        engine,
+        limits,
+        threads,
+        stop,
+        &mut Memory::default(),
+        progress,
+    )
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn run_with_memory(
+    engine: Engine,
+    limits: Limits,
+    threads: usize,
+    stop: &std::sync::atomic::AtomicBool,
+    memory: &mut Memory,
     mut progress: impl FnMut(&SearchResult),
 ) -> SearchResult {
     use std::{
         sync::{atomic::Ordering, mpsc},
         time::Duration,
     };
-    let mut coordinator = Coordinator::new(engine.clone(), limits);
+    let mut coordinator = Coordinator::with_cache(
+        engine.clone(),
+        limits,
+        std::mem::take(&mut memory.preparation),
+    );
     while !coordinator.is_prepared() && !coordinator.is_done() && !stop.load(Ordering::Relaxed) {
         coordinator.prepare_step();
     }
     std::thread::scope(|scope| {
         let (tx, rx) = mpsc::channel();
         let mut senders = vec![];
+        let mut handles = vec![];
+        let mut caches = std::mem::take(&mut memory.workers).into_iter();
         for id in 0..threads.clamp(1, MAX_THREADS) {
             let (work_tx, work_rx) = mpsc::channel::<Work>();
             senders.push(work_tx);
             let tx = tx.clone();
             let root = engine.clone();
-            scope.spawn(move || {
+            let cache = caches.next().unwrap_or_default();
+            handles.push(scope.spawn(move || {
                 let engine_for_recovery = root.clone();
-                let mut worker = Worker::new(root);
+                let mut worker = Worker::with_cache(root, cache);
                 while let Ok(work) = work_rx.recv() {
                     if stop.load(Ordering::Relaxed) {
                         break;
@@ -375,7 +450,8 @@ pub fn run(
                         break;
                     }
                 }
-            });
+                worker.take_cache()
+            }));
         }
         drop(tx);
         while !coordinator.is_done() && !stop.load(Ordering::Relaxed) {
@@ -398,6 +474,11 @@ pub fn run(
             }
         }
         drop(senders);
+        memory.workers = handles
+            .into_iter()
+            .map(|h| h.join().unwrap_or_default())
+            .collect();
     });
+    memory.preparation = coordinator.take_cache();
     coordinator.result()
 }

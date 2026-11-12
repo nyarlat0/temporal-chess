@@ -122,11 +122,17 @@ impl BotState {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+type AnalysisMemory = tempfish::parallel::Memory;
+#[cfg(target_arch = "wasm32")]
+type AnalysisMemory = tempfish::Cache;
+
 struct Job {
+    memory: AnalysisMemory,
     root: Engine,
     settings: Settings,
     #[cfg(not(target_arch = "wasm32"))]
-    task: Task<SearchResult>,
+    task: Task<(SearchResult, AnalysisMemory)>,
     #[cfg(not(target_arch = "wasm32"))]
     stop: Arc<AtomicBool>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -153,6 +159,7 @@ impl Job {
         root: Engine,
         settings: Settings,
         record: &temporal_chess_engine::record::GameRecord,
+        mut memory: AnalysisMemory,
     ) -> Self {
         let limits = Limits {
             nodes: settings.nodes(root.turn()),
@@ -169,17 +176,26 @@ impl Job {
             let task = AsyncComputeTaskPool::get_or_init(TaskPool::new).spawn(async move {
                 let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     let threads = settings.worker_count();
-                    tempfish::parallel::run(position, limits, threads, &cancel, |result| {
-                        count.store(result.nodes, Ordering::Relaxed);
-                        completed.store(result.completed_depth as u64, Ordering::Relaxed);
-                    })
+                    tempfish::parallel::run_with_memory(
+                        position,
+                        limits,
+                        threads,
+                        &cancel,
+                        &mut memory,
+                        |result| {
+                            count.store(result.nodes, Ordering::Relaxed);
+                            completed.store(result.completed_depth as u64, Ordering::Relaxed);
+                        },
+                    )
                 }));
-                outcome.unwrap_or_else(|_| SearchResult {
+                let result = outcome.unwrap_or_else(|_| SearchResult {
                     first_error: Some("TempFish: engine panicked during search".into()),
                     ..Default::default()
-                })
+                });
+                (result, memory)
             });
             Self {
+                memory: Default::default(),
                 root,
                 settings,
                 task,
@@ -196,8 +212,11 @@ impl Job {
                 settings.worker_count() as u32,
             )
             .ok();
-            let search = web_job.is_none().then(|| Search::new(root.clone(), limits));
+            let search = web_job
+                .is_none()
+                .then(|| Search::with_cache(root.clone(), limits, std::mem::take(&mut memory)));
             Self {
+                memory,
                 root,
                 settings,
                 search,
@@ -213,7 +232,10 @@ impl Job {
             }
             state.nodes = self.nodes.load(Ordering::Relaxed);
             state.depth = self.depth.load(Ordering::Relaxed) as u8;
-            check_ready(&mut self.task)
+            check_ready(&mut self.task).map(|(result, memory)| {
+                self.memory = memory;
+                result
+            })
         }
         #[cfg(target_arch = "wasm32")]
         {
@@ -244,12 +266,13 @@ impl Job {
                     Err(_) => {
                         web::cancel(id);
                         self.web_job = None;
-                        self.search = Some(Search::new(
+                        self.search = Some(Search::with_cache(
                             self.root.clone(),
                             Limits {
                                 nodes: self.settings.nodes(self.root.turn()),
                                 ..Default::default()
                             },
+                            std::mem::take(&mut self.memory),
                         ));
                     }
                 }
@@ -264,7 +287,12 @@ impl Job {
             }
             state.nodes = search.nodes();
             state.depth = search.completed_depth();
-            search.is_done().then(|| search.result())
+            if search.is_done() {
+                self.memory = search.take_cache();
+                Some(search.result())
+            } else {
+                None
+            }
         }
     }
 }
@@ -276,6 +304,8 @@ struct Pending {
 }
 #[derive(Resource, Default)]
 pub struct Runner {
+    memory: AnalysisMemory,
+    record: Option<temporal_chess_engine::record::GameRecord>,
     job: Option<Job>,
     pending: Option<Pending>,
 }
@@ -353,10 +383,22 @@ pub fn poll(mut runner: ResMut<Runner>, mut game: ResMut<GameUi>, mut contexts: 
         game.bot.depth = 0;
         game.bot.move_now = false;
         game.clear_selection();
+        // A restart/import/undo starts a different search lineage. A normal
+        // bot turn (including paid waits) extends the existing command journal.
+        if !runner.record.as_ref().is_some_and(|old| {
+            old.rules() == game.record.rules()
+                && old.starting_position() == game.record.starting_position()
+                && game.record.commands().starts_with(old.commands())
+        }) {
+            runner.memory = Default::default();
+        }
+        runner.record = Some(game.record.clone());
+        let memory = std::mem::take(&mut runner.memory);
         runner.job = Some(Job::new(
             game.engine.clone(),
             game.bot.settings,
             &game.record,
+            memory,
         ));
     }
     game.bot.thinking = true;
@@ -365,7 +407,8 @@ pub fn poll(mut runner: ResMut<Runner>, mut game: ResMut<GameUi>, mut contexts: 
     }
     let result = runner.job.as_mut().unwrap().poll(&mut game.bot);
     if let Some(result) = result {
-        let job = runner.job.take().unwrap();
+        let mut job = runner.job.take().unwrap();
+        runner.memory = std::mem::take(&mut job.memory);
         game.bot.thinking = false;
         if let Some(started) = game.bot.started.take() {
             game.bot.elapsed = started.elapsed().as_secs_f64();
@@ -590,7 +633,12 @@ mod tests {
             threads: 2,
             ..Default::default()
         };
-        let mut job = Job::new(game.engine.clone(), settings, &game.record);
+        let mut job = Job::new(
+            game.engine.clone(),
+            settings,
+            &game.record,
+            Default::default(),
+        );
         let mut state = BotState::default();
         let start = std::time::Instant::now();
         let result = loop {
@@ -649,10 +697,16 @@ mod tests {
         };
         game.bot.settings = settings;
         let mut sides = [false; 2];
+        let mut memory = AnalysisMemory::default();
         for _ in 0..8 {
             assert!(game.bot.owns_turn(&game));
             sides[usize::from(game.engine.turn() == Color::Black)] = true;
-            let mut job = Job::new(game.engine.clone(), settings, &game.record);
+            let mut job = Job::new(
+                game.engine.clone(),
+                settings,
+                &game.record,
+                std::mem::take(&mut memory),
+            );
             let mut state = BotState::default();
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
             let result = loop {
@@ -662,6 +716,7 @@ mod tests {
                 assert!(std::time::Instant::now() < deadline);
                 std::thread::yield_now();
             };
+            memory = std::mem::take(&mut job.memory);
             game.apply_confirmed(result.command.unwrap()).unwrap();
             game.reset_playback();
             if game.engine.outcome().is_some() {

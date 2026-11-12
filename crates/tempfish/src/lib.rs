@@ -112,12 +112,17 @@ pub struct Search {
 }
 impl Search {
     pub fn new(engine: Engine, limits: Limits) -> Self {
+        Self::with_cache(engine, limits, Cache::default())
+    }
+    /// Resume analysis with exact-state results from an earlier root.
+    pub fn with_cache(engine: Engine, limits: Limits, mut cache: Cache) -> Self {
+        cache.next_turn();
         let engine = Arc::new(engine);
         let score = evaluate(&engine, 0);
         let frame = Frame::new(engine.clone(), 1, 0, None, -INF, INF);
         Self {
             root: engine,
-            cache: Cache::default(),
+            cache,
             fixed_depth: false,
             target_depth: limits.depth.clamp(1, MAX_DEPTH),
             node_limit: limits.nodes.max(1),
@@ -150,7 +155,7 @@ impl Search {
             done: false,
         }
     }
-    pub(crate) fn take_cache(&mut self) -> Cache {
+    pub fn take_cache(&mut self) -> Cache {
         std::mem::take(&mut self.cache)
     }
     pub fn nodes(&self) -> u64 {
@@ -198,7 +203,9 @@ impl Search {
         if !frame.probed {
             frame.probed = true;
             if let Some(entry) = self.cache.entry(frame.key, &frame.engine) {
-                if let Some(solved) = entry.solved.filter(|s| s.depth == frame.depth) {
+                if let Some((solved, best)) =
+                    entry.solutions.iter().find(|(s, _)| s.depth == frame.depth)
+                {
                     let score = score_from_cache(solved.score, frame.ply);
                     let usable = match solved.bound {
                         Bound::Exact => true,
@@ -207,12 +214,13 @@ impl Search {
                     };
                     if usable {
                         self.result.cache_hits += 1;
-                        frame.best = entry.best.map(|c| (c, score));
+                        frame.best = best.map(|c| (c, score));
                         self.finish_frame(score);
                         return;
                     }
                 }
                 if let Some(commands) = &entry.commands {
+                    self.result.cache_hits += 1;
                     frame.commands = commands.clone();
                     frame.generated = frame.sources.len();
                 }
