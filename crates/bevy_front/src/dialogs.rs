@@ -288,7 +288,7 @@ pub fn draw(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState, art:
                     (FUTURE, crate::tr!("Стрелка: сыгранный ход в будущее", "Arrow: played move into the future")), (PAST, crate::tr!("Стрелка: сыгранный ход в прошлое", "Arrow: played move into the past")),
                 ] { ui.horizontal(|ui| { let (rect, _) = ui.allocate_exact_size(Vec2::splat(10.0), egui::Sense::hover()); ui.painter().circle_filled(rect.center(), 4.0, color); ui.label(text); }); }
                 ui.add_space(10.0);
-                ui.label(crate::tr!("Для бесплатного ожидания выберите ту же клетку на другой доске по направлению фигуры. Доступные доски отмечены кольцом с точкой.", "To wait without using a turn, select the same square on another board in the piece's time direction. Available boards are marked with a ring and dot."));
+                ui.label(crate::tr!("Для ожидания выберите ту же клетку на другой доске по направлению фигуры. Доступные доски отмечены кольцом с точкой. Ожидание передаёт ход противнику, кроме режима «Свободное ожидание».", "To wait, select the same square on another board in the piece's time direction. Available boards are marked with a ring and dot. Waiting spends your turn unless Free wait is enabled."));
                 ui.colored_label(SUBTLE, crate::tr!("Инвертированные фигуры выделяются цветом и свечением.", "Inverted pieces have distinct colors and a glow."));
                 ui.add_space(10.0);
                 ui.small(crate::tr!("Фигуры: Cburnett / Lichess · GPL-2.0+", "Pieces: Cburnett / Lichess · GPL-2.0+"));

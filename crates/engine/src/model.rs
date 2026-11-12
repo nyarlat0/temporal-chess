@@ -47,12 +47,48 @@ impl StartingPosition {
     }
 }
 
-/// Independent, immutable options for a game. All are off by default.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+/// Independent, immutable options. React once is enabled by default.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct GameRules {
+    /// Free wait: a standalone advance does not consume the player's turn.
+    /// The field name is retained for wire compatibility.
     pub wait_before_move: bool,
     pub chain_info_activation: bool,
     pub global_reaction_reset: bool,
+}
+
+impl Default for GameRules {
+    fn default() -> Self {
+        Self {
+            wait_before_move: false,
+            chain_info_activation: false,
+            global_reaction_reset: true,
+        }
+    }
+}
+
+/// Enemy appearance, independent of incarnation identity and movement rights.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Observation {
+    pub square: Sq,
+    pub kind: PieceKind,
+    pub inverted: bool,
+}
+impl Observation {
+    pub fn from_state(state: &State) -> Self {
+        Self {
+            square: Sq(state.x, state.y),
+            kind: state.kind.set_moved(false),
+            inverted: state.inverted,
+        }
+    }
+    pub fn from_piv(piece: PieceView) -> Self {
+        Self {
+            square: piece.sq,
+            kind: piece.kind.set_moved(false),
+            inverted: piece.inverted,
+        }
+    }
 }
 
 /// Independent reasons why an occurrence may act. Expiring reactions never
@@ -92,12 +128,12 @@ pub struct State {
     pub kind: PieceKind,
     pub color: Color,
     pub inverted: bool,
-    /// Current capturable identities on this occurrence's board. Derived anew
+    /// Current capturable appearances on this occurrence's board. Derived anew
     /// from the projection; disappearing targets must not leave stale reactions.
-    pub informed: BTreeSet<PieceId>,
+    pub informed: BTreeSet<Observation>,
     /// Additive memory acknowledged by a player's turn action. Reconciliation,
     /// free waiting and calculation never overwrite it.
-    pub remembered: BTreeSet<PieceId>,
+    pub remembered: BTreeSet<Observation>,
     // points in time, on which piece inverted to and began moving to past.
     pub loop_pivots: Vec<usize>,
 }
@@ -377,8 +413,12 @@ impl State {
         self.kind = kind;
     }
 
-    /// Creates a new state from the last in the world line,
-    /// OR from last in the time-loop
+    /// The returning occurrence at a pivot must wait before moving again.
+    pub fn is_loop_exit(&self) -> bool {
+        !self.inverted && self.loop_pivots.last() == Some(&self.t)
+    }
+
+    /// Continue passively in the current orientation, without a boundary bounce.
     pub fn prolongate(&self) -> Option<Self> {
         if self.inverted && self.t <= self.color.first_board() {
             return None;

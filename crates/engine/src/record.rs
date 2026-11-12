@@ -9,7 +9,7 @@ use crate::{
 };
 use std::fmt;
 
-const HEADER: &str = "NOLAN-CHESS 5";
+const HEADER: &str = "NOLAN-CHESS 6";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Command {
@@ -89,17 +89,17 @@ impl GameRecord {
         self.pieces.get(command_index).copied().flatten()
     }
 
-    /// The chronological prefix immediately before the last spatial move.
+    /// The chronological prefix immediately before the last turn-consuming action.
     /// Later free advances and calculation acknowledgements belong to the
     /// discarded continuation too; replaying them could reference erased states.
     /// The original journal stays intact until its replacement is replayed.
-    pub fn without_last_move(&self) -> Option<(Self, Move)> {
+    pub fn without_last_move(&self) -> Option<(Self, Command)> {
         self.commands
             .iter()
             .enumerate()
             .rev()
             .find_map(|(index, command)| {
-                command.spatial_move().map(|mv| {
+                command.spends_turn(self.rules).then(|| {
                     (
                         Self {
                             rules: self.rules,
@@ -107,7 +107,7 @@ impl GameRecord {
                             commands: self.commands[..index].to_vec(),
                             pieces: self.pieces[..index].to_vec(),
                         },
-                        mv,
+                        *command,
                     )
                 })
             })
@@ -172,20 +172,20 @@ impl GameRecord {
 
     pub fn to_text(&self) -> String {
         let mut text = format!(
-            "{HEADER}\nchain_info_activation {}\nglobal_reaction_reset {}\n",
+            "{HEADER}\nchain_info_activation {}\nreact_multiple {}\n",
             if self.rules.chain_info_activation {
                 "on"
             } else {
                 "off"
             },
-            if self.rules.global_reaction_reset {
+            if !self.rules.global_reaction_reset {
                 "on"
             } else {
                 "off"
             },
         );
         text.push_str(&format!(
-            "wait_before_move {}\n",
+            "free_wait {}\n",
             if self.rules.wait_before_move {
                 "on"
             } else {
@@ -223,6 +223,7 @@ impl GameRecord {
         let rules = match header {
             "NOLAN-CHESS 1" => GameRules {
                 wait_before_move: true,
+                global_reaction_reset: false,
                 ..Default::default()
             },
             "NOLAN-CHESS 2" => {
@@ -232,6 +233,7 @@ impl GameRecord {
                 match mode {
                     "causal_gaps off" => GameRules {
                         wait_before_move: true,
+                        global_reaction_reset: false,
                         ..Default::default()
                     },
                     "causal_gaps on" => {
@@ -245,7 +247,7 @@ impl GameRecord {
                     }
                 }
             }
-            "NOLAN-CHESS 3" | "NOLAN-CHESS 4" | HEADER => {
+            "NOLAN-CHESS 3" | "NOLAN-CHESS 4" | "NOLAN-CHESS 5" | HEADER => {
                 let mut read_option = |name: &str| -> Result<bool, RecordError> {
                     let (n, value) = lines
                         .next()
@@ -258,8 +260,14 @@ impl GameRecord {
                 };
                 GameRules {
                     chain_info_activation: read_option("chain_info_activation")?,
-                    global_reaction_reset: read_option("global_reaction_reset")?,
+                    global_reaction_reset: if header == HEADER {
+                        !read_option("react_multiple")?
+                    } else {
+                        read_option("global_reaction_reset")?
+                    },
                     wait_before_move: if header == HEADER {
+                        read_option("free_wait")?
+                    } else if header == "NOLAN-CHESS 5" {
                         read_option("wait_before_move")?
                     } else {
                         true
@@ -270,12 +278,12 @@ impl GameRecord {
                 return Err(error(
                     line,
                     format!(
-                        "Ожидался заголовок {HEADER}, NOLAN-CHESS 4, NOLAN-CHESS 3, NOLAN-CHESS 2 или NOLAN-CHESS 1"
+                        "Ожидался заголовок {HEADER}, NOLAN-CHESS 5, NOLAN-CHESS 4, NOLAN-CHESS 3, NOLAN-CHESS 2 или NOLAN-CHESS 1"
                     ),
                 ));
             }
         };
-        let starting_position = if matches!(header, HEADER | "NOLAN-CHESS 4") {
+        let starting_position = if matches!(header, HEADER | "NOLAN-CHESS 4" | "NOLAN-CHESS 5") {
             let (n, start) = lines
                 .next()
                 .ok_or_else(|| error(line, "Missing starting position".into()))?;
@@ -469,6 +477,19 @@ fn parse(text: &str) -> Result<Command, String> {
 }
 
 impl Command {
+    pub fn spends_turn(self, rules: GameRules) -> bool {
+        self.spatial_move().is_some()
+            || matches!(self, Self::DeclineReactions)
+            || (matches!(self, Self::Advance { .. }) && !rules.wait_before_move)
+    }
+
+    pub fn source_time(self) -> Option<usize> {
+        self.spatial_move().map(|mv| mv.t).or(match self {
+            Self::Advance { source, .. } => Some(source.t),
+            _ => None,
+        })
+    }
+
     pub fn spatial_move(self) -> Option<Move> {
         match self {
             Self::Move { mv, .. } | Self::MoveAndWait { mv, .. } => Some(mv),
@@ -589,7 +610,6 @@ move 5 17:5:0 c6 d4 - normal
             "move 0 12:0:0 e2 e5 + normal",
             "move 0 12:0:0 e2 z9 + normal",
             "advance 0 12:0:0 e2 0",
-            "continue",
             "move 0 12:0:0 e2 e4 ? normal",
         ] {
             let error =
@@ -699,19 +719,13 @@ move 5 17:5:0 c6 d4 - normal
             .unwrap();
         let mut record = GameRecord::default();
         record.apply(&mut engine, Command::Continue).unwrap();
-        assert_eq!(
-            engine.calculation_status(),
-            CalculationStatus::Paused {
-                t: 4,
-                side: Color::White
-            }
-        );
+        assert_eq!(engine.calculation_status(), CalculationStatus::Complete);
         record.apply(&mut engine, Command::Continue).unwrap();
         assert_eq!(engine.calculation_status(), CalculationStatus::Complete);
         assert_eq!(engine.turn(), Color::White);
         assert_eq!(record.commands(), [Command::Continue, Command::Continue]);
         assert_eq!(parse("continue").unwrap(), Command::Continue);
-        assert!(record.apply(&mut engine, Command::Continue).is_err());
-        assert_eq!(record.commands().len(), 2);
+        record.apply(&mut engine, Command::Continue).unwrap();
+        assert_eq!(record.commands().len(), 3);
     }
 }

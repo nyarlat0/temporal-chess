@@ -281,16 +281,25 @@ impl GameUi {
     }
 
     pub fn active_times(&self) -> Vec<usize> {
+        self.active_times_for(self.engine.turn())
+    }
+
+    pub fn active_times_for(&self, side: Color) -> Vec<usize> {
         let times: std::collections::BTreeSet<_> =
-            self.engine.move_sources().map(|p| p.t).collect();
+            self.engine.active_occurrences(side).map(|p| p.t).collect();
         times.into_iter().rev().collect()
     }
 
-    pub fn navigate_active(&mut self, next: bool) {
+    pub fn navigate_active(&mut self, next: bool, opponent: bool) {
         if self.playback_busy() {
             return;
         }
-        let active = self.active_times();
+        let side = if opponent {
+            self.engine.turn().opposite()
+        } else {
+            self.engine.turn()
+        };
+        let active = self.active_times_for(side);
         if active.is_empty() {
             return;
         }
@@ -728,7 +737,7 @@ impl GameUi {
                 .record
                 .commands()
                 .iter()
-                .any(|command| command.spatial_move().is_some())
+                .any(|command| command.spends_turn(self.record.rules()))
     }
 
     pub fn undo_last_move(&mut self) {
@@ -746,7 +755,9 @@ impl GameUi {
         self.begin_replay(
             prefix.to_text(),
             ReplayKind::Undo {
-                source_t: removed.t,
+                source_t: removed
+                    .source_time()
+                    .unwrap_or(self.engine.history().horizon()),
             },
         );
     }
@@ -923,6 +934,37 @@ impl GameUi {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn opponent_navigation_wraps_without_changing_turn_or_history() {
+        use temporal_chess_engine::model::{PieceKind, State};
+        let lines = [(Color::White, Sq(1, 0)), (Color::Black, Sq(6, 7))]
+            .into_iter()
+            .map(|(color, sq)| {
+                let mut states = vec![State::new(PieceKind::N, color, sq)];
+                for _ in 0..3 {
+                    states.push(states.last().unwrap().prolongate().unwrap());
+                }
+                states
+            })
+            .collect();
+        let mut game = GameUi {
+            engine: Engine::from_worldlines(lines, Color::White).unwrap(),
+            ..Default::default()
+        };
+        let before = game.engine.clone();
+        assert_eq!(game.active_times(), [2, 0]);
+        assert_eq!(game.active_times_for(Color::Black), [3, 1]);
+        game.jump_to = Some(3);
+        game.navigate_active(true, true);
+        assert_eq!(game.jump_to, Some(1));
+        game.navigate_active(true, true);
+        assert_eq!(game.jump_to, Some(3));
+        game.navigate_active(false, true);
+        assert_eq!(game.jump_to, Some(1));
+        game.navigate_active(true, false);
+        assert_eq!(game.jump_to, Some(0));
+        assert_eq!(game.engine, before);
+    }
     use super::*;
 
     #[test]
@@ -934,7 +976,7 @@ mod tests {
         let before = game.engine.clone();
         game.click_square(0, Sq(4, 1));
         let selection = game.selected.as_ref().unwrap();
-        assert!(selection.skips.is_empty());
+        assert!(selection.skips.contains(&6));
         assert!(
             selection
                 .moves_to(6, Sq(4, 3))
@@ -1069,6 +1111,7 @@ mod tests {
         assert_eq!(game.engine.turn(), Color::Black);
         assert_eq!(game.engine.history().horizon(), 1);
         assert!(game.selected.is_none());
+        game.reset_playback();
         game.inspect_mode = true;
         game.click_square(0, Sq(4, 1));
         let inspected = game.inspected.unwrap();
@@ -1083,6 +1126,7 @@ mod tests {
         for (t, from, to) in [(0, Sq(4, 1), Sq(4, 3)), (1, Sq(4, 6), Sq(4, 4))] {
             game.click_square(t, from);
             game.click_square(t, to);
+            game.reset_playback();
         }
         game.click_square(2, Sq(6, 0));
         game.toggle_direction();
@@ -1091,11 +1135,13 @@ mod tests {
             TimeDirection::Past
         );
         game.click_square(2, Sq(7, 2));
-        assert_eq!(game.jump_to, Some(1));
+        assert_eq!(game.playback_destination, Some(1));
         assert_eq!(game.engine.turn(), Color::Black);
+        game.reset_playback();
         game.click_square(3, Sq(1, 7));
         game.click_square(3, Sq(2, 5));
-        assert_eq!(game.jump_to, Some(4));
+        assert_eq!(game.playback_destination, Some(4));
+        game.reset_playback();
         game.click_square(0, Sq(7, 2));
         assert!(game.selected.as_ref().unwrap().piece.inverted);
         assert_eq!(
@@ -1147,6 +1193,7 @@ mod tests {
         let mut game = GameUi::default();
         game.click_square(0, Sq(4, 1));
         game.click_square(0, Sq(4, 3));
+        game.reset_playback();
         let before = game.engine.clone();
         let record = game.record.clone();
         game.import_open = true;

@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u16 = 6;
+pub const PROTOCOL_VERSION: u16 = 7;
 pub const MAX_GAME_ID_LEN: usize = 12;
 pub const MAX_COMMAND_LEN: usize = 192;
 
@@ -40,7 +40,7 @@ pub enum ClientMessage {
         engine_revision: String,
         #[serde(default)]
         chain_info_activation: bool,
-        #[serde(default)]
+        #[serde(default = "react_once_default")]
         global_reaction_reset: bool,
         #[serde(default)]
         wait_before_move: bool,
@@ -132,3 +132,7 @@ pub enum ServerMessage {
 /// Bound replay cost and keep snapshots below the record importer limit.
 pub const MAX_COMMANDS: usize = 10_000;
 pub const MAX_REJECTION_LEN: usize = 512;
+
+fn react_once_default() -> bool {
+    true
+}

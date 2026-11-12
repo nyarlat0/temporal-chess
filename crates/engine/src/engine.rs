@@ -38,7 +38,15 @@ fn legacy_from_worldlines(
     worldlines: Vec<Vec<State>>,
     turn: crate::model::Color,
 ) -> Result<Engine, EngineErr> {
-    Engine::from_worldlines(worldlines, turn)
+    Engine::from_worldlines_with_rules(
+        worldlines,
+        turn,
+        crate::model::GameRules {
+            wait_before_move: true,
+            global_reaction_reset: false,
+            ..Default::default()
+        },
+    )
 }
 
 #[cfg(test)]
@@ -49,3 +57,6 @@ mod continuation_tests;
 
 #[cfg(test)]
 mod information_tests;
+
+#[cfg(test)]
+mod new_rules_tests;

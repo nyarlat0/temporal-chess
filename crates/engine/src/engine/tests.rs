@@ -67,7 +67,7 @@ fn en_passant_information_reacts_in_both_time_directions() {
             .unwrap();
             let pawn = engine.get_piv(0, 0).unwrap();
             assert!(pawn.rights.new_information);
-            let victim_id = PieceId::from_piv(engine.get_piv(1, 1).unwrap());
+            let victim_id = crate::model::Observation::from_piv(engine.get_piv(1, 1).unwrap());
             assert!(
                 engine.history.worldlines[0][0]
                     .informed
@@ -209,6 +209,30 @@ fn cancelling_a_rook_transition_finds_its_castling_command() {
             engine.apply_new_mv(castle).unwrap();
             let castled = engine.clone();
 
+            // Replaying an earlier reaction can put a friendly passive piece
+            // in the rook's arrival cell. Collision resolution must find the
+            // king's castling command, rather than a nonexistent rook move.
+            let mut collision = castled.clone();
+            let rook_arrival = collision.get_piv(1, 1).unwrap();
+            let mut blocker = State::new(PieceKind::N, color, rook_arrival.sq);
+            blocker.t = color.first_board();
+            blocker.fut_seen = blocker.t;
+            blocker.rights = MoveRights::default();
+            let next = blocker.step(TimeDirection::Future).unwrap();
+            collision
+                .history
+                .worldlines
+                .push(vec![blocker, next].into());
+            collision.update_bufs().unwrap();
+            assert_eq!(
+                collision.build_boards(rook_arrival.t),
+                Ok(ValidRes::HistChanged)
+            );
+            assert!(!collision.history.moves.contains_key(&castle.id()));
+            collision.reconcile().unwrap();
+            assert_eq!(collision.get_piv(0, 1).unwrap().sq, Sq(4, y));
+            assert_eq!(collision.get_piv(1, 1).unwrap().sq, Sq(rook_x, y));
+
             // Sharing the king's MoveId is not enough: only the participating
             // rook's occurrence is a cause of this castling command.
             assert_eq!(
@@ -316,7 +340,7 @@ fn oncoming_tracking_uses_orientation_even_when_inverted_piece_knows_more_future
     inverted.inverted = true;
     inverted.loop_turn = 1;
     let inverted_next = inverted.prolongate().unwrap();
-    let mut inverted_last = inverted_next.prolongate().unwrap();
+    let mut inverted_last = inverted_next.step(TimeDirection::Past).unwrap();
     inverted_last.x = 1;
     inverted_last.y = 3;
     let engine = Engine {

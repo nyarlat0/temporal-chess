@@ -193,13 +193,21 @@ impl Engine {
     /// All currently playable occurrences, in board-time order. No board takes
     /// priority: ordinary moves and reactions are both optional choices.
     pub fn move_sources(&self) -> impl Iterator<Item = PieceView> + '_ {
+        self.active_occurrences(self.turn)
+    }
+
+    /// Active occurrences of either side, without changing the current turn.
+    pub fn active_occurrences(
+        &self,
+        side: crate::model::Color,
+    ) -> impl Iterator<Item = PieceView> + '_ {
         self.projection
             .boards
             .values()
             .flat_map(|board| board.pieces().iter().copied())
-            .filter(|piece| {
+            .filter(move |piece| {
                 self.outcome().is_none()
-                    && piece.color == self.turn
+                    && piece.color == side
                     && piece.can_move()
                     && piece.is_movable()
             })

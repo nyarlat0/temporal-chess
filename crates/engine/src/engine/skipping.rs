@@ -4,9 +4,6 @@ impl Engine {
     /// Structurally valid waiting destinations for UI previews. Just like
     /// possible_moves, final causality checks are performed by the command.
     pub fn possible_skips(&self, source: PieceAt) -> Vec<usize> {
-        if !self.history.rules.wait_before_move {
-            return Vec::new();
-        }
         self.timeline_times()
             .filter(|&t| t != source.t)
             .filter(|&t| {
@@ -16,13 +13,28 @@ impl Engine {
             .collect()
     }
     /// Advance to another existing time in the piece's current orientation.
-    /// Does not consume a player's turn or another piece's rights. Staying at
-    /// the same time cannot relinquish a right.
+    /// Spends a turn unless Free wait is enabled. Staying at the same time
+    /// cannot relinquish a right. No spatial move is stored in either mode.
     pub fn skip_ordinary(&mut self, source: PieceAt, to_t: usize) -> Result<(), EngineErr> {
-        if !self.history.rules.wait_before_move {
-            return Err(EngineErr::WrongMove);
-        }
-        self.transaction(|candidate| candidate.skip_with_information(source, to_t))
+        self.transaction(|candidate| {
+            if candidate.history.rules.wait_before_move {
+                return candidate.skip_with_information(source, to_t);
+            }
+            // Validate on the pre-command view before retiring any reactions.
+            let mut preview = candidate.clone();
+            preview.skip_inner(source, to_t)?;
+            let actor = candidate.turn;
+            let limit = if candidate.history.rules.global_reaction_reset {
+                usize::MAX
+            } else {
+                source.t
+            };
+            candidate.remember_information(actor, limit);
+            candidate.deact_prev_reactable(actor, limit);
+            candidate.history.calculation.acknowledged.clear();
+            candidate.history.calculation.responsible = Some(actor);
+            candidate.skip_with_information_mode(source, to_t, true, actor.opposite())
+        })
     }
 
     /// Waiting acknowledges the resulting view on the traversed occurrences,

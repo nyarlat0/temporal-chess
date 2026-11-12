@@ -38,7 +38,7 @@ impl Color {
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum PieceKind {
     P { moved: bool },
     N,
@@ -73,7 +73,7 @@ pub struct PieceView {
     pub rights: MoveRights,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Sq(pub usize, pub usize);
 
 impl Sq {

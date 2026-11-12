@@ -61,12 +61,13 @@ fn roundtrip(engine: &Engine) {
 }
 
 fn stalemate_lines() -> Vec<Vec<State>> {
-    let mut white = line(PieceKind::K { moved: true }, Color::White, Sq(0, 0), 4);
+    let mut white = line(PieceKind::P { moved: true }, Color::White, Sq(7, 7), 4);
     white[4].rights.ordinary = true;
     vec![
         white,
         line(PieceKind::K { moved: true }, Color::Black, Sq(2, 2), 4),
         line(PieceKind::Q, Color::Black, Sq(1, 2), 4),
+        line(PieceKind::K { moved: true }, Color::White, Sq(0, 0), 4),
     ]
 }
 
@@ -75,16 +76,20 @@ fn stalemate_is_final_only_without_past_reserves_or_opponent_ordinary_debt() {
     let engine = super::legacy_from_worldlines(stalemate_lines(), Color::White).unwrap();
     assert_eq!(engine.outcome(), Some(GameOutcome::Stalemate));
     assert!(!engine.checks(Color::White).unwrap().is_check());
-    assert_eq!(engine.move_sources().count(), 0);
+    assert!(
+        engine
+            .move_sources()
+            .all(|p| engine.possible_moves(p.origin, p.age).unwrap().is_empty())
+    );
     roundtrip(&engine);
 
     let mut lines = stalemate_lines();
-    let mut reserve = line(PieceKind::P { moved: true }, Color::White, Sq(7, 7), 4);
+    let mut reserve = line(PieceKind::P { moved: true }, Color::White, Sq(6, 7), 4);
     reserve[0].rights.ordinary = true; // No spatial pawn moves, but can wait.
     lines.push(reserve);
     let engine = super::legacy_from_worldlines(lines, Color::White).unwrap();
     assert_eq!(engine.status(), GameStatus::Ongoing);
-    assert!(engine.possible_moves(3, 0).unwrap().is_empty());
+    assert!(engine.possible_moves(4, 0).unwrap().is_empty());
 
     let mut lines = stalemate_lines();
     let mut reactive = line(PieceKind::N, Color::Black, Sq(6, 7), 4);
@@ -109,11 +114,11 @@ fn blocked_player_is_rechecked_after_each_opponent_move() {
     assert_eq!(engine.status(), waiting);
     assert_eq!(engine.turn(), Color::Black);
     roundtrip(&engine);
-    play(&mut engine, 3, 1, TimeDirection::Future, Sq(4, 6));
+    play(&mut engine, 4, 1, TimeDirection::Future, Sq(4, 6));
     assert_eq!(engine.status(), waiting);
     assert_eq!(engine.turn(), Color::Black);
     assert_eq!(engine.history.horizon(), 4);
-    play(&mut engine, 3, 3, TimeDirection::Future, Sq(2, 5));
+    play(&mut engine, 4, 3, TimeDirection::Future, Sq(2, 5));
     assert_eq!(engine.outcome(), Some(GameOutcome::Stalemate));
     roundtrip(&engine);
 }
@@ -127,13 +132,13 @@ fn an_opponent_move_can_reactivate_the_waiting_player() {
     lines.push(debt);
     let mut engine = super::legacy_from_worldlines(lines, Color::White).unwrap();
     assert!(matches!(engine.status(), GameStatus::Waiting { .. }));
-    play(&mut engine, 4, 1, TimeDirection::Future, Sq(6, 2));
+    play(&mut engine, 5, 1, TimeDirection::Future, Sq(6, 2));
     assert_eq!(engine.status(), GameStatus::Ongoing);
     assert_eq!(engine.turn(), Color::White);
     assert!(
         engine
             .move_sources()
-            .any(|p| p.origin == 3 && p.rights.new_information)
+            .any(|p| p.origin == 4 && p.rights.new_information)
     );
     roundtrip(&engine);
 }
@@ -145,9 +150,15 @@ fn free_wait_can_close_the_last_opponent_debt_without_a_spatial_move() {
     debt[1].rights.ordinary = true;
     debt[3].rights.ordinary = true;
     lines.push(debt);
+    // Black's final own-color board must be the horizon to close its debt.
+    for line in &mut lines {
+        let mut next = line.last().unwrap().prolongate().unwrap();
+        next.rights = MoveRights::default();
+        line.push(next);
+    }
     let mut engine = super::legacy_from_worldlines(lines, Color::White).unwrap();
-    let source = Engine::piece_at(engine.get_piv(3, 1).unwrap());
-    engine.skip_ordinary(source, 4).unwrap();
+    let source = Engine::piece_at(engine.get_piv(4, 1).unwrap());
+    engine.skip_ordinary(source, 5).unwrap();
     assert_eq!(engine.turn(), Color::White); // Black has no active pieces left.
     assert!(engine.history.moves().is_empty());
     assert_eq!(engine.outcome(), Some(GameOutcome::Stalemate));
@@ -415,6 +426,10 @@ fn checked_active_pieces_without_defence_end_in_mate_without_growing_history() {
     for state in &mut lines[2] {
         state.y = 1;
     }
+    let attacker = crate::model::Observation::from_state(&lines[2][0]);
+    for state in &mut lines[3] {
+        state.remembered.insert(attacker);
+    }
     let engine = super::legacy_from_worldlines(lines, Color::White).unwrap();
     assert_eq!(engine.turn(), Color::White);
     assert_eq!(engine.history.horizon(), 4);
@@ -434,9 +449,19 @@ fn checkmate_waits_for_opponent_causal_debt_then_finishes_when_it_is_closed() {
     for state in &mut lines[2] {
         state.y = 1;
     }
+    let attacker = crate::model::Observation::from_state(&lines[2][0]);
+    for state in &mut lines[3] {
+        state.remembered.insert(attacker);
+    }
     let mut debt = line(PieceKind::N, Color::Black, Sq(6, 7), 4);
     debt[1].rights.ordinary = true;
     lines.push(debt);
+    // Black's final own-color board must be the horizon to close its debt.
+    for line in &mut lines {
+        let mut next = line.last().unwrap().prolongate().unwrap();
+        next.rights = MoveRights::default();
+        line.push(next);
+    }
     let mut engine = super::legacy_from_worldlines(lines, Color::White).unwrap();
     assert_eq!(
         engine.status(),
@@ -446,8 +471,8 @@ fn checkmate_waits_for_opponent_causal_debt_then_finishes_when_it_is_closed() {
         }
     );
     assert_eq!(engine.turn(), Color::Black);
-    let source = Engine::piece_at(engine.get_piv(3, 1).unwrap());
-    engine.skip_ordinary(source, 4).unwrap();
+    let source = Engine::piece_at(engine.get_piv(4, 1).unwrap());
+    engine.skip_ordinary(source, 5).unwrap();
     assert_eq!(
         engine.outcome(),
         Some(GameOutcome::Victory {
@@ -455,7 +480,7 @@ fn checkmate_waits_for_opponent_causal_debt_then_finishes_when_it_is_closed() {
             reason: WinReason::Checkmate
         })
     );
-    assert_eq!(engine.history.horizon(), 4);
+    assert_eq!(engine.history.horizon(), 5);
     roundtrip(&engine);
 }
 
@@ -539,7 +564,7 @@ fn an_inverted_wait_reaches_zero_but_cannot_discard_its_boundary_right() {
 }
 
 #[test]
-fn waiting_across_a_pivot_closes_the_gap_without_a_new_spatial_move() {
+fn mandatory_wait_crosses_pivot_without_recording_an_extra_move() {
     let mut knight = line(PieceKind::N, Color::White, Sq(1, 0), 6);
     for t in [0, 2, 4, 6] {
         knight[t].rights.ordinary = true;
@@ -559,12 +584,9 @@ fn waiting_across_a_pivot_closes_the_gap_without_a_new_spatial_move() {
         .unwrap();
     engine.apply_new_mv(mv).unwrap();
     engine.turn = Color::White;
-    let source = engine
-        .move_sources()
-        .find(|p| p.t == 4 && p.loop_turn == 2)
-        .unwrap();
     let journal = engine.history.moves.clone();
-    engine.skip_ordinary(Engine::piece_at(source), 6).unwrap();
+    assert_eq!(engine.history.worldlines[0].last().unwrap().t, 6);
+    assert_eq!(journal.len(), 2);
     assert!(engine.history.worldlines[0].gaps().is_empty());
     assert_eq!(engine.history.worldlines[0].last().unwrap().loop_turn, 0);
     assert_eq!(engine.history.moves, journal);

@@ -15,7 +15,18 @@ impl Engine {
         {
             return None;
         }
-        let endpoint = line.get(age + 2)?;
+        let mut endpoint_age = age + 2;
+        let mut endpoint = line.get(endpoint_age)?;
+        while endpoint.is_loop_exit() || Color::from_board(endpoint.t) != endpoint.color {
+            if !endpoint.alive
+                || crate::model::Sq(endpoint.x, endpoint.y) != mv.sq
+                || line.gap_after(endpoint_age).is_some()
+            {
+                return None;
+            }
+            endpoint_age += 1;
+            endpoint = line.get(endpoint_age)?;
+        }
         (endpoint.alive
             && endpoint.rights.ordinary
             && Color::from_board(endpoint.t) == endpoint.color
@@ -84,17 +95,18 @@ impl Engine {
     pub(super) fn auto_wait_blocked_endpoint(
         &mut self,
         waited: &mut Vec<PieceAt>,
+        blocked: bool,
     ) -> Result<bool, EngineErr> {
-        if self.history.rules.wait_before_move {
-            return Ok(false);
-        }
         for wid in 0..self.history.worldlines.len() {
             let line = &self.history.worldlines[wid];
             let age = line.len() - 1;
             let state = &line[age];
+            if (self.history.rules.wait_before_move || !blocked) && !state.is_loop_exit() {
+                continue;
+            }
             if line.is_borrowed(age)
                 || !state.alive
-                || !state.rights.is_movable()
+                || (!state.rights.is_movable() && !state.is_loop_exit())
                 || Color::from_board(state.t) != state.color
                 || self.board(state.t).is_none()
                 || self
@@ -251,10 +263,10 @@ mod tests {
             .unwrap();
         assert_eq!(engine.possible_move_waits(mv).unwrap(), vec![2]);
         assert!(engine.after_move_with_wait(mv, 4).is_err());
-        assert!(engine.possible_skips(mv.source()).is_empty());
+        assert!(engine.possible_skips(mv.source()).contains(&2));
         let mut copy = engine.clone();
-        assert!(copy.skip_ordinary(mv.source(), 2).is_err());
-        assert_eq!(copy, engine);
+        copy.skip_ordinary(mv.source(), 2).unwrap();
+        assert_eq!(copy.turn(), Color::Black);
     }
 
     #[test]
@@ -383,7 +395,9 @@ mod tests {
             let moves = engine.history.moves.clone();
             let mut waited = Vec::new();
             assert_eq!(
-                engine.auto_wait_blocked_endpoint(&mut waited).unwrap(),
+                engine
+                    .auto_wait_blocked_endpoint(&mut waited, true)
+                    .unwrap(),
                 !wait_before_move
             );
             let last = engine.history.worldlines[6].last().unwrap();

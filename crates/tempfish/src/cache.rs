@@ -108,16 +108,16 @@ impl Cache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use temporal_chess_engine::model::{Color, PieceId, PieceKind, Sq, State};
+    use temporal_chess_engine::model::{Color, Observation, PieceKind, Sq, State};
     #[test]
     fn hash_collisions_and_changed_memory_cannot_reuse_a_position() {
         let state = State::new(PieceKind::N, Color::White, Sq(1, 0));
         let a = Arc::new(Engine::from_worldlines(vec![vec![state.clone()]], Color::White).unwrap());
         let mut changed = state;
-        changed.remembered.insert(PieceId {
-            wid: 10,
-            fut_seen: 3,
-            loop_turn: 1,
+        changed.remembered.insert(Observation {
+            square: Sq(3, 3),
+            kind: PieceKind::N,
+            inverted: true,
         });
         let b = Engine::from_worldlines(vec![vec![changed]], Color::White).unwrap();
         assert_ne!(a.analysis_key(), b.analysis_key());

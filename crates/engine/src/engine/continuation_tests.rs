@@ -68,9 +68,11 @@ fn waiting_stops_before_any_piece_on_an_intermediate_board() {
                 let source = state(color, Sq(1, 2), start, inverted);
                 let blocker = state(blocker_color, Sq(1, 2), time(3), false);
                 let anchor = state(color.opposite(), Sq(7, 7), 8, false);
-                let mut engine =
-                    Engine::from_worldlines(vec![vec![source], vec![blocker], vec![anchor]], color)
-                        .unwrap();
+                let mut engine = super::legacy_from_worldlines(
+                    vec![vec![source], vec![blocker], vec![anchor]],
+                    color,
+                )
+                .unwrap();
                 let source = Engine::piece_at(engine.get_piv(0, 0).unwrap());
                 let before = engine.clone();
                 assert_eq!(
@@ -714,4 +716,62 @@ fn shared_turn_does_not_discard_an_inverted_reserve_at_the_boundary() {
         assert_eq!(line.len(), 1);
         assert!(line[0].alive && line[0].rights.ordinary && line[0].inverted);
     }
+}
+
+#[test]
+fn backward_bishop_command_replaces_a_dead_queens_slot() {
+    let mut queen = state(Color::White, Sq(2, 3), 4, false);
+    queen.kind = PieceKind::Q;
+    queen.alive = false;
+    let mut bishop = state(Color::White, Sq(3, 2), 4, false);
+    bishop.kind = PieceKind::B;
+    let mut enemy = state(Color::Black, Sq(2, 3), 5, true);
+    enemy.kind = PieceKind::Q;
+    let mut enemy_line = vec![enemy];
+    for _ in 0..2 {
+        enemy_line.push(
+            enemy_line
+                .last()
+                .unwrap()
+                .step(TimeDirection::Past)
+                .unwrap(),
+        );
+    }
+    let mut engine = Engine::from_worldlines(
+        vec![vec![queen.clone()], vec![bishop], enemy_line],
+        Color::White,
+    )
+    .unwrap();
+    let old = Move {
+        pid: PieceId::from_state(&queen, 0),
+        t: 4,
+        sq: Sq(1, 2),
+        direction: TimeDirection::Future,
+        effect: MoveEffect::Normal,
+    };
+    let mut arrival = queen.step(TimeDirection::Future).unwrap();
+    arrival.apply_mv(old);
+    engine.history.worldlines[0].states.push(arrival);
+    engine.history.moves.insert(old.id(), old);
+    engine.update_bufs().unwrap();
+    assert_eq!(engine.build_boards(5), Ok(ValidRes::Unchanged));
+    let mv = engine
+        .possible_moves(1, 0)
+        .unwrap()
+        .into_iter()
+        .find(|m| m.to_past() && m.sq == Sq(2, 3))
+        .unwrap();
+    assert_eq!(mv.id(), old.id());
+    assert!(!engine.piece_state(old.source()).unwrap().alive);
+    engine.apply_new_mv(mv).unwrap();
+    assert_ne!(engine.history.moves.get(&old.id()), Some(&old));
+    assert!(
+        engine.history.worldlines[2]
+            .iter()
+            .any(|s| s.t == 3 && !s.alive)
+    );
+    assert_eq!(
+        Engine::from_history(engine.history.clone(), engine.turn()).unwrap(),
+        engine
+    );
 }

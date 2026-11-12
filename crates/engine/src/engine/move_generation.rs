@@ -69,28 +69,26 @@ impl Engine {
             None => return Err(EngineErr::AbsentBoard),
         };
         let mut board = selected.clone();
-        // In Time War a frontier board already exists but is still empty.
+        // A destination can exist without the passive endpoints continued by this move.
         // Include the ordinary endpoints that this shared turn will continue,
         // using their own orientation (not the mover's chosen direction).
-        if self.history.starting_position.fixed_end().is_some() {
-            for (wid, line) in self.history.worldlines.iter().enumerate() {
-                let age = line.len() - 1;
-                let state = &line[age];
-                let idle = PieceView::from_state(state, wid, age);
-                if wid == piece.origin
-                    || state.t != piece.t
-                    || !state.alive
-                    || !state.rights.ordinary
-                    || !idle.same_order(piece)
-                {
-                    continue;
-                }
-                if let Some(next) = self.passive_successor(state)
-                    && Some(next.t) == target_time
-                    && board.is_empty(idle.sq)
-                {
-                    board.add_piece(PieceView::from_state(&next, wid, age + 1));
-                }
+        for (wid, line) in self.history.worldlines.iter().enumerate() {
+            let age = line.len() - 1;
+            let state = &line[age];
+            let idle = PieceView::from_state(state, wid, age);
+            if wid == piece.origin
+                || state.t != piece.t
+                || !state.alive
+                || !state.rights.ordinary
+                || !idle.same_order(piece)
+            {
+                continue;
+            }
+            if let Some(next) = self.passive_successor(state)
+                && Some(next.t) == target_time
+                && board.is_empty(idle.sq)
+            {
+                board.add_piece(PieceView::from_state(&next, wid, age + 1));
             }
         }
         if target_exists {
@@ -281,6 +279,10 @@ impl Engine {
         recorded: Option<Move>,
     ) -> Result<Vec<Move>, EngineErr> {
         let piece = self.get_piv(wid, age).ok_or(EngineErr::WrongPiece)?;
+        if self.history.worldlines[wid][age].is_loop_exit() {
+            return Ok(Vec::new());
+        }
+
         let source = self.board(piece.t).ok_or(EngineErr::AbsentBoard)?;
         let candidate = |sq, direction, effect| Move {
             pid: PieceId::from_piv(piece),

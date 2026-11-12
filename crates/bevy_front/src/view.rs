@@ -148,13 +148,13 @@ fn sidebar(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, art: &P
         });
     let rules = game.engine.history().rules();
     if rules.wait_before_move {
-        ui.small(crate::tr!("Ожидание до хода", "Wait before move"));
+        ui.small(crate::tr!("Свободное ожидание", "Free wait"));
     }
     if rules.chain_info_activation {
         ui.small(crate::tr!("Цепная инфоактивация", "Chain info-activation"));
     }
-    if rules.global_reaction_reset {
-        ui.small(crate::tr!("Реагировать один раз", "React once"));
+    if !rules.global_reaction_reset {
+        ui.small(crate::tr!("Реагировать многократно", "React multiple"));
     }
     crate::tempfish::panel(ui, game);
     crate::multiplayer::panel(ui, game);
@@ -681,11 +681,11 @@ pub fn starting_position_controls(
 pub fn rule_controls(ui: &mut egui::Ui, rules: &mut temporal_chess_engine::model::GameRules) {
     ui.checkbox(
         &mut rules.wait_before_move,
-        crate::tr!("Разрешить ожидание до хода", "Enable wait before move"),
+        crate::tr!("Свободное ожидание", "Free wait"),
     )
     .on_hover_text(crate::tr!(
-        "Разрешает отдельно протаскивать фигуры. Авто-ожидание заблокированных фигур выключается.",
-        "Allows separate waits before moving. Disables automatic waits for blocked pieces."
+        "Ожидание не передаёт ход. Авто-ожидание заблокированных фигур выключается; выход из петли остаётся автоматическим.",
+        "Waiting does not spend a turn. Disables automatic waits for blocked pieces; loop exits still wait automatically."
     ));
     ui.checkbox(
         &mut rules.chain_info_activation,
@@ -695,12 +695,14 @@ pub fn rule_controls(ui: &mut egui::Ui, rules: &mut temporal_chess_engine::model
         "Новая информация активирует каждое увидевшее её состояние мировой линии.",
         "New information activates every observing state of a worldline."
     ));
-    ui.checkbox(&mut rules.global_reaction_reset,
-        crate::tr!("Реагировать один раз", "React once"))
+    let mut multiple = !rules.global_reaction_reset;
+    ui.checkbox(&mut multiple,
+        crate::tr!("Реагировать многократно", "React multiple"))
         .on_hover_text(crate::tr!(
-            "Ход сбрасывает свои реакции на всех досках, включая отменённые ходы, и фиксирует текущую информацию в памяти. Обычная активность сохраняется.",
-            "A move clears your reactions on every board, including cancelled moves, and acknowledges current information. Ordinary activity is preserved."
+            "Сохраняет реакции на досках позже совершённого хода. По умолчанию ход сбрасывает все реакции своей стороны.",
+            "Keeps reactions on boards later than the move. By default, each turn clears all reactions of its side."
         ));
+    rules.global_reaction_reset = !multiple;
 }
 
 #[cfg(test)]
@@ -756,9 +758,14 @@ mod tests {
         game.toggle_direction();
         game.click_square(0, Sq(4, 3));
         frame(&ctx, &mut game, vec![]);
-        assert!(game.viewport.offset.abs() < 0.1);
+        assert!(game.transition.is_some());
+        game.reset_playback();
+        game.finish_travel(1);
+        frame(&ctx, &mut game, vec![]);
+        assert_eq!(game.viewport.focused, Some(1));
+        assert_eq!(game.viewport.scroll.as_ref().unwrap().target, 1);
         assert_eq!(game.viewport.times.first(), Some(&1));
-        game.transition = None;
+        game.reset_playback();
         game.inspect_mode = true;
         game.click_square(0, Sq(4, 1));
         frame(&ctx, &mut game, vec![]);

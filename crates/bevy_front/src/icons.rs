@@ -27,6 +27,10 @@ pub enum Icon {
 
 pub struct IconResponse(Response);
 impl IconResponse {
+    pub fn secondary_clicked(&self) -> bool {
+        crate::input::clicked_by(&self.0, egui::PointerButton::Secondary)
+    }
+
     pub fn clicked(&self) -> bool {
         crate::input::clicked(&self.0)
     }

@@ -99,6 +99,7 @@ impl Engine {
                     .get(&MoveId::from_state(state))
                     .is_some_and(|mv| mv.pid == PieceId::from_state(state, wid));
                 if !state.alive
+                    || state.is_loop_exit()
                     || state.rights.ordinary
                     || state.rights.cancelled_move
                     || has_own_move

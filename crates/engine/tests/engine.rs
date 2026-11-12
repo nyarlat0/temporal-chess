@@ -89,16 +89,21 @@ fn move_expires_only_own_reactions_on_the_same_or_earlier_boards() {
         state.rights.cancelled_move = state.t.is_multiple_of(2);
     }
     let mut opponent = stationary_line(PieceKind::N, Color::Black, Sq(6, 7), 4);
-    opponent[1].rights.new_information = true;
-    let mut engine = Engine::from_worldlines(
+    opponent[1].rights.cancelled_move = true;
+    let mut engine = Engine::from_worldlines_with_rules(
         vec![
             stationary_line(PieceKind::N, Color::White, Sq(1, 0), 4),
             reactor,
             opponent,
         ],
         Color::White,
+        temporal_chess_engine::model::GameRules {
+            global_reaction_reset: false,
+            ..Default::default()
+        },
     )
     .unwrap();
+    // This test exercises the opt-in local reaction reset mode.
     let mv = engine
         .possible_moves(0, 2)
         .unwrap()
@@ -286,7 +291,7 @@ fn castling_moves_the_actual_rook_without_fixed_worldline_numbers() {
 }
 
 #[test]
-fn king_cannot_move_into_attack_but_can_escape_check() {
+fn king_can_enter_attack_or_escape_check() {
     let engine = Engine::from_worldlines(
         vec![
             vec![State::new(
@@ -304,7 +309,7 @@ fn king_cannot_move_into_attack_but_can_escape_check() {
     )
     .unwrap();
     let moves = engine.possible_moves(0, 0).unwrap();
-    assert!(!moves.iter().any(|mv| mv.sq.0 == 5));
+    assert!(moves.iter().any(|mv| mv.sq.0 == 5));
     let engine = Engine::from_worldlines(
         vec![
             vec![State::new(
@@ -427,12 +432,20 @@ fn overflowing_time_is_a_rejected_command_without_mutation() {
     state.rights.ordinary = true;
     let mut engine = Engine::from_worldlines(vec![vec![state]], Color::Black).unwrap();
     let snapshot = engine.clone();
-    let mv = engine
-        .possible_moves(0, 0)
-        .unwrap()
-        .into_iter()
-        .find(|mv| !mv.to_past())
-        .unwrap();
+    assert!(
+        engine
+            .possible_moves(0, 0)
+            .unwrap()
+            .iter()
+            .all(|mv| mv.to_past())
+    );
+    let mv = Move {
+        pid: PieceId::from_state(&engine.history().worldlines()[0][0], 0),
+        t: usize::MAX,
+        sq: Sq(2, 5),
+        direction: temporal_chess_engine::model::TimeDirection::Future,
+        effect: temporal_chess_engine::model::MoveEffect::Normal,
+    };
     assert_eq!(engine.apply_new_mv(mv), Err(EngineErr::WrongMove));
     assert_eq!(engine, snapshot);
 }
@@ -473,7 +486,7 @@ fn present_blockers_stop_inverted_sliding_attacks() {
 }
 
 #[test]
-fn orthodox_opening_has_four_hundred_two_ply_sequences() {
+fn opening_counts_forward_and_boundary_rebound_replies() {
     let initial = Engine::default();
     let mut leaves = 0;
     for piece in initial
@@ -501,7 +514,7 @@ fn orthodox_opening_has_four_hundred_two_ply_sequences() {
             }
         }
     }
-    assert_eq!(leaves, 400);
+    assert_eq!(leaves, 800);
 }
 
 #[test]

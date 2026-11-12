@@ -5,6 +5,34 @@ use std::collections::BTreeSet;
 use super::{Engine, EngineErr, ShortPieceId, ValidRes};
 
 impl Engine {
+    /// An undo reaction is useful only if this occurrence has a spatial reply.
+    /// Run after automatic continuation, so a blocked terminal reserve can
+    /// first move to a board where it can act.
+    fn prune_immobile_undo_reactions(&mut self) -> Result<bool, EngineErr> {
+        let mut clear = Vec::new();
+        let mut exits = Vec::new();
+        for (wid, line) in self.history.worldlines.iter().enumerate() {
+            for (age, state) in line.iter().enumerate() {
+                if state.is_loop_exit() && state.rights.is_movable() {
+                    exits.push((wid, age));
+                }
+                if state.alive
+                    && state.rights.cancelled_move
+                    && self.board(state.t).is_some()
+                    && self.candidate_moves(wid, age)?.is_empty()
+                {
+                    clear.push((wid, age));
+                }
+            }
+        }
+        for &(wid, age) in &clear {
+            self.history.worldlines[wid][age].rights.cancelled_move = false;
+        }
+        for &(wid, age) in &exits {
+            self.history.worldlines[wid][age].rights = Default::default();
+        }
+        Ok(!clear.is_empty() || !exits.is_empty())
+    }
     /// A collision cycle can prevent the chronological frontier from reaching
     /// the move which created that collision. Before declaring a paradox, cancel
     /// a recorded move already impossible from its changed source, regardless
@@ -181,7 +209,10 @@ impl Engine {
                     .filter(|&t| t <= limit)
                     .filter_map(|t| self.make_board(t).ok().map(|board| (t, board)))
                     .collect();
-                if auto && self.auto_wait_blocked_endpoint(&mut auto_waited)? {
+                if self.auto_wait_blocked_endpoint(&mut auto_waited, auto)? {
+                    continue;
+                }
+                if self.prune_immobile_undo_reactions()? {
                     continue;
                 }
                 if self.acknowledge_auto_wait(&auto_waited)? {
@@ -202,7 +233,10 @@ impl Engine {
             if self.acknowledge_auto_wait(&auto_waited)? {
                 continue;
             }
-            if auto && self.auto_wait_blocked_endpoint(&mut auto_waited)? {
+            if self.auto_wait_blocked_endpoint(&mut auto_waited, auto)? {
+                continue;
+            }
+            if self.prune_immobile_undo_reactions()? {
                 continue;
             }
             return Ok(());
@@ -253,6 +287,42 @@ mod reuse_tests {
     use super::*;
     use crate::record::{Command, GameRecord};
 
+    #[test]
+    fn impossible_knight_geometry_is_cancelled_before_declaring_a_cycle() {
+        use crate::model::{Color, PieceKind, State};
+        let mut knight = State::new(PieceKind::N, Color::White, Sq(1, 0));
+        knight.t = 4;
+        knight.fut_seen = 4;
+        let mut engine = Engine::from_worldlines(vec![vec![knight]], Color::White).unwrap();
+        let mv = engine
+            .possible_moves(0, 0)
+            .unwrap()
+            .into_iter()
+            .find(|m| !m.to_past() && m.sq == Sq(2, 2))
+            .unwrap();
+        engine.apply_move_inner(mv).unwrap();
+        assert_eq!(
+            engine.cancel_impossible_cycle_move(),
+            Ok(ValidRes::Unchanged)
+        );
+        // An earlier cancellation relocated the source while its later move
+        // still targets c3. a1-c3 has invalid knight geometry.
+        engine.history.worldlines[0][0].x = 0;
+        engine.update_bufs().unwrap();
+        assert_eq!(
+            engine.cancel_impossible_cycle_move(),
+            Ok(ValidRes::HistChanged)
+        );
+        assert!(!engine.history.moves.contains_key(&mv.id()));
+        engine.reconcile().unwrap();
+        assert!(engine.outcome().is_none());
+        assert!(
+            engine.history.worldlines[0]
+                .iter()
+                .all(|s| s.alive && s.x == 0 && s.y == 0)
+        );
+    }
+
     fn compare_passes(mut position: Engine) {
         position.update_bufs().unwrap();
         let mut reference = position.clone();
@@ -264,7 +334,7 @@ mod reuse_tests {
     #[test]
     fn reuse_matches_rebuilding_after_temporal_moves_collisions_and_cancellations() {
         for text in [
-            include_str!("../../tests/fixtures/castling_rook_collision.nolan"),
+            "NOLAN-CHESS 2\ncausal_gaps off\nmove 0 12:0:0 e2 e4 + normal\nmove 1 28:1:0 e7 e5 + normal\nmove 2 6:2:0 g1 f3 - normal\nmove 3 21:3:0 f8 b4 - normal\nmove 0 6:2:1 f3 e5 + normal\n",
             "NOLAN-CHESS 4\nchain_info_activation on\nglobal_reaction_reset on\nstart time_war 5\nmove 0 12:0:0 e2 e4 + normal\nmove 5 28:5:0 e7 e5 - normal\n",
         ] {
             let (end, journal) = GameRecord::load(text).unwrap();

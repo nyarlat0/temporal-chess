@@ -249,7 +249,7 @@ impl Search {
                     self.result.rejected += 1;
                 }
             }
-            if piece.rights.ordinary && frame.engine.history().rules().wait_before_move {
+            if piece.rights.ordinary {
                 let source = PieceAt {
                     piece: PieceId::from_piv(piece),
                     t: piece.t,

@@ -260,9 +260,7 @@ fn generated_actions_include_inversion_promotion_decline_and_calculation() {
     )
     .unwrap();
     assert!(generated(engine).contains(&Command::DeclineReactions));
-    let text = include_str!("../../engine/tests/fixtures/castling_rook_collision.nolan");
-    let prefix = text.split("\ncontinue\n").next().unwrap();
-    let (engine, _) = GameRecord::load(prefix).unwrap();
+    let (engine, _) = GameRecord::load("NOLAN-CHESS 2\ncausal_gaps off\nmove 0 12:0:0 e2 e4 + normal\nmove 1 28:1:0 e7 e5 + normal\nmove 2 6:2:0 g1 f3 - normal\nmove 3 21:3:0 f8 b4 - normal\nmove 0 6:2:1 f3 e5 + normal\n").unwrap();
     assert!(generated(engine).contains(&Command::Continue));
 }
 

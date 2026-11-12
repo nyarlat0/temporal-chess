@@ -82,14 +82,13 @@ fn inversion_discards_future_and_return_builds_a_new_continuation() {
     assert!(engine.history.worldlines[0].iter().all(|s| s.t <= 4));
     play(&mut engine, 2, 1, TimeDirection::Future, Sq(4, 3));
     assert_eq!(engine.history.worldlines[0][8].loop_turn, 2);
-    play(&mut engine, 4, 2, TimeDirection::Future, Sq(2, 4));
     let states = &engine.history.worldlines[0];
     assert_eq!(states.len(), 11);
     assert_eq!(
         (states[9].t, states[9].loop_turn, states[9].fut_seen),
         (5, 0, 5)
     );
-    assert_eq!(Sq(states[9].x, states[9].y), Sq(2, 4));
+    assert_eq!(Sq(states[9].x, states[9].y), Sq(4, 3));
     assert_eq!(
         Engine::from_history(engine.history.clone(), engine.turn).unwrap(),
         engine
@@ -116,11 +115,13 @@ fn nested_turns_repay_each_pivot_once() {
     play(&mut engine, 4, 2, TimeDirection::Past, Sq(7, 4));
     play(&mut engine, 2, 3, TimeDirection::Future, Sq(5, 3));
     let tip = engine.history.worldlines[0].last().unwrap();
-    assert_eq!(tip.loop_turn, 4);
-    play(&mut engine, 4, 4, TimeDirection::Future, Sq(3, 4));
-    let tip = engine.history.worldlines[0].last().unwrap();
-    assert_eq!((tip.t, tip.loop_turn), (6, 2));
-    play(&mut engine, 6, 2, TimeDirection::Future, Sq(2, 6));
+    assert_eq!((tip.t, tip.loop_turn), (8, 0));
+    assert!(
+        engine.history.worldlines[0]
+            .iter()
+            .filter(|s| s.is_loop_exit())
+            .all(|s| !s.rights.is_movable())
+    );
     assert!(engine.history.worldlines[0].gaps().is_empty());
     assert_eq!(
         Engine::from_history(engine.history.clone(), engine.turn).unwrap(),
@@ -134,9 +135,7 @@ fn replacing_past_with_future_removes_the_excursion_and_its_moves() {
     let root = play(&mut engine, 6, 0, TimeDirection::Past, Sq(2, 2));
     let child = play(&mut engine, 4, 1, TimeDirection::Past, Sq(4, 3));
     let source = engine.projection.pieces[&root.source()];
-    engine.history.worldlines[0][source.age]
-        .rights
-        .new_information = true;
+    engine.history.worldlines[0][source.age].rights.ordinary = true;
     play(&mut engine, 6, 0, TimeDirection::Future, Sq(0, 2));
     assert_eq!(engine.history.worldlines[0].len(), 9);
     assert!(engine.history.worldlines[0].gaps().is_empty());
@@ -153,17 +152,18 @@ fn replacing_past_with_future_removes_the_excursion_and_its_moves() {
 }
 
 #[test]
-fn replacing_past_with_another_past_move_preserves_the_loop_and_future() {
+fn replacing_past_with_past_rebuilds_the_loop_without_resurrecting_discarded_future() {
     let mut engine = game(6);
-    let tail = engine.history.worldlines[0][5..].to_vec();
     let root = play(&mut engine, 4, 0, TimeDirection::Past, Sq(2, 2));
     let source = engine.projection.pieces[&root.source()];
-    engine.history.worldlines[0][source.age]
-        .rights
-        .new_information = true;
+    engine.history.worldlines[0][source.age].rights.ordinary = true;
     play(&mut engine, 4, 0, TimeDirection::Past, Sq(0, 2));
-    assert_eq!(engine.history.worldlines[0].len(), 9);
-    assert_eq!(&engine.history.worldlines[0][7..], tail);
+    assert_eq!(engine.history.worldlines[0].len(), 7);
+    assert!(
+        engine.history.worldlines[0]
+            .iter()
+            .all(|state| state.t <= 4)
+    );
     assert_eq!(engine.history.worldlines[0][5].loop_turn, 1);
     assert_eq!(
         Sq(
@@ -212,16 +212,17 @@ fn future_moves_see_future_blockers_and_past_moves_see_past_blockers() {
 }
 
 #[test]
-fn replacing_an_existing_forward_move_with_past_keeps_its_future_positions() {
+fn replacing_forward_with_past_discards_its_future_positions() {
     let mut engine = game(8);
     let forward = play(&mut engine, 4, 0, TimeDirection::Future, Sq(0, 2));
-    let tail = engine.history.worldlines[0][5..].to_vec();
     let source = engine.projection.pieces[&forward.source()];
-    engine.history.worldlines[0][source.age]
-        .rights
-        .new_information = true;
+    engine.history.worldlines[0][source.age].rights.ordinary = true;
     play(&mut engine, 4, 0, TimeDirection::Past, Sq(2, 2));
-    assert_eq!(&engine.history.worldlines[0][7..], tail);
+    assert!(
+        engine.history.worldlines[0]
+            .iter()
+            .all(|state| state.t <= 4)
+    );
     assert_eq!(
         Engine::from_history(engine.history.clone(), engine.turn).unwrap(),
         engine
@@ -235,7 +236,7 @@ fn inversion_removes_preexisting_future_moves_without_restoring_them_on_return()
     play(&mut engine, 4, 0, TimeDirection::Past, Sq(2, 2));
     assert!(!engine.history.moves.contains_key(&future_move.id()));
     play(&mut engine, 2, 1, TimeDirection::Future, Sq(4, 3));
-    play(&mut engine, 4, 2, TimeDirection::Future, Sq(2, 4));
+    assert_eq!(engine.history.worldlines[0].last().unwrap().t, 6);
     assert!(!engine.history.moves.contains_key(&future_move.id()));
     assert!(engine.history.worldlines[0].gaps().is_empty());
     assert_eq!(
@@ -249,11 +250,9 @@ fn a_completed_loop_can_be_replaced_without_leaving_stale_moves_or_states() {
     let mut engine = game(6);
     let root = play(&mut engine, 4, 0, TimeDirection::Past, Sq(2, 2));
     let returning = play(&mut engine, 2, 1, TimeDirection::Future, Sq(4, 3));
-    let closing = play(&mut engine, 4, 2, TimeDirection::Future, Sq(2, 4));
+    let closing = play(&mut engine, 6, 0, TimeDirection::Future, Sq(2, 4));
     let source = engine.projection.pieces[&root.source()];
-    engine.history.worldlines[0][source.age]
-        .rights
-        .new_information = true;
+    engine.history.worldlines[0][source.age].rights.ordinary = true;
     play(&mut engine, 4, 0, TimeDirection::Future, Sq(0, 2));
     assert_eq!(engine.history.worldlines[0].len(), 7);
     assert!(!engine.history.moves.contains_key(&returning.id()));
@@ -266,24 +265,20 @@ fn a_completed_loop_can_be_replaced_without_leaving_stale_moves_or_states() {
 }
 
 #[test]
-fn a_nested_gap_joins_its_own_tail_before_the_outer_loop_closes() {
+fn replacing_an_inner_return_discards_its_tail_and_closes_without_gaps() {
     let mut engine = game(8);
     play(&mut engine, 6, 0, TimeDirection::Past, Sq(2, 2));
     play(&mut engine, 4, 1, TimeDirection::Past, Sq(4, 3));
     let returning = play(&mut engine, 2, 1, TimeDirection::Future, Sq(5, 5));
     let inner_source = engine.projection.pieces[&returning.source()].age + 2;
     play(&mut engine, 4, 2, TimeDirection::Future, Sq(3, 4));
-    let tail = engine.history.worldlines[0][inner_source + 1..].to_vec();
-    engine.history.worldlines[0][inner_source]
-        .rights
-        .new_information = true;
+    engine.history.worldlines[0][inner_source].rights.ordinary = true;
     play(&mut engine, 4, 2, TimeDirection::Past, Sq(7, 4));
-    assert_eq!(engine.history.worldlines[0].gaps().len(), 2);
-    assert_eq!(&engine.history.worldlines[0][inner_source + 3..], tail);
+    assert!(engine.history.worldlines[0].gaps().is_empty());
+    assert_eq!(engine.history.worldlines[0].len(), inner_source + 3);
     play(&mut engine, 2, 3, TimeDirection::Future, Sq(5, 3));
-    play(&mut engine, 4, 4, TimeDirection::Future, Sq(3, 4));
-    assert_eq!(engine.history.worldlines[0].gaps().len(), 1);
-    play(&mut engine, 6, 2, TimeDirection::Future, Sq(2, 6));
+    assert!(engine.history.worldlines[0].gaps().is_empty());
+    assert_eq!(engine.history.worldlines[0].last().unwrap().t, 8);
     assert!(engine.history.worldlines[0].gaps().is_empty());
     assert_eq!(
         Engine::from_history(engine.history.clone(), engine.turn).unwrap(),
@@ -346,7 +341,6 @@ fn a_frontier_loop_closes_without_duplicating_its_incarnation() {
     let mut engine = game(4);
     play(&mut engine, 4, 0, TimeDirection::Past, Sq(2, 2));
     play(&mut engine, 2, 1, TimeDirection::Future, Sq(4, 3));
-    play(&mut engine, 4, 2, TimeDirection::Future, Sq(2, 4));
     assert!(engine.history.worldlines[0].gaps().is_empty());
     assert_eq!(engine.board(5).unwrap().find_by_origin(0).len(), 1);
     assert_eq!(engine.history.worldlines[0].last().unwrap().loop_turn, 0);
@@ -448,13 +442,11 @@ fn replacing_a_deeper_backward_move_removes_only_its_excursion() {
     let returning = play(&mut engine, 2, 1, TimeDirection::Future, Sq(5, 5));
     play(&mut engine, 4, 2, TimeDirection::Future, Sq(3, 4));
     let source = engine.projection.pieces[&child.source()];
-    engine.history.worldlines[0][source.age]
-        .rights
-        .new_information = true;
+    engine.history.worldlines[0][source.age].rights.ordinary = true;
     play(&mut engine, 4, 1, TimeDirection::Future, Sq(0, 3));
     assert_eq!(engine.history.moves[&root.id()], root);
     assert!(!engine.history.moves.contains_key(&returning.id()));
-    assert_eq!(engine.history.worldlines[0].gaps().len(), 1);
+    assert!(engine.history.worldlines[0].gaps().is_empty());
     assert_eq!(
         Engine::from_history(engine.history.clone(), engine.turn).unwrap(),
         engine
@@ -485,10 +477,11 @@ fn only_a_new_capture_on_the_current_board_grants_information() {
         assert_eq!(source.rights.new_information, target_time == 2);
         assert!(!source.rights.ordinary);
         assert_eq!(
-            source.informed.contains(&PieceId::from_state(
-                &engine.history.worldlines[1][target_time],
-                1
-            )),
+            source
+                .informed
+                .contains(&crate::model::Observation::from_state(
+                    &engine.history.worldlines[1][target_time]
+                )),
             target_time == 2
         );
     }
@@ -552,7 +545,7 @@ fn equal_pivots_are_both_repaid_only_after_their_board_time() {
 }
 
 #[test]
-fn replacing_castling_restores_rook_and_inversion_preserves_king_future() {
+fn replacing_castling_restores_rook_and_inversion_discards_king_future() {
     let king: Vec<_> = line(4)
         .into_iter()
         .map(|state| State {
@@ -574,7 +567,7 @@ fn replacing_castling_restores_rook_and_inversion_preserves_king_future() {
     let mut engine = super::legacy_from_worldlines(vec![king, rook], Color::White).unwrap();
     let castling = play(&mut engine, 2, 0, TimeDirection::Future, Sq(6, 0));
     assert!(castling.castling().is_some());
-    engine.history.worldlines[0][2].rights.new_information = true;
+    engine.history.worldlines[0][2].rights.ordinary = true;
     let before = engine.clone();
     play(&mut engine, 2, 0, TimeDirection::Future, Sq(5, 0));
     assert_eq!(engine.get_piv(1, 3).unwrap().sq, Sq(7, 0));
@@ -589,9 +582,12 @@ fn replacing_castling_restores_rook_and_inversion_preserves_king_future() {
     );
 
     engine = before;
-    let tail = engine.history.worldlines[0][3..].to_vec();
     play(&mut engine, 2, 0, TimeDirection::Past, Sq(3, 1));
-    assert_eq!(&engine.history.worldlines[0][5..], tail);
+    assert!(
+        engine.history.worldlines[0]
+            .iter()
+            .all(|state| state.t <= 2)
+    );
     assert_eq!(engine.get_piv(1, 3).unwrap().sq, Sq(7, 0));
     assert_eq!(
         engine.get_piv(1, 3).unwrap().kind,

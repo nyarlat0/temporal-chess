@@ -10,7 +10,7 @@ fn line(color: Color, sq: Sq, end: usize) -> Vec<State> {
 }
 
 #[test]
-fn calculation_advances_one_own_cancelled_board_without_spending_rights_or_turn() {
+fn consequence_free_cancellations_do_not_pause_or_spend_rights_or_turn() {
     let mut white = line(Color::White, Sq(1, 0), 6);
     white[2].rights.cancelled_move = true;
     white[4].rights.cancelled_move = true;
@@ -20,15 +20,9 @@ fn calculation_advances_one_own_cancelled_board_without_spending_rights_or_turn(
         .unwrap()
         .with_interactive_calculation()
         .unwrap();
-    assert_eq!(
-        engine.calculation_status(),
-        CalculationStatus::Paused {
-            t: 2,
-            side: Color::White
-        }
-    );
+    assert_eq!(engine.calculation_status(), CalculationStatus::Complete);
     assert!(engine.board(2).is_some());
-    assert!(engine.board(3).is_none());
+    assert!(engine.board(3).is_some());
     assert!(engine.preboard(6).is_some());
     assert_eq!(
         engine.timeline_times().collect::<Vec<_>>(),
@@ -41,13 +35,10 @@ fn calculation_advances_one_own_cancelled_board_without_spending_rights_or_turn(
     );
     assert_eq!(
         engine.continue_calculation().unwrap(),
-        CalculationStatus::Paused {
-            t: 4,
-            side: Color::White
-        }
+        CalculationStatus::Complete
     );
     assert!(engine.board(4).is_some());
-    assert!(engine.board(5).is_none());
+    assert!(engine.board(5).is_some());
     assert_eq!(
         engine.continue_calculation().unwrap(),
         CalculationStatus::Complete
@@ -170,7 +161,7 @@ fn skip_preview_includes_intermediate_times_and_ignores_wrong_orientation() {
         piece: PieceId::from_state(&engine.history.worldlines[0][2], 0),
         t: 2,
     };
-    assert_eq!(engine.possible_skips(source), [3, 4, 5, 6]);
+    assert_eq!(engine.possible_skips(source), [4, 6]);
     let mut waiting = engine.clone();
     waiting.skip_ordinary(source, 4).unwrap();
     assert_eq!(waiting.turn(), Color::White);

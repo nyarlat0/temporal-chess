@@ -29,7 +29,22 @@ impl Engine {
         for effect in effects {
             match effect {
                 CollisionEffect::KillFrom(id) => self.kill_piece(id.wid, id.age),
-                CollisionEffect::CancelLastMove(piece) => self.undo_last_mv(piece),
+                CollisionEffect::CancelLastMove(piece) => match self.undo_last_mv(piece) {
+                    Err(EngineErr::WrongMove) => {
+                        // A passive inverted reserve may never have moved.
+                        // Cancel the actual arrival into it, not a nonexistent
+                        // move of the stationary piece.
+                        if let Some(root) = self.track_collision(piv, other_piv)
+                            && root.collided.origin == piece.origin
+                            && root.bf_collider.sq != root.collider.sq
+                        {
+                            self.undo_last_mv(root.collider)
+                        } else {
+                            Err(EngineErr::WrongMove)
+                        }
+                    }
+                    result => result,
+                },
             }
             .map_err(|e| e.during(format!("resolving collision: {effect:?}")))?;
         }

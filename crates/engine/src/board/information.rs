@@ -1,13 +1,13 @@
 use std::collections::BTreeSet;
 
-use crate::model::{PieceId, ShortPieceId};
+use crate::model::{Observation, ShortPieceId};
 use crate::pieces::Color;
 
 use super::{Board, PreBoard};
 
 impl Board {
     /// Capturable enemy identities visible on this board, without temporal context.
-    pub fn calc_info(&self) -> Vec<(ShortPieceId, BTreeSet<PieceId>)> {
+    pub fn calc_info(&self) -> Vec<(ShortPieceId, BTreeSet<Observation>)> {
         self.calc_info_with_en_passant(&[])
     }
 
@@ -16,7 +16,7 @@ impl Board {
     pub(crate) fn calc_info_with_en_passant(
         &self,
         adjacent: &[&PreBoard],
-    ) -> Vec<(ShortPieceId, BTreeSet<PieceId>)> {
+    ) -> Vec<(ShortPieceId, BTreeSet<Observation>)> {
         let side = Color::from_board(self.age);
         let mut out = Vec::new();
 
@@ -31,14 +31,14 @@ impl Board {
             for sq in sqs.iter() {
                 if self.is_enemy(side, *sq) {
                     let enemy = self.get_piece(sq.0, sq.1).unwrap();
-                    info.insert(PieceId::from_piv(*enemy));
+                    info.insert(Observation::from_piv(*enemy));
                 }
             }
 
             for previous in adjacent {
                 for (_, captured) in p.en_passant_moves(self, previous) {
                     if let Some(enemy) = self.get_piece(captured.0, captured.1) {
-                        info.insert(PieceId::from_piv(*enemy));
+                        info.insert(Observation::from_piv(*enemy));
                     }
                 }
             }

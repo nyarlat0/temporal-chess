@@ -276,28 +276,35 @@ pub fn ribbon(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt) {
             .max_rect(controls.shrink(4.0))
             .layout(egui::Layout::top_down(egui::Align::Center)),
     );
-    let enabled = !moving && game.replay_job.is_none() && !game.active_times().is_empty();
-    if icon_button(
-        &mut nav,
-        Icon::Up,
-        crate::tr!("Предыдущая активная доска", "Previous active board"),
-        false,
-        enabled,
-    )
-    .clicked()
-    {
-        game.navigate_active(false);
-    }
-    if icon_button(
-        &mut nav,
-        Icon::Down,
-        crate::tr!("Следующая активная доска", "Next active board"),
-        false,
-        enabled,
-    )
-    .clicked()
-    {
-        game.navigate_active(true);
+    let enabled = !moving
+        && game.replay_job.is_none()
+        && (!game.active_times().is_empty()
+            || !game
+                .active_times_for(game.engine.turn().opposite())
+                .is_empty());
+    for (icon, next, hint) in [
+        (
+            Icon::Up,
+            false,
+            crate::tr!(
+                "Предыдущая активная доска · ПКМ: противника",
+                "Previous active board · Right click: opponent"
+            ),
+        ),
+        (
+            Icon::Down,
+            true,
+            crate::tr!(
+                "Следующая активная доска · ПКМ: противника",
+                "Next active board · Right click: opponent"
+            ),
+        ),
+    ] {
+        let response = icon_button(&mut nav, icon, hint, false, enabled);
+        let opponent = response.secondary_clicked();
+        if response.clicked() || opponent {
+            game.navigate_active(next, opponent);
+        }
     }
     if game.playback_busy()
         || game.facing.animating()
@@ -1187,8 +1194,10 @@ mod tests {
         let mut game = GameUi::default();
         game.click_square(0, Sq(4, 1));
         game.click_square(0, Sq(4, 3));
+        game.reset_playback();
         game.click_square(1, Sq(3, 6));
         game.click_square(1, Sq(3, 4));
+        game.reset_playback();
         game.click_square(2, Sq(4, 3));
         let before = game.engine.clone();
         let victim = *game.engine.board(2).unwrap().get_piece(3, 4).unwrap();

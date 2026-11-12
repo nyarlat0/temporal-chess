@@ -103,7 +103,7 @@ fn disappearance_within_the_same_turn_clears_or_reassigns_the_reaction() {
 #[test]
 fn remembering_is_additive_and_does_not_accept_later_board_reactions() {
     let mut engine = observed(true);
-    let target = PieceId::from_state(&engine.history.worldlines[1][0], 1);
+    let target = crate::model::Observation::from_state(&engine.history.worldlines[1][0]);
     engine.remember_information(Color::White, 2);
     engine.reconcile().unwrap();
     assert_eq!(reacting_times(&engine, 0), [4]);
@@ -135,7 +135,8 @@ fn remembering_is_additive_and_does_not_accept_later_board_reactions() {
 #[test]
 fn move_remembers_the_view_before_its_spatial_and_temporal_edits() {
     let mut engine = observed(false);
-    let target = PieceId::from_state(&engine.history.worldlines[1][0], 1);
+    engine.history.rules.global_reaction_reset = false;
+    let target = crate::model::Observation::from_state(&engine.history.worldlines[1][0]);
     let mv = engine
         .possible_moves(0, 0)
         .unwrap()
@@ -169,6 +170,7 @@ fn declining_acknowledges_all_reactions_and_prevents_reactivation() {
 #[test]
 fn free_wait_does_not_acknowledge_other_figures_information() {
     let mut engine = observed(false);
+    engine.history.rules.wait_before_move = true;
     let mut waiting = line(PieceKind::N, Color::White, Sq(7, 0), false);
     waiting[0].rights.ordinary = true;
     waiting[4].rights.ordinary = true;
@@ -210,6 +212,7 @@ fn disappearing_en_passant_dynamically_retires_the_reaction() {
 #[test]
 fn free_wait_can_remove_an_existing_reaction_without_consuming_a_turn() {
     let mut engine = observed(false);
+    engine.history.rules.wait_before_move = true;
     let mut blocker = line(PieceKind::N, Color::White, Sq(0, 2), false);
     blocker.truncate(1);
     blocker[0].rights.ordinary = true;
@@ -229,7 +232,7 @@ fn free_wait_can_remove_an_existing_reaction_without_consuming_a_turn() {
 }
 
 #[test]
-fn full_target_identity_distinguishes_future_knowledge_and_loop_turn() {
+fn target_appearance_ignores_future_knowledge_and_loop_turn() {
     for change_loop in [false, true] {
         let mut engine = observed(false);
         // Observe the same worldline with a different causal identity at t=2.
@@ -240,7 +243,7 @@ fn full_target_identity_distinguishes_future_knowledge_and_loop_turn() {
             later.fut_seen += 1;
         }
         engine.reconcile().unwrap();
-        assert_eq!(reacting_times(&engine, 0), [0, 2]);
+        assert_eq!(reacting_times(&engine, 0), [0]);
         engine.remember_information(Color::White, 0);
         engine.reconcile().unwrap();
         assert!(engine.history.worldlines[0][2].rights.new_information);
@@ -373,15 +376,16 @@ fn waiting_remembers_its_result_without_activating_the_waiting_piece() {
     for inverted in [false, true] {
         for chain_info_activation in [false, true] {
             let mut engine = observed(inverted);
+            engine.history.rules.wait_before_move = true;
             engine.history.rules.chain_info_activation = chain_info_activation;
             engine.history.worldlines[0][0].rights.ordinary = true;
             engine.history.worldlines[0][4].rights.ordinary = true;
             engine.reconcile().unwrap();
-            let target = PieceId::from_state(&engine.history.worldlines[1][0], 1);
-            let old_memory = PieceId {
-                wid: 123,
-                fut_seen: 9,
-                loop_turn: 1,
+            let target = crate::model::Observation::from_state(&engine.history.worldlines[1][0]);
+            let old_memory = crate::model::Observation {
+                square: Sq(7, 7),
+                kind: PieceKind::Q,
+                inverted: true,
             };
             engine.history.worldlines[0][0]
                 .remembered

@@ -41,7 +41,9 @@ fn skipping_only_arrives_on_own_color_in_both_orientations() {
             if inverted {
                 let state = engine.history.worldlines[0][start].clone();
                 engine.history.worldlines[0].states.truncate(start + 1);
-                let next = state.step(TimeDirection::Past).unwrap();
+                let mut next = state.step(TimeDirection::Past).unwrap();
+                next.x = 2;
+                next.y = 2;
                 engine.history.worldlines[0].states.push(next.clone());
                 engine.history.worldlines[0]
                     .states
@@ -115,6 +117,10 @@ fn records_keep_independent_rules_and_reject_removed_gap_mode() {
             .unwrap()
             .1
             .rules(),
-        Default::default()
+        crate::model::GameRules {
+            wait_before_move: true,
+            global_reaction_reset: false,
+            ..Default::default()
+        }
     );
 }

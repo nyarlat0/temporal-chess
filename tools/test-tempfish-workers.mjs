@@ -28,7 +28,7 @@ if (!isMainThread) {
         terminate() { this.worker.terminate(); }
     };
     const pool = await import(new URL('tempfish-pool.js', location));
-    const header = 'NOLAN-CHESS 5\nchain_info_activation off\nglobal_reaction_reset off\nwait_before_move off\n';
+    const header = 'NOLAN-CHESS 6\nchain_info_activation off\nreact_multiple off\nfree_wait off\n';
     async function wait(id, predicate) {
         const deadline = Date.now() + 60000;
         for (;;) {

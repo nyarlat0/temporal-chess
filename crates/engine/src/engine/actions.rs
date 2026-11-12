@@ -246,7 +246,7 @@ impl Engine {
         idle_endpoints
     }
 
-    fn deact_prev_reactable(&mut self, side: Color, until_t: usize) {
+    pub(super) fn deact_prev_reactable(&mut self, side: Color, until_t: usize) {
         for state in self
             .history
             .worldlines
