@@ -132,6 +132,29 @@ impl Engine {
         }
     }
 
+    /// Learn the final view on the same boards acknowledged before the turn.
+    /// Reconcile again because removing information reactions may release a
+    /// calculation checkpoint or change automatic continuation. Memory only grows.
+    pub(super) fn remember_resulting_information(
+        &mut self,
+        side: Color,
+        until_t: usize,
+    ) -> Result<(), EngineErr> {
+        loop {
+            let has_new = self
+                .history
+                .worldlines
+                .iter()
+                .flat_map(|line| line.iter())
+                .any(|s| s.color == side && s.t <= until_t && !s.informed.is_subset(&s.remembered));
+            if !has_new {
+                return Ok(());
+            }
+            self.remember_information(side, until_t);
+            self.reconcile()?;
+        }
+    }
+
     /// Rebuild all indexes from the authoritative worldlines, including dead states
     /// for historical move lookup. Empty slices are kept even if everyone died.
     pub(super) fn update_bufs(&mut self) -> Result<(), EngineErr> {

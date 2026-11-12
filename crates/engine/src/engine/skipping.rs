@@ -33,7 +33,8 @@ impl Engine {
             candidate.deact_prev_reactable(actor, limit);
             candidate.history.calculation.acknowledged.clear();
             candidate.history.calculation.responsible = Some(actor);
-            candidate.skip_with_information_mode(source, to_t, true, actor.opposite())
+            candidate.skip_with_information_mode(source, to_t, true, actor.opposite())?;
+            candidate.remember_resulting_information(actor, limit)
         })
     }
 

@@ -85,7 +85,13 @@ impl Engine {
                 next.skip_with_information_mode(source, until, false, actor.opposite())?;
             }
             next.turn = actor.opposite();
-            next.reconcile()
+            next.reconcile()?;
+            let limit = if next.history.rules.global_reaction_reset {
+                usize::MAX
+            } else {
+                mv.t
+            };
+            next.remember_resulting_information(actor, limit)
         })
     }
 

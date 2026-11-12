@@ -424,3 +424,89 @@ fn waiting_remembers_its_result_without_activating_the_waiting_piece() {
         }
     }
 }
+
+#[test]
+fn own_move_remembers_both_views_of_the_reported_inverted_queen() {
+    use crate::record::GameRecord;
+    let text = include_str!("../../tests/fixtures/queen_post_move_information.nolan");
+    let (engine, record) = GameRecord::load(text).unwrap();
+    let queen = engine.history.worldlines[19]
+        .iter()
+        .find(|s| s.t == 5 && s.inverted)
+        .unwrap();
+    assert_eq!(Sq(queen.x, queen.y), Sq(1, 1));
+    assert!(!queen.rights.new_information);
+    assert!(queen.informed.is_subset(&queen.remembered));
+    for (square, kind) in [
+        (Sq(1, 1), PieceKind::P { moved: false }),
+        (Sq(5, 1), PieceKind::P { moved: false }),
+        (Sq(0, 0), PieceKind::R { moved: false }),
+        (Sq(0, 1), PieceKind::P { moved: false }),
+        (Sq(2, 0), PieceKind::B),
+        (Sq(2, 1), PieceKind::P { moved: false }),
+    ] {
+        assert!(
+            queen.remembered.contains(&crate::model::Observation {
+                square,
+                kind,
+                inverted: false
+            }),
+            "{square:?}"
+        );
+    }
+    assert_eq!(GameRecord::load(&record.to_text()).unwrap().0, engine);
+}
+
+#[test]
+fn post_move_memory_respects_reaction_scope_and_keeps_opponents_memory() {
+    for global in [false, true] {
+        let mut rook = line(PieceKind::R { moved: true }, Color::White, Sq(0, 0), false);
+        rook[0].rights.ordinary = true;
+        let mut engine = Engine::from_worldlines_with_rules(
+            vec![
+                rook,
+                line(PieceKind::N, Color::Black, Sq(0, 4), false),
+                line(PieceKind::N, Color::Black, Sq(1, 4), false),
+            ],
+            Color::White,
+            crate::model::GameRules {
+                global_reaction_reset: global,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let enemy_memory: Vec<_> = engine.history.worldlines[1..]
+            .iter()
+            .map(|l| l.iter().map(|s| s.remembered.clone()).collect::<Vec<_>>())
+            .collect();
+        let mv = engine
+            .possible_moves(0, 0)
+            .unwrap()
+            .into_iter()
+            .find(|m| !m.to_past() && m.sq == Sq(1, 0))
+            .unwrap();
+        engine.apply_new_mv(mv).unwrap();
+        let observed = crate::model::Observation {
+            square: Sq(1, 4),
+            kind: PieceKind::N,
+            inverted: false,
+        };
+        let later = engine.history.worldlines[0]
+            .iter()
+            .find(|s| s.t == 2)
+            .unwrap();
+        assert!(later.informed.contains(&observed));
+        assert_eq!(later.remembered.contains(&observed), global);
+        assert_eq!(
+            engine.history.worldlines[1..]
+                .iter()
+                .map(|l| l.iter().map(|s| s.remembered.clone()).collect::<Vec<_>>())
+                .collect::<Vec<_>>(),
+            enemy_memory
+        );
+        assert_eq!(
+            Engine::from_history(engine.history.clone(), engine.turn()).unwrap(),
+            engine
+        );
+    }
+}
