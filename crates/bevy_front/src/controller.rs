@@ -474,7 +474,7 @@ impl GameUi {
                 if let Some(selection) = &mut self.selected {
                     selection.direction = TimeDirection::from_inverted(!piece.inverted);
                 }
-            } else if pieces.is_empty() {
+            } else {
                 self.toggle_direction();
             }
             return;
