@@ -61,7 +61,10 @@ fn en_passant_information_reacts_in_both_time_directions() {
             arrived.kind = PieceKind::P { moved: true };
             let waiting = arrived.prolongate().unwrap();
             let mut engine = Engine::from_worldlines(
-                vec![vec![observer], vec![victim, arrived, waiting]],
+                vec![
+                    vec![observer.clone(), observer.prolongate().unwrap()],
+                    vec![victim, arrived, waiting],
+                ],
                 Color::White,
             )
             .unwrap();
@@ -307,7 +310,7 @@ fn new_information_grants_an_optional_reaction_without_granting_an_ordinary_move
     rook.rights.ordinary = false;
     let mut engine = super::legacy_from_worldlines(
         vec![
-            vec![rook],
+            vec![rook.clone(), rook.prolongate().unwrap()],
             vec![State::new(
                 PieceKind::P { moved: true },
                 Color::Black,

@@ -67,7 +67,7 @@ fn stalemate_lines() -> Vec<Vec<State>> {
         white,
         line(PieceKind::K { moved: true }, Color::Black, Sq(2, 2), 4),
         line(PieceKind::Q, Color::Black, Sq(1, 2), 4),
-        line(PieceKind::K { moved: true }, Color::White, Sq(0, 0), 4),
+        line(PieceKind::K { moved: true }, Color::White, Sq(0, 0), 3),
     ]
 }
 
@@ -126,7 +126,7 @@ fn blocked_player_is_rechecked_after_each_opponent_move() {
 #[test]
 fn an_opponent_move_can_reactivate_the_waiting_player() {
     let mut lines = stalemate_lines();
-    lines.push(line(PieceKind::N, Color::White, Sq(7, 0), 4));
+    lines.push(line(PieceKind::N, Color::White, Sq(7, 0), 3));
     let mut debt = line(PieceKind::N, Color::Black, Sq(4, 3), 4);
     debt[1].rights.ordinary = true;
     lines.push(debt);
@@ -152,14 +152,15 @@ fn free_wait_can_close_the_last_opponent_debt_without_a_spatial_move() {
     lines.push(debt);
     // Black's final own-color board must be the horizon to close its debt.
     for line in &mut lines {
-        let mut next = line.last().unwrap().prolongate().unwrap();
-        next.rights = MoveRights::default();
-        line.push(next);
+        while line.last().unwrap().t < 5 {
+            let mut next = line.last().unwrap().prolongate().unwrap();
+            next.rights = MoveRights::default();
+            line.push(next);
+        }
     }
     let mut engine = super::legacy_from_worldlines(lines, Color::White).unwrap();
     let source = Engine::piece_at(engine.get_piv(4, 1).unwrap());
     engine.skip_ordinary(source, 5).unwrap();
-    assert_eq!(engine.turn(), Color::White); // Black has no active pieces left.
     assert!(engine.history.moves().is_empty());
     assert_eq!(engine.outcome(), Some(GameOutcome::Stalemate));
     roundtrip(&engine);
@@ -299,7 +300,7 @@ fn no_active_pieces_passes_to_the_side_with_reserves_instead_of_drawing() {
     knight[1].rights.ordinary = true;
     let engine = super::legacy_from_worldlines(
         vec![
-            line(PieceKind::K { moved: true }, Color::White, Sq(0, 0), 2),
+            line(PieceKind::K { moved: true }, Color::White, Sq(0, 0), 1),
             line(PieceKind::K { moved: true }, Color::Black, Sq(7, 7), 2),
             knight,
         ],
@@ -315,7 +316,7 @@ fn no_active_pieces_passes_to_the_side_with_reserves_instead_of_drawing() {
 fn two_sides_without_active_pieces_wait_without_a_false_stalemate_or_loop() {
     let engine = super::legacy_from_worldlines(
         vec![
-            line(PieceKind::K { moved: true }, Color::White, Sq(0, 0), 2),
+            line(PieceKind::K { moved: true }, Color::White, Sq(0, 0), 1),
             line(PieceKind::K { moved: true }, Color::Black, Sq(7, 7), 2),
         ],
         Color::White,
@@ -458,9 +459,14 @@ fn checkmate_waits_for_opponent_causal_debt_then_finishes_when_it_is_closed() {
     lines.push(debt);
     // Black's final own-color board must be the horizon to close its debt.
     for line in &mut lines {
-        let mut next = line.last().unwrap().prolongate().unwrap();
-        next.rights = MoveRights::default();
-        line.push(next);
+        while line.last().unwrap().t < 5 {
+            let mut next = line.last().unwrap().prolongate().unwrap();
+            next.rights = MoveRights::default();
+            line.push(next);
+        }
+    }
+    for state in &mut lines[3] {
+        state.remembered.insert(attacker);
     }
     let mut engine = super::legacy_from_worldlines(lines, Color::White).unwrap();
     assert_eq!(

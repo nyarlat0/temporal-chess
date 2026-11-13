@@ -253,7 +253,7 @@ fn generated_actions_include_inversion_promotion_decline_and_calculation() {
     rook.rights.ordinary = false;
     let engine = Engine::from_worldlines(
         vec![
-            vec![rook],
+            vec![rook.clone(), rook.prolongate().unwrap()],
             vec![State::new(PieceKind::N, Color::Black, Sq(0, 4))],
         ],
         Color::White,

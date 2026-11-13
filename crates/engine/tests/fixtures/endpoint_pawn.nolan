@@ -1,0 +1,15 @@
+NOLAN-CHESS 6
+chain_info_activation off
+react_multiple off
+free_wait off
+start standard
+move 0 11:0:0 d2 d4 + normal
+move 1 28:1:0 e7 e5 + normal
+move 2 6:2:0 g1 f3 - normal
+move 3 21:3:0 f8 b4 + normal
+move 0 6:2:1 f3 d2 + normal wait 4
+move 4 11:4:0 d4 e5 + normal
+move 5 22:5:0 g8 f6 - normal
+move 6 10:6:0 c2 c3 - normal
+move 5 21:5:0 b4 c3 - normal
+move 4 9:4:0 b2 c3 - normal

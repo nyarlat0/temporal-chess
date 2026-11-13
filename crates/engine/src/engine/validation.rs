@@ -13,8 +13,11 @@ impl Engine {
         let mut exits = Vec::new();
         for (wid, line) in self.history.worldlines.iter().enumerate() {
             for (age, state) in line.iter().enumerate() {
-                if state.is_loop_exit() && state.rights.is_movable() {
-                    exits.push((wid, age));
+                if state.is_loop_exit()
+                    && (state.rights.is_reaction()
+                        || (age + 1 < line.len() && state.rights.ordinary))
+                {
+                    exits.push((wid, age, age + 1 == line.len()));
                 }
                 if state.alive
                     && state.rights.cancelled_move
@@ -28,8 +31,12 @@ impl Engine {
         for &(wid, age) in &clear {
             self.history.worldlines[wid][age].rights.cancelled_move = false;
         }
-        for &(wid, age) in &exits {
-            self.history.worldlines[wid][age].rights = Default::default();
+        for &(wid, age, terminal) in &exits {
+            if terminal {
+                self.history.worldlines[wid][age].rights.expire_reactions();
+            } else {
+                self.history.worldlines[wid][age].rights = Default::default();
+            }
         }
         Ok(!clear.is_empty() || !exits.is_empty())
     }
@@ -189,6 +196,16 @@ impl Engine {
                 return Err(EngineErr::InfLoop);
             }
             seen.push(self.history.clone());
+            // A living causal endpoint is always an ordinary reserve on its
+            // own-color board, regardless of how its former tail disappeared.
+            for line in &mut self.history.worldlines {
+                if let Some(state) = line.states.last_mut()
+                    && state.alive
+                    && crate::model::Color::from_board(state.t) == state.color
+                {
+                    state.rights.ordinary = true;
+                }
+            }
             self.update_bufs()?;
             if let Some(limit) = self.calculation_barrier() {
                 // Publish only conflict-free snapshots. Do not let an inverted

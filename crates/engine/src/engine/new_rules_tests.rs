@@ -61,7 +61,7 @@ fn same_enemy_appearance_with_different_future_ids_reacts_once_or_in_chain() {
             .filter(|s| s.rights.new_information)
             .map(|s| s.t)
             .collect();
-        assert_eq!(reactive, if chain { vec![0, 2, 4] } else { vec![0] });
+        assert_eq!(reactive, if chain { vec![0, 2] } else { vec![0] });
     }
 }
 

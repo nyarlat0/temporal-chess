@@ -157,6 +157,8 @@ fn move_remembers_the_view_before_its_spatial_and_temporal_edits() {
 #[test]
 fn declining_acknowledges_all_reactions_and_prevents_reactivation() {
     let mut engine = observed(false);
+    engine.history.worldlines[0].states.pop();
+    engine.reconcile().unwrap();
     assert!(engine.can_decline_reactions());
     engine.decline_reactions().unwrap();
     assert_eq!(engine.turn(), Color::Black);
@@ -199,8 +201,14 @@ fn disappearing_en_passant_dynamically_retires_the_reaction() {
         let mut arrived = victim.prolongate().unwrap();
         arrived.y = 4;
         arrived.kind = PieceKind::P { moved: true };
-        let mut engine =
-            Engine::from_worldlines(vec![vec![pawn], vec![victim, arrived]], Color::White).unwrap();
+        let mut engine = Engine::from_worldlines(
+            vec![
+                vec![pawn.clone(), pawn.prolongate().unwrap()],
+                vec![victim, arrived],
+            ],
+            Color::White,
+        )
+        .unwrap();
         assert_eq!(reacting_times(&engine, 0), [2]);
         engine.history.worldlines[1][0].y = 5; // No double step any more.
         engine.reconcile().unwrap();
@@ -271,8 +279,14 @@ fn continuing_paused_calculation_refreshes_both_sides_without_learning() {
     observer.t = 3;
     observer.fut_seen = 4;
     observer.rights = MoveRights::default();
-    let mut engine =
-        Engine::from_worldlines(vec![vec![source, future], vec![observer]], Color::White).unwrap();
+    let mut engine = Engine::from_worldlines(
+        vec![
+            vec![source, future],
+            vec![observer.clone(), observer.prolongate().unwrap()],
+        ],
+        Color::White,
+    )
+    .unwrap();
     assert_eq!(reacting_times(&engine, 1), [3]);
     let mv = engine
         .possible_moves(0, 0)
@@ -334,7 +348,7 @@ fn reaction_modes_are_independent_and_preserve_ordinary_reserves() {
             assert_eq!(
                 reacting_times(&engine, 0),
                 if chain_info_activation {
-                    vec![4, 2, 0]
+                    vec![4, 2]
                 } else {
                     vec![4]
                 }

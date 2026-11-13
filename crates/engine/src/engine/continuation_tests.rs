@@ -231,8 +231,14 @@ fn cancellation_pauses_before_opponent_information_is_activated() {
     let mut black = state(Color::Black, Sq(3, 7), 3, false);
     black.kind = PieceKind::R { moved: true };
     black.rights.ordinary = false;
-    let mut engine =
-        Engine::from_worldlines(vec![vec![white, future], vec![black]], Color::White).unwrap();
+    let mut engine = Engine::from_worldlines(
+        vec![
+            vec![white, future],
+            vec![black.clone(), black.prolongate().unwrap()],
+        ],
+        Color::White,
+    )
+    .unwrap();
     let mv = engine
         .possible_moves(0, 0)
         .unwrap()
@@ -285,10 +291,10 @@ fn unrelated_information_and_conflicts_do_not_pause_a_cancelled_piece() {
     observer.kind = PieceKind::R { moved: true };
     observer.rights.ordinary = false;
     let target = state(Color::White, Sq(7, 3), 3, false);
-    engine
-        .history
-        .worldlines
-        .extend([vec![observer].into(), vec![target].into()]);
+    engine.history.worldlines.extend([
+        vec![observer.clone(), observer.prolongate().unwrap()].into(),
+        vec![target].into(),
+    ]);
     engine.update_bufs().unwrap();
     assert_eq!(
         engine.calculation_barrier(),
@@ -352,9 +358,15 @@ fn decline_reactions_requires_only_reactions_and_preserves_states() {
             color.opposite().first_board(),
             false,
         );
-        let mut engine =
-            Engine::from_worldlines(vec![vec![cancelled], vec![informed], vec![opponent]], color)
-                .unwrap();
+        let mut engine = Engine::from_worldlines(
+            vec![
+                vec![cancelled.clone(), cancelled.prolongate().unwrap()],
+                vec![informed.clone(), informed.prolongate().unwrap()],
+                vec![opponent],
+            ],
+            color,
+        )
+        .unwrap();
         let initial = engine.clone();
         assert!(engine.can_decline_reactions());
         let mut record = GameRecord::default();
@@ -406,7 +418,7 @@ fn barrier_belongs_to_the_causal_cancellation_not_an_earlier_harmless_one() {
     observer.rights.ordinary = false;
     engine.history.worldlines.extend([
         vec![source.clone(), source.prolongate().unwrap()].into(),
-        vec![observer].into(),
+        vec![observer.clone(), observer.prolongate().unwrap()].into(),
     ]);
     engine.update_bufs().unwrap();
     engine.reconcile().unwrap();
@@ -431,7 +443,7 @@ fn decline_reactions_accepts_a_paused_continuation_and_does_not_reactivate_it() 
     let mut engine = Engine::from_worldlines(
         vec![
             vec![source.clone(), source.prolongate().unwrap()],
-            vec![observer],
+            vec![observer.clone(), observer.prolongate().unwrap()],
         ],
         Color::White,
     )
@@ -446,6 +458,16 @@ fn decline_reactions_accepts_a_paused_continuation_and_does_not_reactivate_it() 
     engine.reconcile().unwrap();
     engine.history.calculation.interactive = true;
     engine.undo_mv(mv.id()).unwrap();
+    engine.reconcile().unwrap();
+    let end = engine.history.worldlines[0]
+        .last()
+        .unwrap()
+        .prolongate()
+        .unwrap();
+    engine.history.worldlines[0].states.push(end);
+    for s in engine.history.worldlines[0].iter_mut() {
+        s.rights.ordinary = false;
+    }
     engine.reconcile().unwrap();
     assert_eq!(engine.calculation_barrier(), Some(2));
     assert!(engine.can_decline_reactions());
