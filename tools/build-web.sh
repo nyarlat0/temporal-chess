@@ -40,15 +40,20 @@ mv "$stage/optimized.wasm" "$stage/nolan_bg.wasm"
     -o "$stage/tempfish-optimized.wasm"
 mv "$stage/tempfish-optimized.wasm" "$stage/tempfish_bg.wasm"
 install -m 0644 crates/bevy_front/web/tempfish-worker.js crates/bevy_front/web/tempfish-pool.js "$stage/"
+install -m 0644 crates/bevy_front/web/sound.js "$stage/sound.js"
+mkdir -p "$stage/sounds"
+install -m 0644 crates/bevy_front/assets/sounds/*.ogg "$stage/sounds/"
 install -m 0644 crates/bevy_front/web/favicon.svg "$stage/favicon.svg"
-release_id=$(cat "$stage/nolan.js" "$stage/nolan_bg.wasm" "$stage/favicon.svg" "$stage/tempfish.js" "$stage/tempfish_bg.wasm" "$stage/tempfish-worker.js" "$stage/tempfish-pool.js" | sha256sum | cut -c 1-16)
+release_id=$(cat "$stage/nolan.js" "$stage/nolan_bg.wasm" "$stage/favicon.svg" "$stage/tempfish.js" "$stage/tempfish_bg.wasm" "$stage/tempfish-worker.js" "$stage/tempfish-pool.js" "$stage/sound.js" "$stage"/sounds/*.ogg | sha256sum | cut -c 1-16)
 release_dir="$repo_root/dist/web/releases/$release_id"
 mkdir -p "$release_dir"
-for name in nolan.js nolan_bg.wasm favicon.svg tempfish.js tempfish_bg.wasm tempfish-worker.js tempfish-pool.js; do
+for name in nolan.js nolan_bg.wasm favicon.svg tempfish.js tempfish_bg.wasm tempfish-worker.js tempfish-pool.js sound.js; do
     gzip -9 -n -c "$stage/$name" > "$stage/$name.gz"
     "$brotli_command" --quality=11 --force --output="$stage/$name.br" "$stage/$name"
     install -m 0644 "$stage/$name" "$stage/$name.gz" "$stage/$name.br" "$release_dir/"
 done
+mkdir -p "$release_dir/sounds"
+install -m 0644 "$stage"/sounds/*.ogg "$release_dir/sounds/"
 sed "s/__NOLAN_RELEASE__/$release_id/g" crates/bevy_front/web/index.html.in > "$stage/index.html"
 # Publish entrypoint last; retain older hash-addressed modules for open browser tabs.
 install -m 0644 "$stage/index.html" dist/web/index.html.new

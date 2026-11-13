@@ -66,6 +66,7 @@ impl Selection {
 
 #[derive(Resource)]
 pub struct GameUi {
+    pub sound_events: Vec<crate::sound::Event>,
     pub online: crate::multiplayer::OnlineState,
     pub bot: crate::tempfish::BotState,
     pub new_game_bot: crate::tempfish::Settings,
@@ -176,6 +177,7 @@ impl Default for GameUi {
             transition_queue: Default::default(),
             remote_focus: None,
             returning_camera: false,
+            sound_events: vec![crate::sound::Event::Reset],
             playback_turn: None,
             playback_destination: None,
             facing: Default::default(),
@@ -595,8 +597,9 @@ impl GameUi {
             .spatial_move()
             .is_some()
             .then(|| self.engine.clone());
+        let actor = self.engine.turn();
         let result = self.record.apply(&mut self.engine, command);
-        self.finish_confirmed(command, before, result)
+        self.finish_confirmed(command, before, result, actor)
     }
 
     /// Publish the isolated result already approved by this client, after both
@@ -606,9 +609,10 @@ impl GameUi {
             .spatial_move()
             .is_some()
             .then(|| self.engine.clone());
+        let actor = self.engine.turn();
         self.engine = engine;
         self.record = record;
-        let _ = self.finish_confirmed(command, before, Ok(()));
+        let _ = self.finish_confirmed(command, before, Ok(()), actor);
     }
 
     fn finish_confirmed(
@@ -616,8 +620,20 @@ impl GameUi {
         command: Command,
         before: Option<Engine>,
         result: Result<(), temporal_chess_engine::engine::EngineErr>,
+        actor: Color,
     ) -> Result<(), String> {
         let error = result.as_ref().err().map(ToString::to_string);
+        if result.is_ok() {
+            self.sound_events.push(crate::sound::Event::Action {
+                waiting: crate::sound::after_action(
+                    &self.engine,
+                    0,
+                    actor,
+                    command.spends_turn(self.record.rules()),
+                ),
+                direction: command.spatial_move().map(|mv| mv.direction),
+            });
+        }
         if let (Ok(()), Some(mv), Some(before)) = (&result, command.spatial_move(), before) {
             self.transition = if matches!(
                 self.engine.outcome(),
@@ -816,6 +832,8 @@ impl GameUi {
                 self.clear_selection();
                 self.engine = engine;
                 self.record = record;
+                self.sound_events.clear();
+                self.sound_events.push(crate::sound::Event::Reset);
                 self.refresh_checks();
                 self.jump_to = Some(match kind {
                     ReplayKind::Undo { source_t } => source_t.min(self.engine.history().horizon()),

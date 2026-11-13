@@ -17,8 +17,9 @@ serde = { version = "1", features = ["derive"] }
 web-time = "1"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+fastrand = "2.5"
 sha2 = "0.10"
-bevy = { version = "0.19.0", default-features = false, features = ["multi_threaded", "x11", "wayland"] }
+bevy = { version = "0.19.0", default-features = false, features = ["multi_threaded", "x11", "wayland", "bevy_audio", "vorbis"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"

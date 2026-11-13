@@ -16,6 +16,7 @@ pub struct ChessFrontendPlugin;
 impl Plugin for ChessFrontendPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(EguiPlugin::default())
+            .add_plugins(crate::sound::SoundPlugin)
             .insert_resource(WinitSettings::desktop_app())
             .init_resource::<GameUi>()
             .init_resource::<ShellState>()
@@ -28,7 +29,13 @@ impl Plugin for ChessFrontendPlugin {
             .init_non_send::<crate::multiplayer::MultiplayerClient>()
             .add_systems(
                 Update,
-                (update_game, crate::multiplayer::poll, crate::tempfish::poll).chain(),
+                (
+                    update_game,
+                    crate::multiplayer::poll,
+                    crate::tempfish::poll,
+                    crate::sound::update,
+                )
+                    .chain(),
             )
             .add_systems(EguiPrimaryContextPass, draw);
     }
