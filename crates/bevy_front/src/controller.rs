@@ -262,6 +262,10 @@ impl GameUi {
     }
 
     pub fn reset_playback(&mut self) {
+        if self.move_focus_pending {
+            self.jump_to = None;
+            self.viewport.scroll = None;
+        }
         self.history_playback = false;
         self.history_focus_pending = false;
         self.replaying_move = false;
@@ -325,16 +329,23 @@ impl GameUi {
         self.reset_playback();
         let Some(clip) = &self.last_move else { return };
         self.transition_queue = clip.transitions.clone();
-        let Some(first) = self.transition_queue.front() else {
-            return;
-        };
-        self.jump_to = Some(first.from_t);
         self.playback_destination = Some(clip.destination);
         self.playback_turn = Some(self.engine.turn());
+        if !self.focus_move_source() {
+            return;
+        }
+        self.replaying_move = true;
+    }
+
+    /// The first transition must wait until its source is on screen. In
+    /// particular, choosing a wait destination leaves the camera far away.
+    fn focus_move_source(&mut self) -> bool {
+        self.transition = None;
         self.viewport.scroll = None;
         self.viewport.wheel.stop();
-        self.replaying_move = true;
-        self.move_focus_pending = true;
+        self.jump_to = self.transition_queue.front().map(|motion| motion.from_t);
+        self.move_focus_pending = self.jump_to.is_some();
+        self.move_focus_pending
     }
 
     fn move_clip(before: &Engine, after: &Engine, command: Command) -> Option<MovePlayback> {
@@ -826,7 +837,6 @@ impl GameUi {
                     self.transition_queue = clip.transitions.clone();
                 }
             }
-            self.transition = self.transition_queue.pop_front();
             self.playback_turn = Some(before.turn());
             self.playback_destination = command
                 .wait_until()
@@ -840,9 +850,7 @@ impl GameUi {
                     _ => None,
                 });
             self.remote_focus = None;
-            self.viewport.scroll = None;
-            self.jump_to = None;
-            if self.transition.is_none() {
+            if !self.focus_move_source() {
                 self.finish_travel(command.source_time().unwrap_or(0));
             }
         }
@@ -1528,7 +1536,8 @@ mod tests {
         assert_eq!(game.engine.history().horizon(), 6);
         assert!(!game.engine.history().worldlines()[0][2].rights.ordinary);
         assert!(game.engine.history().worldlines()[0][4].rights.ordinary);
-        assert!(game.jump_to.is_none());
+        assert_eq!(game.jump_to, Some(2));
+        assert!(game.move_focus_pending);
     }
     fn finish_import(game: &mut GameUi) {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);

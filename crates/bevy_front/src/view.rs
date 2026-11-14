@@ -800,6 +800,48 @@ mod tests {
     }
 
     #[test]
+    fn live_waiting_focuses_source_before_starting_its_first_transition() {
+        for spatial in [false, true] {
+            let ctx = egui::Context::default();
+            let mut game = GameUi::with_start(
+                Default::default(),
+                temporal_chess_engine::model::StartingPosition::TimeWar { separation: 9 },
+            );
+            frame(&ctx, &mut game, vec![]);
+            frame(&ctx, &mut game, vec![]);
+            // The player has scrolled to the chosen waiting destination.
+            let row = game.viewport.times.iter().position(|&t| t == 6).unwrap();
+            game.viewport.offset = row as f32 * game.viewport.stride;
+            game.viewport.scroll = None;
+            game.jump_to = None;
+            game.click_square(0, Sq(4, 1));
+            game.click_square(6, if spatial { Sq(4, 3) } else { Sq(4, 1) });
+            assert_eq!(game.jump_to, Some(0));
+            assert!(game.move_focus_pending && game.transition.is_none());
+            let first = game.transition_queue.front().unwrap();
+            assert_eq!((first.from_t, first.to_t), (0, 1));
+            assert_eq!(first.tracks.iter().any(|p| p.from.sq != p.to.sq), spatial);
+            for _ in 0..3 {
+                frame(&ctx, &mut game, vec![]);
+                assert_eq!(game.viewport.scroll.as_ref().unwrap().target, 0);
+                assert!(game.transition.is_none());
+                assert!(game.transition_queue.iter().all(|m| m.started.is_none()));
+            }
+            // Complete camera navigation without spending wall time in a test.
+            game.viewport.scroll = None;
+            let row = game.viewport.times.iter().position(|&t| t == 0).unwrap();
+            game.viewport.offset = row as f32 * game.viewport.stride;
+            frame(&ctx, &mut game, vec![]);
+            let first = game.transition.as_ref().unwrap();
+            assert_eq!((first.from_t, first.to_t), (0, 1));
+            assert_eq!(game.viewport.motion_progress, 0.0);
+            assert!(first.started.is_none());
+            frame(&ctx, &mut game, vec![]);
+            assert!(game.transition.as_ref().unwrap().started.is_some());
+        }
+    }
+
+    #[test]
     fn wheel_scroll_settles_monotonically_and_stays_fixed_after_idle_frames() {
         let ctx = egui::Context::default();
         let mut game = GameUi::with_start(
@@ -996,7 +1038,8 @@ mod tests {
         let mut game = GameUi::default();
         game.click_square(0, Sq(4, 1));
         game.click_square(0, Sq(4, 3));
-        game.transition = None;
+        game.reset_playback();
+        game.local_auto_flip = false;
         frame(&ctx, &mut game, vec![]);
         let _output = frame(&ctx, &mut game, vec![]);
         let pos = icon_position(&ctx, "Копировать партию");
