@@ -126,7 +126,7 @@ impl Engine {
                 }
             }
             if old.castling().is_some()
-                && let Some(rook) = self.castling_rook(*old, piece)?
+                && let Some(rook) = self.castling_rook(*old, piece)
             {
                 let successor = self.get_piv_necro(rook.origin, rook.age + 1);
                 if let Some(successor) = successor

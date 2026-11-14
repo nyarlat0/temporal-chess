@@ -108,7 +108,10 @@ impl Engine {
             .get_piece(target_sq.0, target_sq.1)
             .copied()
             .filter(|target| target.color != piece.color);
-        let rook = self.castling_rook(mv, piece)?;
+        let rook = self.castling_rook(mv, piece);
+        if mv.castling().is_some() && rook.is_none() {
+            return Err(EngineErr::WrongPiece);
+        }
         // Acknowledge the old view before replacing moves or editing routes.
         // Reactions beyond this board remain unanswered and retain their memory.
         let reaction_limit = if self.history.rules.global_reaction_reset {
@@ -181,14 +184,8 @@ impl Engine {
         Ok(())
     }
 
-    pub(super) fn castling_rook(
-        &self,
-        mv: Move,
-        king: PieceView,
-    ) -> Result<Option<PieceView>, EngineErr> {
-        let Some(castling) = mv.castling() else {
-            return Ok(None);
-        };
+    pub(super) fn castling_rook(&self, mv: Move, king: PieceView) -> Option<PieceView> {
+        let castling = mv.castling()?;
         let x = match castling {
             Castling::Long => 0,
             Castling::Short => 7,
@@ -207,8 +204,31 @@ impl Engine {
                 })
             })
             .copied()
-            .map(Some)
-            .ok_or(EngineErr::WrongPiece)
+    }
+
+    /// Undo uses the historical participant even if a later edit killed it.
+    /// A new command still requires a live rook through castling_rook above.
+    pub(super) fn historical_castling_rook(&self, mv: Move, king: PieceView) -> Option<PieceView> {
+        let castling = mv.castling()?;
+        if let Some(rook) = self.castling_rook(mv, king) {
+            return Some(rook);
+        }
+        let x = if castling == Castling::Long { 0 } else { 7 };
+        let y = if king.color == Color::White { 0 } else { 7 };
+        self.history
+            .worldlines
+            .iter()
+            .enumerate()
+            .find_map(|(wid, line)| {
+                line.iter().enumerate().find_map(|(age, state)| {
+                    (state.color == king.color
+                        && state.x == x
+                        && state.y == y
+                        && matches!(state.kind, crate::pieces::PieceKind::R { .. })
+                        && super::MoveId::from_state(state) == mv.id())
+                    .then(|| PieceView::from_state(state, wid, age))
+                })
+            })
     }
 
     fn deact_same_order(&mut self, piece: PieceView) -> Vec<PieceView> {

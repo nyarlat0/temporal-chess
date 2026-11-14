@@ -4,6 +4,47 @@ use temporal_chess_engine::{
     record::{Command, GameRecord},
 };
 
+#[test]
+fn inverted_king_waits_replay_in_the_reported_castling_position() {
+    let text = include_str!("fixtures/castling_missing_rook_revalidation.nolan");
+    let (engine, record) = GameRecord::load(text).unwrap();
+    accepted_moves(&engine, &record);
+    let mut checked_waits = 0;
+    for king in engine.move_sources().filter(|p| p.origin == 4) {
+        for mv in engine
+            .possible_moves(king.origin, king.age)
+            .unwrap()
+            .into_iter()
+            .filter(|mv| mv.to_past() && mv.sq == Sq(7, 0))
+        {
+            let waits = engine.possible_move_waits(mv).unwrap();
+            for until in waits {
+                let command = Command::MoveAndWait {
+                    mv,
+                    from: king.sq,
+                    until,
+                };
+                let mut branch = engine.clone();
+                let mut journal = record.clone();
+                journal
+                    .apply(&mut branch, command)
+                    .unwrap_or_else(|error| panic!("{command}: {error}"));
+                assert_eq!(GameRecord::load(&journal.to_text()).unwrap().0, branch);
+                checked_waits += 1;
+            }
+        }
+    }
+    assert!(
+        checked_waits > 1,
+        "must cover inversion and distant waiting"
+    );
+    assert_eq!(GameRecord::load(&record.to_text()).unwrap().0, engine);
+    assert_eq!(
+        Engine::from_history(engine.history().clone(), engine.turn()).unwrap(),
+        engine
+    );
+}
+
 /// Every highlighted move is submitted independently against exactly the
 /// position that offered it, through the same journal API as the client/server.
 fn accepted_moves(engine: &Engine, record: &GameRecord) -> Vec<(Command, Engine, GameRecord)> {

@@ -148,6 +148,44 @@ fn an_existing_inverted_segment_can_move_and_be_undone_without_erasing_its_state
 }
 
 #[test]
+fn historical_castling_loses_its_rook_without_failing_reconciliation() {
+    for color in [Color::White, Color::Black] {
+        for castling in [Castling::Short, Castling::Long] {
+            let y = if color == Color::White { 0 } else { 7 };
+            let x = if castling == Castling::Short { 7 } else { 0 };
+            let states = [
+                (PieceKind::K { moved: false }, Sq(4, y)),
+                (PieceKind::R { moved: false }, Sq(x, y)),
+            ]
+            .into_iter()
+            .map(|(kind, sq)| {
+                let mut s = State::new(kind, color, sq);
+                s.t = color.first_board();
+                s.fut_seen = s.t;
+                s.rights.ordinary = true;
+                vec![s]
+            })
+            .collect();
+            let mut engine = Engine::from_worldlines(states, color).unwrap();
+            let castle = engine
+                .possible_moves(0, 0)
+                .unwrap()
+                .into_iter()
+                .find(|mv| mv.castling() == Some(castling))
+                .unwrap();
+            engine.apply_new_mv(castle).unwrap();
+            // A historical edit removes the rook from the king's source board.
+            for state in engine.history.worldlines[1].iter_mut() {
+                state.alive = false;
+            }
+            engine.update_bufs().unwrap();
+            engine.reconcile().unwrap();
+            assert!(!engine.history.moves.contains_key(&castle.id()));
+        }
+    }
+}
+
+#[test]
 fn castling_undo_restores_rook_position_and_rights() {
     let mut engine = super::legacy_from_worldlines(
         vec![

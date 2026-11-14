@@ -53,7 +53,7 @@ impl Engine {
                     continue;
                 }
                 if self
-                    .castling_rook(mv, king)?
+                    .historical_castling_rook(mv, king)
                     .is_some_and(|rook| rook.origin == piv.origin && rook.age == start + offset)
                 {
                     return self.undo_mv(id);
@@ -118,7 +118,7 @@ impl Engine {
         {
             // A rebound exists only because of this spatial move. Cancelling
             // it must not turn passive waiting into another boundary crossing.
-            if let Some(rook) = self.castling_rook(mv, bf_piv)? {
+            if let Some(rook) = self.historical_castling_rook(mv, bf_piv) {
                 self.remove_past_route(rook)?;
                 self.history.worldlines[rook.origin][rook.age].rights = super::MoveRights {
                     ordinary: self.history.worldlines[rook.origin][rook.age].alive,
@@ -232,7 +232,7 @@ impl Engine {
         mv: super::Move,
         king: PieceView,
     ) -> Result<(), EngineErr> {
-        if let Some(rook) = self.castling_rook(mv, king)? {
+        if let Some(rook) = self.historical_castling_rook(mv, king) {
             let line = &self.history.worldlines[rook.origin];
             if line.get(rook.age + 1).is_none() {
                 return Err(EngineErr::WrongPiece);
