@@ -440,7 +440,7 @@ fn waiting_remembers_its_result_without_activating_the_waiting_piece() {
 }
 
 #[test]
-fn own_move_remembers_both_views_of_the_reported_inverted_queen() {
+fn own_move_keeps_new_information_from_its_result_unacknowledged() {
     use crate::record::GameRecord;
     let text = include_str!("../../tests/fixtures/queen_post_move_information.nolan");
     let (engine, record) = GameRecord::load(text).unwrap();
@@ -449,30 +449,21 @@ fn own_move_remembers_both_views_of_the_reported_inverted_queen() {
         .find(|s| s.t == 5 && s.inverted)
         .unwrap();
     assert_eq!(Sq(queen.x, queen.y), Sq(1, 1));
-    assert!(!queen.rights.new_information);
-    assert!(queen.informed.is_subset(&queen.remembered));
-    for (square, kind) in [
-        (Sq(1, 1), PieceKind::P { moved: false }),
-        (Sq(5, 1), PieceKind::P { moved: false }),
-        (Sq(0, 0), PieceKind::R { moved: false }),
-        (Sq(0, 1), PieceKind::P { moved: false }),
-        (Sq(2, 0), PieceKind::B),
-        (Sq(2, 1), PieceKind::P { moved: false }),
-    ] {
-        assert!(
-            queen.remembered.contains(&crate::model::Observation {
-                square,
-                kind,
-                inverted: false
-            }),
-            "{square:?}"
-        );
-    }
+    assert!(queen.rights.new_information);
+    assert!(!queen.informed.is_subset(&queen.remembered));
+    let (prefix, _) = record.without_last_move().unwrap();
+    let (before, _) = GameRecord::load(&prefix.to_text()).unwrap();
+    let old = before.history.worldlines[19]
+        .iter()
+        .find(|s| s.t == 5 && s.inverted)
+        .unwrap();
+    let expected = old.remembered.union(&old.informed).copied().collect();
+    assert_eq!(queen.remembered, expected);
     assert_eq!(GameRecord::load(&record.to_text()).unwrap().0, engine);
 }
 
 #[test]
-fn post_move_memory_respects_reaction_scope_and_keeps_opponents_memory() {
+fn pre_move_memory_respects_reaction_scope_and_keeps_opponents_memory() {
     for global in [false, true] {
         let mut rook = line(PieceKind::R { moved: true }, Color::White, Sq(0, 0), false);
         rook[0].rights.ordinary = true;
@@ -510,7 +501,7 @@ fn post_move_memory_respects_reaction_scope_and_keeps_opponents_memory() {
             .find(|s| s.t == 2)
             .unwrap();
         assert!(later.informed.contains(&observed));
-        assert_eq!(later.remembered.contains(&observed), global);
+        assert!(!later.remembered.contains(&observed));
         assert_eq!(
             engine.history.worldlines[1..]
                 .iter()

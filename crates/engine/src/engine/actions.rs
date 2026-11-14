@@ -40,8 +40,7 @@ impl Engine {
             }
             let actor = candidate.turn;
             candidate.turn = actor.opposite();
-            candidate.reconcile()?;
-            candidate.remember_resulting_information(actor, usize::MAX)
+            candidate.reconcile()
         })
     }
 
@@ -74,13 +73,7 @@ impl Engine {
             // GameRecord independently retains the accepted player command.
             candidate
                 .reconcile()
-                .map_err(|e| e.during(format!("reconciling after {mv:?}")))?;
-            let limit = if candidate.history.rules.global_reaction_reset {
-                usize::MAX
-            } else {
-                mv.t
-            };
-            candidate.remember_resulting_information(piece.color, limit)
+                .map_err(|e| e.during(format!("reconciling after {mv:?}")))
         })
     }
 
