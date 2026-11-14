@@ -36,6 +36,7 @@ pub fn configure(ctx: &egui::Context) {
     });
     ctx.set_theme(egui::Theme::Dark);
     let mut style = (*ctx.style_of(egui::Theme::Dark)).clone();
+    style.animation_time = 0.35;
     style.visuals = egui::Visuals::dark();
     style.visuals.panel_fill = PANEL;
     style.visuals.window_fill = PANEL;

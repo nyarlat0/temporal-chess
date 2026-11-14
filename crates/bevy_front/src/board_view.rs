@@ -15,13 +15,13 @@ use temporal_chess_engine::{
 const LIGHT: Color32 = Color32::from_rgb(240, 217, 181);
 const DARK: Color32 = Color32::from_rgb(181, 136, 99);
 
-pub fn ribbon(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt) {
+pub fn ribbon(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt) -> Rect {
     // Own the viewport rather than combining two independent scroll animators.
     // Content height contains real boards only: no blank padding rows.
     let (viewport, _) = ui.allocate_exact_size(ui.available_size(), Sense::hover());
     let cell = game
         .cell_size
-        .min(((viewport.width() - 160.0) / 9.04).max(18.0));
+        .min(((viewport.width() - 484.0) / 8.0).max(18.0));
     let gap = 1.04 * cell + 24.0;
     let height = 8.0 * cell + gap;
     let times = game.times();
@@ -29,10 +29,23 @@ pub fn ribbon(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt) {
     let frame = ui.ctx().cumulative_frame_nr();
     if game.viewport.frame != Some(frame) {
         let mut offset = game.viewport.anchored_offset(&times, height);
+        if game.playback_busy()
+            || game.facing.animating()
+            || !ui.is_enabled()
+            || (game.viewport.stride - height).abs() > 0.5
+            || game.viewport.times != times
+            || game.jump_to.is_some()
+            || game.viewport.scroll.is_some()
+            || ui.ctx().input(|i| {
+                i.modifiers.shift || i.pointer.button_down(egui::PointerButton::Secondary)
+            })
+        {
+            game.viewport.wheel.stop();
+        }
         let mut raw = game
             .transition
-            .as_ref()
-            .map_or(0.0, BoardTransition::progress);
+            .as_mut()
+            .map_or(0.0, |motion| motion.progress(game.animation_speed));
         if raw >= 1.0
             && let Some(motion) = game.transition.take()
         {
@@ -41,18 +54,30 @@ pub fn ribbon(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt) {
             if let Some(row) = times.iter().position(|&t| t == motion.to_t) {
                 offset = (row as f32 * height).min(max_offset);
             }
-            game.transition = game.transition_queue.pop_front();
+            let history = game.history_playback;
+            if history {
+                game.next_history_transition(motion.to_t);
+            } else {
+                game.transition = game.transition_queue.pop_front();
+            }
             raw = 0.0;
-            if game.transition.is_none() {
+            if game.transition.is_none() && !history {
                 game.finish_travel(motion.to_t);
             }
         }
         if let Some(motion) = &mut game.transition {
             game.viewport.scroll = None;
+            if motion.started.is_none() && (game.history_playback || game.replaying_move) {
+                game.sound_events.extend(
+                    motion
+                        .replay_sounds()
+                        .map(|direction| crate::sound::Event::ReplayMove { direction }),
+                );
+            }
             motion.start(offset / height);
             if let Some(row) = times.iter().position(|&t| t == motion.to_t) {
                 let target = (row as f32 * height).min(max_offset);
-                let progress = travel_curve((raw - 0.08) / 0.76);
+                let progress = travel_curve(raw / motion.travel_fraction());
                 offset = motion.camera_from_rows * height
                     + (target - motion.camera_from_rows * height) * progress;
             }
@@ -68,7 +93,7 @@ pub fn ribbon(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt) {
                             .is_none_or(|layer| layer == ui.layer_id())
                 }) {
                 ui.ctx().input_mut(|input| {
-                    let delta = input.smooth_scroll_delta.y;
+                    let delta = crate::input::wheel_delta(input);
                     input.smooth_scroll_delta = Vec2::ZERO;
                     delta
                 })
@@ -79,8 +104,13 @@ pub fn ribbon(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt) {
                 game.viewport.scroll = None;
                 game.jump_to = None;
                 game.viewport.focused = None;
-                offset = (offset - wheel).clamp(0.0, max_offset);
             }
+            offset = game.viewport.wheel.update(
+                offset,
+                -wheel,
+                ui.ctx().input(|i| i.stable_dt),
+                max_offset,
+            );
             if let Some(target) = game.jump_to.take()
                 && let Some(row) = times.iter().position(|&t| t == target)
             {
@@ -93,9 +123,9 @@ pub fn ribbon(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt) {
                     game.viewport.scroll = Some(SmoothScroll::new(target, offset / height, row));
                 }
             }
-            if let Some(scroll) = &game.viewport.scroll {
+            if let Some(scroll) = &mut game.viewport.scroll {
                 if let Some(row) = times.iter().position(|&t| t == scroll.target) {
-                    let progress = scroll.progress();
+                    let progress = scroll.progress(game.animation_speed);
                     let target = (row as f32 * height).min(max_offset);
                     let from = (scroll.from_rows * height).min(max_offset);
                     offset = from + (target - from) * scroll_curve(progress);
@@ -107,9 +137,18 @@ pub fn ribbon(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt) {
                 }
             }
         }
+        if game.history_focus_pending && game.jump_to.is_none() && game.viewport.scroll.is_none() {
+            game.history_focus_pending = false;
+            game.next_history_transition(0);
+        }
+        if game.move_focus_pending && game.jump_to.is_none() && game.viewport.scroll.is_none() {
+            game.move_focus_pending = false;
+            game.transition = game.transition_queue.pop_front();
+        }
         if game.returning_camera && game.jump_to.is_none() && game.viewport.scroll.is_none() {
             game.returning_camera = false;
             game.playback_turn = None;
+            game.replaying_move = false;
         }
         game.viewport.times = times.clone();
         game.viewport.stride = height;
@@ -129,14 +168,19 @@ pub fn ribbon(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt) {
         },
         game.playback_busy(),
         frame,
+        game.animation_speed,
     );
     let flipped = game.facing.black_bottom;
+    // Camera and moving boards must share the same subpixel coordinates.
+    // Rounding only the camera makes its motion step by whole pixels while
+    // paint_transition interpolates continuously, producing visible judder.
     let offset = game.viewport.offset;
     let moving = game.playback_busy() || game.facing.animating();
     let painter = ui
         .painter()
         .with_clip_rect(viewport.intersect(ui.clip_rect()));
-    let board_left = viewport.center().x + 40.0 - cell * 4.0;
+    let spare = (viewport.width() - 484.0 - cell * 8.0).max(0.0);
+    let board_left = viewport.left() + 200.0 + spare * 0.5;
     let rail_x = board_left - (cell * 0.62 + 24.0).max(39.0);
     let board_at = |index: usize| {
         let left = board_left;
@@ -181,20 +225,22 @@ pub fn ribbon(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt) {
             .iter()
             .any(|p| p.color == game.engine.turn() && p.can_move() && p.is_movable());
         let dot = Pos2::new(rail_x, board.center().y);
-        painter.circle_filled(
-            dot,
-            if own_active { 4.0 } else { 3.0 },
-            if own_active {
-                INVERTED
-            } else {
-                MUTED.gamma_multiply(0.5)
-            },
+        painter.line_segment(
+            [dot - Vec2::new(7.0, 0.0), dot + Vec2::new(7.0, 0.0)],
+            Stroke::new(
+                if own_active { 3.5 } else { 2.5 },
+                if own_active {
+                    INVERTED
+                } else {
+                    MUTED.gamma_multiply(0.8)
+                },
+            ),
         );
         painter.text(
-            dot - Vec2::new(12.0, 0.0),
+            dot - Vec2::new(16.0, 0.0),
             Align2::RIGHT_CENTER,
             t.to_string(),
-            FontId::proportional(14.0),
+            FontId::proportional(19.0),
             MUTED,
         );
         // The moving board owns the destination until it settles. Never
@@ -202,7 +248,7 @@ pub fn ribbon(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt) {
         let covered_by_transition = game
             .transition
             .as_ref()
-            .is_some_and(|motion| motion.to_t == t && game.viewport.motion_progress < 0.84);
+            .is_some_and(|motion| motion.to_t == t && game.viewport.motion_progress < 1.0);
         if !covered_by_transition {
             paint_board(&board_painter, game, art, t, board, cell, hovered);
         }
@@ -218,7 +264,7 @@ pub fn ribbon(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt) {
         }
     }
     if let Some(motion) = &game.transition
-        && game.viewport.motion_progress < 0.84
+        && game.viewport.motion_progress < 1.0
         && let Some(from) = times.iter().position(|&t| t == motion.from_t)
         && let Some(to) = times.iter().position(|&t| t == motion.to_t)
     {
@@ -309,10 +355,22 @@ pub fn ribbon(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt) {
     if game.playback_busy()
         || game.facing.animating()
         || game.viewport.scroll.is_some()
+        || game.viewport.wheel.active()
         || game.jump_to.is_some()
     {
         ui.ctx().request_repaint();
     }
+    let hud_left = board_left + cell * 8.0 + board_frame_padding(cell, 1.0) + 24.0;
+    Rect::from_min_size(
+        Pos2::new(
+            hud_left,
+            viewport.center().y - if game.selected.is_some() { 90.0 } else { 36.0 },
+        ),
+        Vec2::new(
+            (viewport.right() - hud_left - 8.0).clamp(140.0, 220.0),
+            220.0,
+        ),
+    )
 }
 
 fn mix_color(from: Color32, to: Color32, progress: f32) -> Color32 {
@@ -324,13 +382,37 @@ fn mix_color(from: Color32, to: Color32, progress: f32) -> Color32 {
     )
 }
 
-fn active_board_colors(side: Color) -> (Color32, Color32) {
+pub(super) fn active_board_colors(side: Color) -> (Color32, Color32) {
     match side {
         Color::White => (
             Color32::from_rgb(248, 248, 240),
             Color32::from_rgb(225, 227, 220),
         ),
         Color::Black => (Color32::from_rgb(37, 37, 37), Color32::from_rgb(66, 65, 76)),
+    }
+}
+
+fn board_frame_padding(cell: f32, activity: f32) -> f32 {
+    (cell * 0.12).max(4.0) * (1.0 - activity) + cell * 0.52 * activity
+}
+
+pub(super) fn paint_board_badge(painter: &egui::Painter, rect: Rect, side: Color) {
+    let board = rect.shrink(4.0);
+    let (outer, inner) = active_board_colors(side);
+    painter.rect_filled(rect, 4.0, outer);
+    painter.rect_filled(rect.shrink(1.5), 3.0, inner);
+    let cell = board.width() * 0.5;
+    for x in 0..2 {
+        for y in 0..2 {
+            painter.rect_filled(
+                Rect::from_min_size(
+                    board.min + Vec2::new(x as f32 * cell, y as f32 * cell),
+                    Vec2::splat(cell),
+                ),
+                0.0,
+                if (x + y) % 2 == 0 { DARK } else { LIGHT },
+            );
+        }
     }
 }
 
@@ -345,7 +427,7 @@ fn paint_frame(
     activity: f32,
     opacity: f32,
 ) {
-    let padding = (cell * 0.12).max(4.0) * (1.0 - activity) + cell * 0.52 * activity;
+    let padding = board_frame_padding(cell, activity);
     let corner = cell * (0.10 + 0.40 * activity);
     let border = cell * 0.12 * activity;
     let frame = board.expand(padding);
@@ -366,7 +448,7 @@ fn paint_transition(
     to: Rect,
     raw: f32,
 ) {
-    let phase = (raw / 0.84).clamp(0.0, 1.0);
+    let phase = (raw / motion.travel_fraction()).clamp(0.0, 1.0);
     let progress = travel_curve(phase);
     let center = from.center() + (to.center() - from.center()) * progress;
     let lift = (phase * std::f32::consts::PI).sin();
@@ -475,19 +557,21 @@ fn paint_transition(
     };
     let mut reaction_badges = Vec::new();
     {
-        // Moving pieces draw last, above stationary pieces and fading victims.
-        for moving in [false, true] {
+        // Victims fall above the killer after all spatial movement has finished.
+        for layer in 0..3 {
             for (index, track) in motion
                 .tracks
                 .iter()
                 .enumerate()
-                .filter(|(_, track)| (track.from.sq != track.to.sq) == moving)
+                .filter(|(_, track)| if track.dying { 2 } else { u8::from(track.from.sq != track.to.sq) } == layer)
             {
+                let moving = track.from.sq != track.to.sq;
                 let (a, from_size) = placement(index, false);
                 let (b, to_size) = placement(index, true);
                 let center = a + (b - a) * progress;
                 let visibility = match (track.visible_from, track.visible_to) {
                     (true, true) => 1.0,
+                    (true, false) if track.dying => 1.0,
                     (true, false) => 1.0 - ease((phase - 0.65) / 0.35),
                     (false, true) => ease(phase / 0.35),
                     (false, false) => 0.0,
@@ -503,6 +587,12 @@ fn paint_transition(
                     Vec2::splat(from_size + (to_size - from_size) * progress),
                 );
                 let alpha = opacity * visibility;
+                if track.dying {
+                    let death = ((raw-motion.travel_fraction())/(1.0-motion.travel_fraction())).clamp(0.0,1.0);
+                    art.paint_death(painter, track.to.kind, track.to.color, rect, alpha,
+                        PieceStyle { inverted: track.to.inverted, ..Default::default() }, death, track.fall_sign);
+                    continue;
+                }
                 reaction_badges.push((track.from, rect, alpha * (1.0 - progress)));
                 reaction_badges.push((track.to, rect, alpha * progress));
                 let style = |piece: temporal_chess_engine::model::PieceView| {
@@ -815,7 +905,7 @@ fn paint_board(
             hovered.is_some_and(|(time, sq)| time == t && (sq == from || sq == mv.sq));
         let replacing = replaces_selected_move(game, mv);
         let replacement_color = if mv.to_past() {
-            Color32::from_rgb(255, 145, 35)
+            Color32::from_rgb(205, 30, 48)
         } else {
             Color32::from_rgb(255, 35, 55)
         };
@@ -835,6 +925,18 @@ fn paint_board(
                         * if game.worldline_mode { 0.65 } else { 1.0 },
                 )
             },
+            replacing.then(|| {
+                (if mv.to_past() {
+                    crate::piece_art::inverted_outline_color(
+                        game.engine
+                            .piece_state(mv.source())
+                            .map_or(game.engine.turn(), |s| s.color),
+                    )
+                } else {
+                    Color32::from_rgb(255, 40, 60)
+                })
+                .gamma_multiply(alpha)
+            }),
         );
         if replacing {
             let start = square_rect(board, cell, from, game.facing.black_bottom).center();
@@ -888,8 +990,9 @@ fn replaces_selected_move(game: &GameUi, old: temporal_chess_engine::model::Move
     })
 }
 
-/// Retained commands only have an arrow while their source incarnation is alive.
+/// Only draw a retained command at the actual visible location of its living source.
 fn visible_moves(game: &GameUi, t: usize) -> Vec<(temporal_chess_engine::model::Move, Sq)> {
+    let pieces = game.pieces(t);
     let mut seen = std::collections::BTreeSet::new();
     let mut visible: Vec<_> = game
         .record
@@ -897,8 +1000,9 @@ fn visible_moves(game: &GameUi, t: usize) -> Vec<(temporal_chess_engine::model::
         .iter()
         .rev()
         .filter_map(|command| {
-            if let Command::Move { mv, from } | Command::MoveAndWait { mv, from, .. } = command
+            if let Command::Move { mv, .. } | Command::MoveAndWait { mv, .. } = command
                 && mv.t == t
+                && let Some(source) = pieces.iter().find(|piece| identity(**piece) == mv.source())
                 && game
                     .engine
                     .piece_state(mv.source())
@@ -913,7 +1017,7 @@ fn visible_moves(game: &GameUi, t: usize) -> Vec<(temporal_chess_engine::model::
                             })
                         )))
             {
-                seen.insert(mv.id()).then_some((*mv, *from))
+                seen.insert(mv.id()).then_some((*mv, source.sq))
             } else {
                 None
             }
@@ -954,6 +1058,7 @@ fn paint_round_line(
     painter.add(egui::Shape::convex_polygon(points, color, Stroke::NONE));
 }
 
+#[allow(clippy::too_many_arguments)]
 fn paint_move_arrow(
     painter: &egui::Painter,
     board: Rect,
@@ -962,6 +1067,7 @@ fn paint_move_arrow(
     to: Sq,
     flipped: bool,
     color: Color32,
+    glow: Option<Color32>,
 ) {
     let center = |sq: Sq| square_rect(board, cell, sq, flipped).center();
     let start = center(from);
@@ -974,6 +1080,9 @@ fn paint_move_arrow(
     let normal = Vec2::new(-direction.y, direction.x);
     let tip = end - direction * cell * 0.06;
     let neck = tip - direction * cell * 0.30;
+    if let Some(glow) = glow {
+        crate::arrow_glow::paint(painter, start, end, cell, glow);
+    }
     paint_round_line(
         painter,
         start + direction * cell * 0.10,
@@ -1213,5 +1322,38 @@ mod tests {
             Outline::Capture
         );
         assert_eq!(game.engine, before);
+    }
+}
+
+#[cfg(test)]
+mod stale_source_regression {
+    use super::*;
+    #[test]
+    fn relocated_queen_does_not_leave_an_arrow_at_its_old_source() {
+        let text = format!(
+            "{}move 4 5:10:1 f3 g4 - normal\nmove 1 19:9:1 b5 b2 - normal\nmove 0 2:0:0 c1 b2 + normal\nmove 5 22:7:2 e4 f2 - normal\n",
+            include_str!("../../engine/tests/fixtures/queen_post_move_information.nolan")
+        );
+        let (engine, record) = temporal_chess_engine::record::GameRecord::load(&text).unwrap();
+        let game = GameUi {
+            engine,
+            record,
+            ..Default::default()
+        };
+        let arrows = visible_moves(&game, 3);
+        assert!(
+            !arrows.iter().any(|(_, from)| *from == Sq(1, 5)),
+            "{arrows:?}"
+        );
+        let queen = arrows
+            .iter()
+            .find(|(mv, _)| mv.pid.wid == 19)
+            .expect("the living queen's retained move remains visible");
+        assert_eq!(queen.1, Sq(1, 1));
+        for (mv, from) in arrows {
+            let state = game.engine.piece_state(mv.source()).unwrap();
+            assert!(state.alive);
+            assert_eq!(from, Sq(state.x, state.y));
+        }
     }
 }

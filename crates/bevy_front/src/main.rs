@@ -1,4 +1,5 @@
 mod animation;
+mod arrow_glow;
 mod board_view;
 mod controller;
 mod dialogs;

@@ -4,6 +4,7 @@ use bevy_egui::egui::{self, Pos2, Rect, Response, Stroke, StrokeKind, Vec2};
 
 #[derive(Clone, Copy)]
 pub enum Icon {
+    Menu,
     Worldline,
     New,
     Undo,
@@ -12,6 +13,9 @@ pub enum Icon {
     Help,
     Up,
     Down,
+    Play,
+    Replay,
+    Stop,
     First,
     Last,
     Future,
@@ -201,6 +205,28 @@ pub fn paint(painter: &egui::Painter, icon: Icon, rect: Rect, stroke: Stroke) {
                 (0.5, 0.6),
             ]);
             painter.circle_filled(p(0.5, 0.76), 1.1, stroke.color);
+        }
+        Icon::Menu => {
+            for y in [0.25, 0.5, 0.75] {
+                line(&[(0.1, y), (0.9, y)]);
+            }
+        }
+        Icon::Play => {
+            line(&[(0.25, 0.15), (0.85, 0.5), (0.25, 0.85), (0.25, 0.15)]);
+        }
+        Icon::Replay => {
+            let points = (0..=32)
+                .map(|i| {
+                    let angle = -2.4 + i as f32 / 32.0 * 5.1;
+                    p(0.5 + angle.cos() * 0.46, 0.5 + angle.sin() * 0.46)
+                })
+                .collect();
+            painter.add(egui::Shape::line(points, stroke));
+            line(&[(0.03, 0.04), (0.16, 0.19), (0.34, 0.10)]);
+            line(&[(0.40, 0.32), (0.69, 0.5), (0.40, 0.68), (0.40, 0.32)]);
+        }
+        Icon::Stop => {
+            line(&[(0.2, 0.2), (0.8, 0.2), (0.8, 0.8), (0.2, 0.8), (0.2, 0.2)]);
         }
         Icon::Up | Icon::First => {
             line(&[(0.2, 0.6), (0.5, 0.3), (0.8, 0.6)]);

@@ -314,6 +314,11 @@ pub fn poll(mut runner: ResMut<Runner>, mut game: ResMut<GameUi>, mut contexts: 
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
+    // A queued bot command must wait for a read-only preview, just like a
+    // command already being animated. Keep its search and pending result.
+    if game.replaying_move || game.history_playback {
+        return;
+    }
     let allowed = game.bot.owns_turn(&game)
         && !game.bot.paused
         && game.engine.outcome().is_none()
@@ -559,13 +564,6 @@ pub fn panel(ui: &mut egui::Ui, game: &mut GameUi) {
                     game.bot.move_now = true;
                 }
             });
-            if game.bot.settings.self_play {
-                ui.label(crate::tr_format!(
-                    "TempFish играет за {}",
-                    "TempFish plays {}",
-                    crate::controller::side_name(game.displayed_turn())
-                ));
-            }
             if game.bot.thinking {
                 ui.spinner();
             }

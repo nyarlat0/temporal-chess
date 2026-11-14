@@ -10,6 +10,9 @@ pub fn handle(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState) {
         return;
     }
     shell.input_frame = Some(frame);
+    if ctx.input(|i| i.pointer.any_pressed()) {
+        game.viewport.wheel.stop();
+    }
     let modal = game.import_open
         || game.confirm_restart
         || game.replay_job.is_some()
@@ -26,6 +29,11 @@ pub fn handle(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState) {
             i.pointer.button_clicked(PointerButton::Middle),
         )
     });
+    if escape && !modal && (game.history_playback || game.replaying_move) {
+        game.reset_playback();
+        game.viewport.scroll = None;
+        game.jump_to = None;
+    }
     if escape && modal && game.replay_job.is_none() {
         game.import_open = false;
         game.confirm_restart = false;
@@ -37,25 +45,7 @@ pub fn handle(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState) {
     if pressed {
         shell.zoom_gesture = false;
     }
-    let wheel_delta = ctx.input(|i| {
-        i.events
-            .iter()
-            .filter_map(|event| {
-                if let egui::Event::MouseWheel { unit, delta, .. } = event {
-                    Some(
-                        (if delta.y != 0.0 { delta.y } else { delta.x })
-                            * match unit {
-                                egui::MouseWheelUnit::Point => 1.0,
-                                egui::MouseWheelUnit::Line => 32.0,
-                                egui::MouseWheelUnit::Page => 240.0,
-                            },
-                    )
-                } else {
-                    None
-                }
-            })
-            .sum::<f32>()
-    });
+    let wheel_delta = ctx.input(wheel_delta);
     let shift = ctx.input(|i| i.modifiers.shift);
     if !down && !shift && wheel_delta != 0.0 {
         shell.suppress_wheel = false;
@@ -74,12 +64,15 @@ pub fn handle(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState) {
             shell.suppress_wheel = true;
             game.cell_size = (game.cell_size * (wheel_delta * 0.0025).exp()).clamp(9.6, 90.0);
             game.viewport.scroll = None;
+            game.viewport.wheel.stop();
             game.jump_to = None;
         }
     }
     if shell.suppress_wheel {
         ctx.input_mut(|i| {
             i.smooth_scroll_delta = egui::Vec2::ZERO;
+            i.events
+                .retain(|event| !matches!(event, egui::Event::MouseWheel { .. }));
         });
         if !ctx.input(|i| i.is_scrolling()) {
             shell.suppress_wheel = false;
@@ -150,6 +143,26 @@ pub fn clicked_by(response: &egui::Response, button: PointerButton) -> bool {
         data.insert_temp(key, frame);
         true
     })
+}
+
+pub fn wheel_delta(i: &egui::InputState) -> f32 {
+    i.events
+        .iter()
+        .filter_map(|event| {
+            if let egui::Event::MouseWheel { unit, delta, .. } = event {
+                Some(
+                    (if delta.y != 0.0 { delta.y } else { delta.x })
+                        * match unit {
+                            egui::MouseWheelUnit::Point => 1.0,
+                            egui::MouseWheelUnit::Line => 32.0,
+                            egui::MouseWheelUnit::Page => 240.0,
+                        },
+                )
+            } else {
+                None
+            }
+        })
+        .sum::<f32>()
 }
 
 #[cfg(test)]

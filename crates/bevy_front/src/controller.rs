@@ -1,4 +1,4 @@
-use crate::animation::{BoardTransition, SmoothScroll};
+use crate::animation::{BoardTransition, SmoothScroll, WheelInertia};
 use bevy::{
     prelude::Resource,
     tasks::{AsyncComputeTaskPool, Task, TaskPool, futures::check_ready},
@@ -83,11 +83,17 @@ pub struct GameUi {
     pub notice: crate::i18n::Message,
     pub is_error: bool,
     pub cell_size: f32,
+    pub animation_speed: f32,
     pub jump_to: Option<usize>,
     pub confirm_restart: bool,
     pub new_game_rules: GameRules,
     pub new_game_start: StartingPosition,
     pub viewport: TimelineViewport,
+    pub history_playback: bool,
+    pub history_focus_pending: bool,
+    pub replaying_move: bool,
+    pub move_focus_pending: bool,
+    pub last_move: Option<MovePlayback>,
     pub transition: Option<BoardTransition>,
     pub transition_queue: std::collections::VecDeque<BoardTransition>,
     pub remote_focus: Option<u64>,
@@ -110,11 +116,23 @@ enum ReplayKind {
     Import,
     Network,
     Undo { source_t: usize },
+    Preview { command: Command },
+}
+
+pub struct MovePlayback {
+    transitions: std::collections::VecDeque<BoardTransition>,
+    destination: usize,
 }
 
 pub struct ReplayJob {
     kind: ReplayKind,
-    task: Task<Result<(Engine, GameRecord), String>>,
+    task: Task<Result<ReplayResult, String>>,
+}
+
+struct ReplayResult {
+    engine: Engine,
+    record: GameRecord,
+    clip: Option<MovePlayback>,
 }
 
 /// Retain the visible board when newer boards are inserted above it.
@@ -124,6 +142,7 @@ pub struct TimelineViewport {
     pub offset: f32,
     pub stride: f32,
     pub scroll: Option<SmoothScroll>,
+    pub wheel: WheelInertia,
     pub frame: Option<u64>,
     pub motion_progress: f32,
     pub focused: Option<usize>,
@@ -131,6 +150,11 @@ pub struct TimelineViewport {
 
 impl TimelineViewport {
     pub fn anchored_offset(&self, times: &[usize], stride: f32) -> f32 {
+        // Do not repeatedly decompose/recompose an unchanged camera position:
+        // f32 rounding otherwise moves a resting ribbon on subsequent frames.
+        if self.times == times && self.stride == stride {
+            return self.offset;
+        }
         if self.stride <= 0.0 || self.times.is_empty() {
             return 0.0;
         }
@@ -168,11 +192,17 @@ impl Default for GameUi {
             ),
             is_error: false,
             cell_size: 64.0,
+            animation_speed: 1.0,
             jump_to: Some(0),
             confirm_restart: false,
             new_game_rules: GameRules::default(),
             new_game_start: StartingPosition::Standard,
             viewport: TimelineViewport::default(),
+            history_playback: false,
+            history_focus_pending: false,
+            replaying_move: false,
+            move_focus_pending: false,
+            last_move: None,
             transition: None,
             transition_queue: Default::default(),
             remote_focus: None,
@@ -195,7 +225,9 @@ impl Default for GameUi {
 
 impl GameUi {
     pub fn playback_busy(&self) -> bool {
-        self.transition.is_some()
+        self.history_playback
+            || self.replaying_move
+            || self.transition.is_some()
             || !self.transition_queue.is_empty()
             || self.remote_focus.is_some()
             || self.returning_camera
@@ -230,12 +262,118 @@ impl GameUi {
     }
 
     pub fn reset_playback(&mut self) {
+        self.history_playback = false;
+        self.history_focus_pending = false;
+        self.replaying_move = false;
+        self.move_focus_pending = false;
         self.transition = None;
         self.transition_queue.clear();
         self.remote_focus = None;
         self.returning_camera = false;
         self.playback_turn = None;
         self.playback_destination = None;
+    }
+
+    pub fn play_history(&mut self) {
+        if self.playback_busy() || self.replay_job.is_some() || self.facing.animating() {
+            return;
+        }
+        self.clear_selection();
+        self.reset_playback();
+        self.history_playback = true;
+        self.history_focus_pending = true;
+        self.playback_turn = Some(self.engine.turn());
+        self.viewport.scroll = None;
+        self.jump_to = Some(0);
+    }
+
+    pub fn can_replay_move(&self) -> bool {
+        !self.playback_busy()
+            && self.replay_job.is_none()
+            && !self.facing.animating()
+            && (self.last_move.is_some()
+                || self
+                    .record
+                    .commands()
+                    .iter()
+                    .any(|c| c.spatial_move().is_some()))
+    }
+
+    pub fn replay_last_move(&mut self) {
+        if !self.can_replay_move() {
+            return;
+        }
+        if self.last_move.is_some() {
+            self.start_move_preview();
+            return;
+        }
+        // Imported journals do not have an animation cache. Restore only the
+        // prefix in a worker; never replace or reapply a move to the live game.
+        let mut record = self.record.clone();
+        while let Some((prefix, command)) = record.without_last_move() {
+            if command.spatial_move().is_some() {
+                self.begin_replay(prefix.to_text(), ReplayKind::Preview { command });
+                self.replaying_move = true;
+                return;
+            }
+            record = prefix;
+        }
+    }
+
+    fn start_move_preview(&mut self) {
+        self.clear_selection();
+        self.reset_playback();
+        let Some(clip) = &self.last_move else { return };
+        self.transition_queue = clip.transitions.clone();
+        let Some(first) = self.transition_queue.front() else {
+            return;
+        };
+        self.jump_to = Some(first.from_t);
+        self.playback_destination = Some(clip.destination);
+        self.playback_turn = Some(self.engine.turn());
+        self.viewport.scroll = None;
+        self.viewport.wheel.stop();
+        self.replaying_move = true;
+        self.move_focus_pending = true;
+    }
+
+    fn move_clip(before: &Engine, after: &Engine, command: Command) -> Option<MovePlayback> {
+        let path = BoardTransition::command_path(after, command);
+        let transitions = path
+            .windows(2)
+            .enumerate()
+            .filter_map(|(i, pair)| {
+                BoardTransition::between(
+                    if i == 0 { before } else { after },
+                    after,
+                    pair[0],
+                    pair[1],
+                    command.spatial_move(),
+                )
+            })
+            .collect::<std::collections::VecDeque<_>>();
+        (!transitions.is_empty()).then(|| MovePlayback {
+            destination: command
+                .wait_until()
+                .or_else(|| {
+                    command
+                        .spatial_move()
+                        .and_then(|mv| mv.direction.step(mv.t))
+                })
+                .or_else(|| path.last().copied())
+                .unwrap_or(0),
+            transitions,
+        })
+    }
+
+    pub fn next_history_transition(&mut self, from: usize) {
+        self.transition = (from < self.engine.history().horizon())
+            .then(|| BoardTransition::between(&self.engine, &self.engine, from, from + 1, None))
+            .flatten();
+        if self.transition.is_none() {
+            self.history_playback = false;
+            self.playback_turn = None;
+        }
     }
 
     pub fn with_start(rules: GameRules, starting_position: StartingPosition) -> Self {
@@ -302,6 +440,39 @@ impl GameUi {
             self.engine.turn()
         };
         let active = self.active_times_for(side);
+        self.navigate_times(&active, next);
+    }
+
+    pub fn checked_times_for(&self, side: Color) -> Vec<usize> {
+        let times: std::collections::BTreeSet<_> = self
+            .checks
+            .ordinary
+            .iter()
+            .chain(&self.checks.inverted)
+            .filter(|id| {
+                self.engine
+                    .piece_state(**id)
+                    .is_some_and(|s| s.color == side)
+            })
+            .map(|id| id.t)
+            .collect();
+        times.into_iter().rev().collect()
+    }
+
+    pub fn navigate_check(&mut self) {
+        if self.playback_busy() {
+            return;
+        }
+        let side = self.displayed_turn();
+        let times = self
+            .checked_times_for(side)
+            .into_iter()
+            .filter(|&t| Color::from_board(t) == side)
+            .collect::<Vec<_>>();
+        self.navigate_times(&times, true);
+    }
+
+    fn navigate_times(&mut self, active: &[usize], next: bool) {
         if active.is_empty() {
             return;
         }
@@ -470,6 +641,14 @@ impl GameUi {
             return;
         }
         if reverse && !self.worldline_mode && !self.inspect_mode {
+            if self
+                .selected
+                .as_ref()
+                .is_some_and(|selection| selection.piece.t == t && selection.piece.sq == sq)
+            {
+                self.toggle_direction();
+                return;
+            }
             let pieces: Vec<_> = self.pieces(t).into_iter().filter(|p| p.sq == sq).collect();
             if let Some(piece) = pieces.iter().find(|p| self.selectable(**p)) {
                 self.choose(*piece);
@@ -593,10 +772,9 @@ impl GameUi {
     /// Shared local/server-confirmed application path. Network requests never
     /// mutate the game optimistically: only acknowledged commands reach here.
     pub fn apply_confirmed(&mut self, command: Command) -> Result<(), String> {
-        let before = command
-            .spatial_move()
-            .is_some()
-            .then(|| self.engine.clone());
+        let before = (command.spatial_move().is_some()
+            || matches!(command, Command::Advance { .. }))
+        .then(|| self.engine.clone());
         let actor = self.engine.turn();
         let result = self.record.apply(&mut self.engine, command);
         self.finish_confirmed(command, before, result, actor)
@@ -605,10 +783,9 @@ impl GameUi {
     /// Publish the isolated result already approved by this client, after both
     /// players have voted and the server has durably appended the command.
     pub fn apply_prepared(&mut self, command: Command, engine: Engine, record: GameRecord) {
-        let before = command
-            .spatial_move()
-            .is_some()
-            .then(|| self.engine.clone());
+        let before = (command.spatial_move().is_some()
+            || matches!(command, Command::Advance { .. }))
+        .then(|| self.engine.clone());
         let actor = self.engine.turn();
         self.engine = engine;
         self.record = record;
@@ -634,49 +811,39 @@ impl GameUi {
                 direction: command.spatial_move().map(|mv| mv.direction),
             });
         }
-        if let (Ok(()), Some(mv), Some(before)) = (&result, command.spatial_move(), before) {
-            self.transition = if matches!(
+        if let (Ok(()), Some(before)) = (&result, before) {
+            self.transition_queue.clear();
+            let paradox = matches!(
                 self.engine.outcome(),
                 Some(GameOutcome::Victory {
                     reason: WinReason::Paradox,
                     ..
                 })
-            ) {
-                None
-            } else {
-                BoardTransition::new(&before, &self.engine, mv)
-            };
-            self.playback_turn = Some(before.turn());
-            self.playback_destination = command.wait_until().or_else(|| mv.direction.step(mv.t));
-            self.remote_focus = None;
-            self.transition_queue.clear();
-            if let Some(first) = &self.transition
-                && let Some(next_t) = self
-                    .engine
-                    .history()
-                    .worldlines()
-                    .get(mv.pid.wid)
-                    .and_then(|line| {
-                        line.windows(3)
-                            .find(|states| {
-                                states[0].t == mv.t
-                                    && temporal_chess_engine::model::PieceId::from_state(
-                                        &states[0], mv.pid.wid,
-                                    ) == mv.pid
-                                    && states[1].t == first.to_t
-                            })
-                            .map(|states| states[2].t)
-                    })
-                    .or_else(|| mv.direction.step(first.to_t))
-                && let Some(second) =
-                    BoardTransition::between(&self.engine, &self.engine, first.to_t, next_t, None)
-            {
-                self.transition_queue.push_back(second);
+            );
+            if !paradox {
+                self.last_move = Self::move_clip(&before, &self.engine, command);
+                if let Some(clip) = &self.last_move {
+                    self.transition_queue = clip.transitions.clone();
+                }
             }
+            self.transition = self.transition_queue.pop_front();
+            self.playback_turn = Some(before.turn());
+            self.playback_destination = command
+                .wait_until()
+                .or_else(|| {
+                    command
+                        .spatial_move()
+                        .and_then(|mv| mv.direction.step(mv.t))
+                })
+                .or(match command {
+                    Command::Advance { to_t, .. } => Some(to_t),
+                    _ => None,
+                });
+            self.remote_focus = None;
             self.viewport.scroll = None;
             self.jump_to = None;
             if self.transition.is_none() {
-                self.finish_travel(mv.t);
+                self.finish_travel(command.source_time().unwrap_or(0));
             }
         }
         self.after_command(result, command.to_string());
@@ -790,9 +957,25 @@ impl GameUi {
         let task = AsyncComputeTaskPool::get_or_init(TaskPool::new).spawn(async move {
             // A failed replay must leave the live game intact, including a panic
             // in historical validation. The task owns only the imported text.
-            std::panic::catch_unwind(|| GameRecord::load(&text))
-                .map_err(|_| "Could not finish restoring the game".to_owned())?
-                .map_err(|error| error.to_string())
+            std::panic::catch_unwind(|| {
+                let (mut engine, mut record) =
+                    GameRecord::load(&text).map_err(|error| error.to_string())?;
+                let clip = if let ReplayKind::Preview { command } = kind {
+                    let before = engine.clone();
+                    record
+                        .apply(&mut engine, command)
+                        .map_err(|error| error.to_string())?;
+                    Self::move_clip(&before, &engine, command)
+                } else {
+                    None
+                };
+                Ok(ReplayResult {
+                    engine,
+                    record,
+                    clip,
+                })
+            })
+            .map_err(|_| "Could not finish restoring the game".to_owned())?
         });
         self.replay_job = Some(ReplayJob { kind, task });
     }
@@ -818,6 +1001,10 @@ impl GameUi {
                 ),
                 true,
             ),
+            ReplayKind::Preview { .. } => {
+                self.reset_playback();
+                self.message(error, true);
+            }
         }
     }
 
@@ -828,8 +1015,19 @@ impl GameUi {
         let kind = job.kind;
         let result = check_ready(&mut job.task);
         match result {
-            Some(Ok((engine, record))) => {
+            Some(Ok(ReplayResult {
+                engine,
+                record,
+                clip,
+            })) => {
+                if matches!(kind, ReplayKind::Preview { .. }) {
+                    self.last_move = clip;
+                    self.replay_job = None;
+                    self.start_move_preview();
+                    return;
+                }
                 self.clear_selection();
+                self.last_move = None;
                 self.engine = engine;
                 self.record = record;
                 self.sound_events.clear();
@@ -873,6 +1071,7 @@ impl GameUi {
                             }
                         }
                     }
+                    ReplayKind::Preview { .. } => unreachable!(),
                 });
                 self.viewport = TimelineViewport::default();
                 self.replay_job = None;
@@ -897,6 +1096,7 @@ impl GameUi {
                             "Последний ход отменён. История восстановлена.",
                             "Last move undone. History restored."
                         ),
+                        ReplayKind::Preview { .. } => unreachable!(),
                     },
                     false,
                 );
@@ -952,6 +1152,94 @@ impl GameUi {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn stationary_viewport_does_not_reconstruct_its_offset() {
+        let viewport = TimelineViewport {
+            times: vec![4, 3, 2, 1, 0],
+            stride: 603.37,
+            offset: 1895.719,
+            ..Default::default()
+        };
+        assert_eq!(
+            viewport.anchored_offset(&viewport.times, viewport.stride),
+            viewport.offset
+        );
+        let mut newer = vec![5];
+        newer.extend(&viewport.times);
+        assert!(
+            (viewport.anchored_offset(&newer, viewport.stride) - viewport.offset - viewport.stride)
+                .abs()
+                < 0.001
+        );
+    }
+
+    #[test]
+    fn check_navigation_only_visits_the_turns_boards_and_wraps() {
+        use temporal_chess_engine::model::{PieceKind, State};
+        let mut line = vec![State::new(
+            PieceKind::K { moved: false },
+            Color::White,
+            Sq(4, 0),
+        )];
+        for _ in 0..4 {
+            line.push(line.last().unwrap().prolongate().unwrap());
+        }
+        let mut game = GameUi {
+            engine: Engine::from_worldlines(vec![line], Color::White).unwrap(),
+            ..Default::default()
+        };
+        game.checks.ordinary = [0, 1, 2, 4].map(|t| identity(game.pieces(t)[0])).to_vec();
+        game.checks.inverted = vec![game.checks.ordinary[0]];
+        assert_eq!(game.checked_times_for(Color::White), [4, 2, 1, 0]);
+        assert!(game.checked_times_for(Color::Black).is_empty());
+        game.jump_to = Some(4);
+        for t in [2, 0, 4] {
+            game.navigate_check();
+            assert_eq!(game.jump_to, Some(t));
+        }
+    }
+
+    #[test]
+    fn last_move_preview_preserves_live_game_and_capture_animation() {
+        let mut game = GameUi::default();
+        for (t, from, to) in [
+            (0, Sq(4, 1), Sq(4, 3)),
+            (1, Sq(3, 6), Sq(3, 4)),
+            (2, Sq(4, 3), Sq(3, 4)),
+        ] {
+            game.click_square(t, from);
+            game.click_square(t, to);
+            game.reset_playback();
+        }
+        let engine = game.engine.clone();
+        let record = game.record.clone();
+        let clip = game.last_move.as_ref().unwrap();
+        assert!(
+            clip.transitions
+                .iter()
+                .any(|m| m.tracks.iter().any(|p| p.dying))
+        );
+        game.replay_last_move();
+        assert!(game.replaying_move && game.move_focus_pending && game.playback_busy());
+        assert_eq!(game.jump_to, Some(2));
+        assert_eq!(game.engine, engine);
+        assert_eq!(game.record, record);
+        game.reset_playback();
+        // The same feature also works immediately after importing a journal.
+        game.last_move = None;
+        game.replay_last_move();
+        finish_import(&mut game);
+        assert!(game.replay_job.is_none());
+        assert!(game.replaying_move && game.move_focus_pending);
+        assert!(
+            game.transition_queue
+                .iter()
+                .any(|m| m.tracks.iter().any(|p| p.dying))
+        );
+        assert_eq!(game.engine, engine);
+        assert_eq!(game.record, record);
+    }
+
     #[test]
     fn opponent_navigation_wraps_without_changing_turn_or_history() {
         use temporal_chess_engine::model::{PieceKind, State};
@@ -1049,6 +1337,36 @@ mod tests {
     }
 
     #[test]
+    fn full_timeline_playback_is_read_only_and_cancellable() {
+        let (engine, record) = GameRecord::load("NOLAN-CHESS 6\nchain_info_activation off\nreact_multiple off\nfree_wait off\nstart standard\nmove 0 12:0:0 e2 e4 + normal\nmove 1 28:1:0 e7 e5 + normal\n").unwrap();
+        let mut game = GameUi {
+            engine: engine.clone(),
+            record: record.clone(),
+            ..Default::default()
+        };
+        game.play_history();
+        assert!(game.history_playback && game.playback_busy());
+        assert_eq!(game.jump_to, Some(0));
+        assert!(game.transition_queue.is_empty());
+        game.next_history_transition(0);
+        assert_eq!(
+            game.transition.as_ref().map(|t| (t.from_t, t.to_t)),
+            Some((0, 1))
+        );
+        game.next_history_transition(1);
+        assert_eq!(
+            game.transition.as_ref().map(|t| (t.from_t, t.to_t)),
+            Some((1, 2))
+        );
+        assert_eq!(game.engine, engine);
+        assert_eq!(game.record, record);
+        game.reset_playback();
+        assert!(!game.playback_busy());
+        assert!(game.transition_queue.is_empty());
+        assert_eq!(game.engine, engine);
+    }
+
+    #[test]
     fn invalid_left_click_clears_or_selects_another_active_piece() {
         for square in [Sq(4, 1), Sq(3, 1), Sq(4, 6), Sq(0, 3)] {
             let mut game = GameUi::default();
@@ -1072,6 +1390,11 @@ mod tests {
         assert_eq!(
             game.selected.as_ref().unwrap().direction,
             TimeDirection::Past
+        );
+        game.click_square_with_direction(0, Sq(3, 1), true);
+        assert_eq!(
+            game.selected.as_ref().unwrap().direction,
+            TimeDirection::Future
         );
         game.click_square_with_direction(0, Sq(3, 1), true);
         assert_eq!(
@@ -1100,6 +1423,16 @@ mod tests {
             TimeDirection::Future
         );
         assert!(game.selected.as_ref().unwrap().piece.inverted);
+        game.click_square_with_direction(9, Sq(4, 6), true);
+        assert_eq!(
+            game.selected.as_ref().unwrap().direction,
+            TimeDirection::Past
+        );
+        game.click_square_with_direction(9, Sq(4, 6), true);
+        assert_eq!(
+            game.selected.as_ref().unwrap().direction,
+            TimeDirection::Future
+        );
     }
 
     #[test]

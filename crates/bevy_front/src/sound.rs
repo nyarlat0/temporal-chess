@@ -8,6 +8,9 @@ use temporal_chess_engine::{
 
 pub enum Event {
     Reset,
+    ReplayMove {
+        direction: TimeDirection,
+    },
     Action {
         waiting: u8,
         direction: Option<TimeDirection>,
@@ -158,7 +161,7 @@ pub fn update(
     #[cfg(not(target_arch = "wasm32"))] mut contexts: bevy_egui::EguiContexts,
 ) {
     for event in std::mem::take(&mut game.sound_events) {
-        match event {
+        let movement = match event {
             Event::Reset => {
                 audio.waiting = 0;
                 audio.music = Music::Silent;
@@ -173,34 +176,39 @@ pub fn update(
                 stop(&mut audio, &mut commands, &sinks);
                 #[cfg(target_arch = "wasm32")]
                 web::music("");
+                None
             }
             Event::Action { waiting, direction } => {
                 audio.waiting |= waiting;
                 if let Some(direction) = direction {
                     audio.direction = direction;
-                    let reversed = direction == TimeDirection::Past;
-                    #[cfg(not(target_arch = "wasm32"))]
-                    {
-                        let options = if reversed {
-                            [
-                                "move_reversed_01",
-                                "move_reversed_02",
-                                "move_reversed_03",
-                                "move_reversed_04",
-                            ]
-                        } else {
-                            ["move_01", "move_02", "move_03", "move_04"]
-                        };
-                        let name = options[fastrand::usize(..options.len())];
-                        commands.spawn((
-                            AudioPlayer::new(audio.sources[name].clone()),
-                            PlaybackSettings::DESPAWN,
-                        ));
-                    }
-                    #[cfg(target_arch = "wasm32")]
-                    web::movement(reversed);
                 }
+                direction
             }
+            Event::ReplayMove { direction } => Some(direction),
+        };
+        if let Some(direction) = movement {
+            let reversed = direction == TimeDirection::Past;
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let options = if reversed {
+                    [
+                        "move_reversed_01",
+                        "move_reversed_02",
+                        "move_reversed_03",
+                        "move_reversed_04",
+                    ]
+                } else {
+                    ["move_01", "move_02", "move_03", "move_04"]
+                };
+                let name = options[fastrand::usize(..options.len())];
+                commands.spawn((
+                    AudioPlayer::new(audio.sources[name].clone()),
+                    PlaybackSettings::DESPAWN,
+                ));
+            }
+            #[cfg(target_arch = "wasm32")]
+            web::movement(reversed);
         }
     }
     audio.waiting = refresh_waiting(

@@ -19,6 +19,13 @@ pub struct PieceStyle {
     pub hovered: bool,
 }
 
+pub fn inverted_outline_color(side: Color) -> Color32 {
+    match side {
+        Color::White => Color32::from_rgb(133, 59, 225),
+        Color::Black => Color32::from_rgb(169, 83, 251),
+    }
+}
+
 impl Outline {
     fn color(self) -> Color32 {
         match self {
@@ -39,7 +46,7 @@ pub struct PieceArt {
 
 #[derive(Default)]
 struct TextureCache {
-    entries: HashMap<(usize, usize, PieceStyle), CachedTexture>,
+    entries: HashMap<(usize, usize, PieceStyle, bool), CachedTexture>,
     pruned_frame: Option<u64>,
 }
 
@@ -105,6 +112,60 @@ impl PieceArt {
         style: PieceStyle,
         tint: Color32,
     ) {
+        self.paint_layer(painter, kind, side, rect, alpha, style, tint, 0.0, false);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn paint_death(
+        &self,
+        painter: &egui::Painter,
+        kind: PieceKind,
+        side: Color,
+        rect: Rect,
+        alpha: f32,
+        style: PieceStyle,
+        progress: f32,
+        sign: f32,
+    ) {
+        let t = crate::animation::ease(progress);
+        let angle = sign * std::f32::consts::FRAC_PI_2 * t;
+        self.paint_layer(
+            painter,
+            kind,
+            side,
+            rect,
+            alpha * (1.0 - t) * (1.0 - t),
+            style,
+            Color32::WHITE,
+            angle,
+            false,
+        );
+        self.paint_layer(
+            painter,
+            kind,
+            side,
+            rect,
+            alpha * t * (1.0 - t),
+            style,
+            Color32::WHITE,
+            angle,
+            true,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn paint_layer(
+        &self,
+        painter: &egui::Painter,
+        kind: PieceKind,
+        side: Color,
+        rect: Rect,
+        alpha: f32,
+        style: PieceStyle,
+        tint: Color32,
+        angle: f32,
+        red: bool,
+    ) {
         let kind = match kind {
             PieceKind::K { .. } => 0,
             PieceKind::Q => 1,
@@ -129,7 +190,7 @@ impl PieceArt {
             hovered: false,
             ..style
         };
-        let key = (index, size, style);
+        let key = (index, size, style, red);
         let frame = painter.ctx().cumulative_frame_nr();
         let mut cache = self.textures.lock().expect("piece textures");
         if cache.pruned_frame != Some(frame) {
@@ -145,7 +206,15 @@ impl PieceArt {
         let texture = cache.entries.entry(key).or_insert_with(|| CachedTexture {
             handle: painter.ctx().load_texture(
                 format!("piece-{key:?}"),
-                hover_atlas(self.sources[source_index], size, side, style),
+                {
+                    let mut image = hover_atlas(self.sources[source_index], size, side, style);
+                    if red {
+                        for pixel in &mut image.pixels {
+                            *pixel = Color32::from_rgba_unmultiplied(235, 45, 65, pixel.a());
+                        }
+                    }
+                    image
+                },
                 egui::TextureOptions::NEAREST,
             ),
             last_used: frame,
@@ -157,12 +226,19 @@ impl PieceArt {
             let left = if highlighted { 0.5 } else { 0.0 };
             Rect::from_min_max(Pos2::new(left, 0.0), Pos2::new(left + 0.5, 1.0))
         };
-        painter.image(
-            texture.handle.id(),
-            rect.expand(padding(size) as f32 / scale),
-            uv,
-            tint.gamma_multiply(alpha),
-        );
+        let rect = rect.expand(padding(size) as f32 / scale);
+        if angle == 0.0 {
+            painter.image(texture.handle.id(), rect, uv, tint.gamma_multiply(alpha));
+        } else {
+            let mut mesh = egui::Mesh::with_texture(texture.handle.id());
+            mesh.add_rect_with_uv(rect, uv, tint.gamma_multiply(alpha));
+            let pivot = rect.center_bottom();
+            let rotation = egui::emath::Rot2::from_angle(angle);
+            for vertex in &mut mesh.vertices {
+                vertex.pos = pivot + rotation * (vertex.pos - pivot);
+            }
+            painter.add(egui::Shape::mesh(mesh));
+        }
     }
 }
 
@@ -226,18 +302,20 @@ fn raster(svg: &[u8], size: usize, side: Color, style: PieceStyle) -> egui::Colo
     // RGB values and compositing order from render_amethyst.py (styled_piece).
     // Both inverted sides use the white source SVG: white areas are the body,
     // dark engravings are the ink, independently of the original piece color.
+    let rim = inverted_outline_color(side);
+    let rim = [u32::from(rim.r()), u32::from(rim.g()), u32::from(rim.b())];
     let palette = style.inverted.then_some(match side {
         Color::White => (
             [251_u32, 247, 255], // clean near-white body
             [103_u32, 48, 158],  // purple ink
             [160_u32, 73, 255],  // soft amethyst light
-            [133_u32, 59, 225],  // thin highlight
+            rim,                 // thin highlight
         ),
         Color::Black => (
             [33_u32, 17, 54],    // deep plum body
             [231_u32, 187, 255], // lavender ink
             [163_u32, 64, 255],  // soft amethyst light
-            [169_u32, 83, 251],  // thin highlight
+            rim,                 // thin highlight
         ),
     });
     // Python: dilation by MaxFilter 9/13 at 2x, GaussianBlur sigma=4.5%

@@ -441,7 +441,9 @@ pub fn poll(
         return;
     }
     client.poll_validation(&mut game);
-    if client.validation.is_none()
+    if !game.history_playback
+        && !game.replaying_move
+        && client.validation.is_none()
         && game.transition.is_none()
         && game.transition_queue.is_empty()
         && !game.returning_camera

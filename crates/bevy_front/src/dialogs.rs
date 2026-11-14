@@ -240,6 +240,7 @@ pub fn draw(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState, art:
                 {
                     *game = GameUi {
                         cell_size: game.cell_size,
+                        animation_speed: game.animation_speed,
                         local_auto_flip: game.local_auto_flip,
                         bot: crate::tempfish::BotState {
                             settings: game.new_game_bot,
