@@ -446,6 +446,7 @@ pub fn poll(
         && client.validation.is_none()
         && game.transition.is_none()
         && game.transition_queue.is_empty()
+        && game.cancellations.is_empty()
         && !game.returning_camera
         && !game.facing.animating()
     {

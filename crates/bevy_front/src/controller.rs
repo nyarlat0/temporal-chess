@@ -1,4 +1,4 @@
-use crate::animation::{BoardTransition, SmoothScroll, WheelInertia};
+use crate::animation::{BoardTransition, CancellationAnimation, SmoothScroll, WheelInertia};
 use bevy::{
     prelude::Resource,
     tasks::{AsyncComputeTaskPool, Task, TaskPool, futures::check_ready},
@@ -95,6 +95,9 @@ pub struct GameUi {
     pub move_focus_pending: bool,
     pub last_move: Option<MovePlayback>,
     pub transition: Option<BoardTransition>,
+    pub cancellations: std::collections::VecDeque<CancellationAnimation>,
+    pub cancellation_show: bool,
+    pub cancellation_focus_pending: bool,
     pub transition_queue: std::collections::VecDeque<BoardTransition>,
     pub remote_focus: Option<u64>,
     pub returning_camera: bool,
@@ -145,6 +148,7 @@ pub struct TimelineViewport {
     pub wheel: WheelInertia,
     pub frame: Option<u64>,
     pub motion_progress: f32,
+    pub cancellation_progress: f32,
     pub focused: Option<usize>,
 }
 
@@ -204,6 +208,9 @@ impl Default for GameUi {
             move_focus_pending: false,
             last_move: None,
             transition: None,
+            cancellations: Default::default(),
+            cancellation_show: false,
+            cancellation_focus_pending: false,
             transition_queue: Default::default(),
             remote_focus: None,
             returning_camera: false,
@@ -227,6 +234,7 @@ impl GameUi {
     pub fn playback_busy(&self) -> bool {
         self.history_playback
             || self.replaying_move
+            || !self.cancellations.is_empty()
             || self.transition.is_some()
             || !self.transition_queue.is_empty()
             || self.remote_focus.is_some()
@@ -261,11 +269,28 @@ impl GameUi {
         self.returning_camera = true;
     }
 
+    pub fn show_next_cancellation(&mut self, fallback: usize) {
+        if let Some(animation) = self.cancellations.front() {
+            self.cancellation_show = true;
+            self.cancellation_focus_pending = true;
+            self.jump_to = Some(animation.t);
+            self.viewport.scroll = None;
+            self.viewport.cancellation_progress = 0.0;
+        } else {
+            self.cancellation_show = false;
+            self.cancellation_focus_pending = false;
+            self.finish_travel(fallback);
+        }
+    }
+
     pub fn reset_playback(&mut self) {
         if self.move_focus_pending {
             self.jump_to = None;
             self.viewport.scroll = None;
         }
+        self.cancellations.clear();
+        self.cancellation_show = false;
+        self.cancellation_focus_pending = false;
         self.history_playback = false;
         self.history_focus_pending = false;
         self.replaying_move = false;
@@ -350,7 +375,7 @@ impl GameUi {
 
     fn move_clip(before: &Engine, after: &Engine, command: Command) -> Option<MovePlayback> {
         let path = BoardTransition::command_path(after, command);
-        let transitions = path
+        let mut transitions = path
             .windows(2)
             .enumerate()
             .filter_map(|(i, pair)| {
@@ -363,6 +388,48 @@ impl GameUi {
                 )
             })
             .collect::<std::collections::VecDeque<_>>();
+        // A command may erase its own route. Its undo snapshot still contains
+        // the spatial arrival, which must play before showing its cancellation.
+        if let Some(mv) = command.spatial_move()
+            && after.history().moves().get(&mv.id()) != Some(&mv)
+            && let Some(undo) = CancellationAnimation::collect(before, after, Some(mv))
+                .into_iter()
+                .find(|a| {
+                    a.t == mv.direction.step(mv.t).unwrap_or(mv.t)
+                        && a.mover.is_some_and(|p| p.origin == mv.pid.wid)
+                })
+            && let Some(mover) = undo.mover
+            && let Some(source) = before.preboard(mv.t).and_then(|b| {
+                b.space
+                    .iter()
+                    .flatten()
+                    .flat_map(|cell| cell.iter())
+                    .find(|p| identity(**p) == mv.source())
+                    .copied()
+            })
+            && let Some(first) = transitions.front_mut()
+        {
+            first
+                .tracks
+                .retain(|p| p.from.origin != mv.pid.wid && p.to.origin != mv.pid.wid);
+            first.target.retain(|p| p.origin != mv.pid.wid);
+            first.target.extend(
+                undo.before
+                    .iter()
+                    .filter(|p| p.origin == mv.pid.wid)
+                    .copied(),
+            );
+            first.tracks.push(crate::animation::PieceMotion {
+                from: source,
+                to: mover,
+                visible_from: true,
+                visible_to: true,
+                reversed_move: false,
+                move_direction: Some(mv.direction),
+                dying: false,
+                fall_sign: 1.0,
+            });
+        }
         (!transitions.is_empty()).then(|| MovePlayback {
             destination: command
                 .wait_until()
@@ -783,9 +850,7 @@ impl GameUi {
     /// Shared local/server-confirmed application path. Network requests never
     /// mutate the game optimistically: only acknowledged commands reach here.
     pub fn apply_confirmed(&mut self, command: Command) -> Result<(), String> {
-        let before = (command.spatial_move().is_some()
-            || matches!(command, Command::Advance { .. }))
-        .then(|| self.engine.clone());
+        let before = Some(self.engine.clone());
         let actor = self.engine.turn();
         let result = self.record.apply(&mut self.engine, command);
         self.finish_confirmed(command, before, result, actor)
@@ -794,9 +859,7 @@ impl GameUi {
     /// Publish the isolated result already approved by this client, after both
     /// players have voted and the server has durably appended the command.
     pub fn apply_prepared(&mut self, command: Command, engine: Engine, record: GameRecord) {
-        let before = (command.spatial_move().is_some()
-            || matches!(command, Command::Advance { .. }))
-        .then(|| self.engine.clone());
+        let before = Some(self.engine.clone());
         let actor = self.engine.turn();
         self.engine = engine;
         self.record = record;
@@ -823,35 +886,44 @@ impl GameUi {
             });
         }
         if let (Ok(()), Some(before)) = (&result, before) {
-            self.transition_queue.clear();
-            let paradox = matches!(
-                self.engine.outcome(),
-                Some(GameOutcome::Victory {
-                    reason: WinReason::Paradox,
-                    ..
-                })
-            );
-            if !paradox {
-                self.last_move = Self::move_clip(&before, &self.engine, command);
-                if let Some(clip) = &self.last_move {
-                    self.transition_queue = clip.transitions.clone();
+            let cancellations =
+                CancellationAnimation::collect(&before, &self.engine, command.spatial_move());
+            let has_travel =
+                command.spatial_move().is_some() || matches!(command, Command::Advance { .. });
+            if has_travel || !cancellations.is_empty() {
+                self.transition_queue.clear();
+                self.cancellations = cancellations;
+                self.cancellation_show = false;
+                self.cancellation_focus_pending = false;
+                let paradox = matches!(
+                    self.engine.outcome(),
+                    Some(GameOutcome::Victory {
+                        reason: WinReason::Paradox,
+                        ..
+                    })
+                );
+                if !paradox && has_travel {
+                    self.last_move = Self::move_clip(&before, &self.engine, command);
+                    if let Some(clip) = &self.last_move {
+                        self.transition_queue = clip.transitions.clone();
+                    }
                 }
-            }
-            self.playback_turn = Some(before.turn());
-            self.playback_destination = command
-                .wait_until()
-                .or_else(|| {
-                    command
-                        .spatial_move()
-                        .and_then(|mv| mv.direction.step(mv.t))
-                })
-                .or(match command {
-                    Command::Advance { to_t, .. } => Some(to_t),
-                    _ => None,
-                });
-            self.remote_focus = None;
-            if !self.focus_move_source() {
-                self.finish_travel(command.source_time().unwrap_or(0));
+                self.playback_turn = Some(before.turn());
+                self.playback_destination = command
+                    .wait_until()
+                    .or_else(|| {
+                        command
+                            .spatial_move()
+                            .and_then(|mv| mv.direction.step(mv.t))
+                    })
+                    .or(match command {
+                        Command::Advance { to_t, .. } => Some(to_t),
+                        _ => None,
+                    });
+                self.remote_focus = None;
+                if !self.focus_move_source() {
+                    self.show_next_cancellation(command.source_time().unwrap_or(0));
+                }
             }
         }
         self.after_command(result, command.to_string());
@@ -1160,6 +1232,74 @@ impl GameUi {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cancellations_follow_spatial_travel_and_are_not_in_last_move_preview() {
+        let text =
+            include_str!("../../engine/tests/fixtures/castling_missing_rook_revalidation.nolan");
+        let (engine, record) = GameRecord::load(text).unwrap();
+        let mut game = GameUi {
+            engine,
+            record,
+            ..Default::default()
+        };
+        let king = game
+            .engine
+            .move_sources()
+            .find(|p| p.origin == 4 && p.t == 22)
+            .unwrap();
+        let mv = game
+            .engine
+            .possible_moves(king.origin, king.age)
+            .unwrap()
+            .into_iter()
+            .find(|m| m.to_past() && m.sq == Sq(7, 0))
+            .unwrap();
+        game.apply_confirmed(Command::MoveAndWait {
+            mv,
+            from: king.sq,
+            until: 12,
+        })
+        .unwrap();
+        assert!(!game.cancellation_show);
+        assert_eq!(
+            game.cancellations.iter().map(|a| a.t).collect::<Vec<_>>(),
+            [11, 21]
+        );
+        let castle = &game.cancellations[0];
+        assert!(
+            castle
+                .before
+                .iter()
+                .any(|p| p.origin == 4 && p.sq == Sq(6, 0))
+        );
+        assert!(
+            castle
+                .after
+                .iter()
+                .any(|p| p.origin == 4 && p.sq == Sq(4, 0))
+        );
+        assert_eq!(game.cancellations[1].mover.unwrap().sq, Sq(7, 0));
+        assert!(game.cancellations.iter().all(|a| !a.started));
+        game.transition = None;
+        game.transition_queue.clear();
+        game.move_focus_pending = false;
+        game.show_next_cancellation(12);
+        assert!(game.playback_busy() && game.cancellation_show && game.cancellation_focus_pending);
+        assert_eq!(game.jump_to, Some(11));
+        assert!(!game.returning_camera);
+        game.cancellations.pop_front();
+        game.show_next_cancellation(11);
+        assert_eq!(game.jump_to, Some(21));
+        let engine = game.engine.clone();
+        let record = game.record.clone();
+        game.reset_playback();
+        game.replay_last_move();
+        assert!(game.replaying_move);
+        assert!(game.cancellations.is_empty() && !game.cancellation_show);
+        assert_eq!(game.engine, engine);
+        assert_eq!(game.record, record);
+    }
+
     #[test]
     fn stationary_viewport_does_not_reconstruct_its_offset() {
         let viewport = TimelineViewport {

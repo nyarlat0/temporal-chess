@@ -29,6 +29,18 @@ pub fn ribbon(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt) -> Rect {
     let frame = ui.ctx().cumulative_frame_nr();
     if game.viewport.frame != Some(frame) {
         let mut offset = game.viewport.anchored_offset(&times, height);
+        if game.cancellation_show && !game.cancellation_focus_pending {
+            let progress = game
+                .cancellations
+                .front_mut()
+                .map_or(0.0, |a| a.progress(game.animation_speed));
+            game.viewport.cancellation_progress = progress;
+            if progress >= 1.0
+                && let Some(done) = game.cancellations.pop_front()
+            {
+                game.show_next_cancellation(done.t);
+            }
+        }
         if game.playback_busy()
             || game.facing.animating()
             || !ui.is_enabled()
@@ -62,7 +74,7 @@ pub fn ribbon(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt) -> Rect {
             }
             raw = 0.0;
             if game.transition.is_none() && !history {
-                game.finish_travel(motion.to_t);
+                game.show_next_cancellation(motion.to_t);
             }
         }
         if let Some(motion) = &mut game.transition {
@@ -144,6 +156,15 @@ pub fn ribbon(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt) -> Rect {
         if game.move_focus_pending && game.jump_to.is_none() && game.viewport.scroll.is_none() {
             game.move_focus_pending = false;
             game.transition = game.transition_queue.pop_front();
+        }
+        if game.cancellation_focus_pending
+            && game.jump_to.is_none()
+            && game.viewport.scroll.is_none()
+        {
+            game.cancellation_focus_pending = false;
+            if let Some(animation) = game.cancellations.front_mut() {
+                animation.start();
+            }
         }
         if game.returning_camera && game.jump_to.is_none() && game.viewport.scroll.is_none() {
             game.returning_camera = false;
@@ -697,7 +718,7 @@ fn paint_board(
 ) {
     let computed = game.engine.board(t).is_some();
     let alpha = if computed { 1.0 } else { 0.4 };
-    let pieces = game.pieces(t);
+    let mut pieces = game.pieces(t);
     let active = pieces.iter().any(|p| p.can_move() && p.is_movable());
     let all_active = all_side_active(&pieces, t);
     let side = Color::from_board(t);
@@ -713,6 +734,13 @@ fn paint_board(
     );
     let checked = &game.checks;
     let previous = visible_moves(game, t);
+    let cancellation = game
+        .cancellations
+        .front()
+        .filter(|a| game.cancellation_show && a.t == t);
+    if let Some(animation) = cancellation {
+        pieces.retain(|p| !animation.hides(p.origin));
+    }
     let mut artwork = Vec::new();
     for x in 0..8 {
         for y in 0..8 {
@@ -898,6 +926,47 @@ fn paint_board(
                     Color32::WHITE
                 },
             );
+        }
+    }
+    if let Some(animation) = cancellation {
+        let progress = game.viewport.cancellation_progress;
+        let fade = ease(progress);
+        for (states, opacity) in [(&animation.before, 1.0 - fade), (&animation.after, fade)] {
+            for piece in states {
+                let overlaps: Vec<_> = states
+                    .iter()
+                    .chain(&pieces)
+                    .filter(|p| p.sq == piece.sq)
+                    .collect();
+                let rank = overlaps
+                    .iter()
+                    .position(|p| identity(**p) == identity(*piece))
+                    .unwrap_or(0);
+                let count = overlaps.len();
+                let shift = if count > 1 {
+                    (rank as f32 / (count - 1) as f32 - 0.5) * cell * 0.28
+                } else {
+                    0.0
+                };
+                let shake = if animation.mover.is_some_and(|m| m.origin == piece.origin) {
+                    crate::animation::CancellationAnimation::shake(progress) * cell * 0.10
+                } else {
+                    0.0
+                };
+                let center = square_rect(board, cell, piece.sq, game.facing.black_bottom).center()
+                    + Vec2::new(shift + shake, -shift);
+                art.paint_styled(
+                    painter,
+                    piece.kind,
+                    piece.color,
+                    Rect::from_center_size(
+                        center,
+                        Vec2::splat(cell * if count > 1 { 0.82 } else { 0.98 }),
+                    ),
+                    alpha * opacity,
+                    piece_style(game, *piece, checked, None),
+                );
+            }
         }
     }
     for (mv, from) in previous {

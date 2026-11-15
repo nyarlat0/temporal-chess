@@ -117,6 +117,127 @@ pub struct BoardTransition {
     clock: AnimationClock,
 }
 
+pub struct CancellationAnimation {
+    pub t: usize,
+    pub before: Vec<PieceView>,
+    pub after: Vec<PieceView>,
+    pub mover: Option<PieceView>,
+    pub started: bool,
+    clock: AnimationClock,
+}
+
+impl CancellationAnimation {
+    pub fn collect(
+        before: &Engine,
+        after: &Engine,
+        played: Option<Move>,
+    ) -> std::collections::VecDeque<Self> {
+        let edits = after
+            .history()
+            .cancellations()
+            .iter()
+            .filter(|edit| !before.history().cancellations().contains(edit))
+            .collect::<Vec<_>>();
+        // Direct replacement can remove an old route without an undo event.
+        let replacements = before
+            .history()
+            .moves()
+            .values()
+            .filter(|mv| after.history().moves().get(&mv.id()) != Some(*mv))
+            .filter(|mv| !edits.iter().any(|edit| edit.source == mv.source()))
+            .map(|mv| temporal_chess_engine::engine::Cancellation {
+                source: mv.source(),
+                lines: before
+                    .history()
+                    .worldlines()
+                    .iter()
+                    .zip(after.history().worldlines())
+                    .enumerate()
+                    .filter(|(_, (a, b))| a != b)
+                    .map(|(wid, (a, b))| (wid, a.clone(), b.clone()))
+                    .collect(),
+            })
+            .collect::<Vec<_>>();
+        edits
+            .into_iter()
+            .chain(replacements.iter())
+            .filter_map(|edit| {
+                let mv = before
+                    .history()
+                    .moves()
+                    .values()
+                    .copied()
+                    .chain(played)
+                    .find(|mv| mv.source() == edit.source)?;
+                let t = mv.direction.step(mv.t)?;
+                after.preboard(t)?;
+                let collect = |old: bool| {
+                    edit.lines
+                        .iter()
+                        .flat_map(|(wid, a, b)| {
+                            let line = if old {
+                                a
+                            } else {
+                                after.history().worldlines().get(*wid).unwrap_or(b)
+                            };
+                            line.iter()
+                                .enumerate()
+                                .filter(move |(_, s)| s.t == t && s.alive)
+                                .map(move |(age, s)| PieceView::from_state(s, *wid, age))
+                        })
+                        .collect::<Vec<_>>()
+                };
+                let mover = edit
+                    .lines
+                    .iter()
+                    .find(|(wid, _, _)| *wid == mv.pid.wid)
+                    .and_then(|(wid, line, _)| {
+                        let age = line
+                            .iter()
+                            .position(|s| s.t == mv.t && PieceId::from_state(s, *wid) == mv.pid)?;
+                        let state = line.get(age + 1).filter(|s| s.t == t)?;
+                        Some(PieceView::from_state(state, *wid, age + 1))
+                    });
+                let mut old = collect(true);
+                if let Some(mover) = mover
+                    && !old.iter().any(|p| identity(*p) == identity(mover))
+                {
+                    old.push(mover);
+                }
+                Some(Self {
+                    t,
+                    before: old,
+                    after: collect(false),
+                    mover,
+                    started: false,
+                    clock: Default::default(),
+                })
+            })
+            .collect()
+    }
+    pub fn start(&mut self) {
+        self.started = true;
+        self.clock.start();
+    }
+    pub fn progress(&mut self, speed: f32) -> f32 {
+        if self.started {
+            self.clock.progress(2.2, speed)
+        } else {
+            0.0
+        }
+    }
+    pub fn hides(&self, wid: usize) -> bool {
+        self.before
+            .iter()
+            .chain(&self.after)
+            .any(|p| p.origin == wid)
+    }
+    pub fn shake(progress: f32) -> f32 {
+        let t = progress.clamp(0.0, 1.0);
+        (t * std::f32::consts::TAU * 5.0).sin() * (t * std::f32::consts::PI).sin() * (1.0 - t)
+    }
+}
+
 impl BoardTransition {
     pub fn command_path(
         after: &Engine,
@@ -151,7 +272,9 @@ impl BoardTransition {
                     break;
                 }
             }
-            return path;
+            if path.len() > 1 {
+                return path;
+            }
         }
         // A legal command can erase its own source. Still show its original
         // adjacent-board motion, without inventing a new route in the engine.

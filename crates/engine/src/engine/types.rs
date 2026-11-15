@@ -74,7 +74,7 @@ pub(super) struct Calculation {
 /// Physical worldline edits caused by one cancellation, including a castling rook.
 /// Reaction flags alone are not evidence that a continuation affects history.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(super) struct Cancellation {
+pub struct Cancellation {
     pub source: PieceAt,
     pub lines: Vec<(usize, Worldline, Worldline)>,
 }
@@ -96,6 +96,11 @@ pub struct History {
 }
 
 impl History {
+    /// Ordered physical edits retained for cancellation consequence tracking.
+    /// Presentation clients can compare snapshots without running the engine again.
+    pub fn cancellations(&self) -> &[Cancellation] {
+        &self.calculation.cancellations
+    }
     pub fn starting_position(&self) -> crate::model::StartingPosition {
         self.starting_position
     }

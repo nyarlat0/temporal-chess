@@ -316,7 +316,7 @@ pub fn poll(mut runner: ResMut<Runner>, mut game: ResMut<GameUi>, mut contexts: 
     };
     // A queued bot command must wait for a read-only preview, just like a
     // command already being animated. Keep its search and pending result.
-    if game.replaying_move || game.history_playback {
+    if game.replaying_move || game.history_playback || !game.cancellations.is_empty() {
         return;
     }
     let allowed = game.bot.owns_turn(&game)

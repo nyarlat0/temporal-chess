@@ -19,8 +19,8 @@ pub use crate::model::{
     State, TimeDirection,
 };
 pub use types::{
-    BoardConflict, BoardErr, CalculationStatus, CaptureOutcome, CheckStatus, Engine, EngineErr,
-    GameOutcome, GameStatus, History, WaitingReason, WinReason,
+    BoardConflict, BoardErr, CalculationStatus, Cancellation, CaptureOutcome, CheckStatus, Engine,
+    EngineErr, GameOutcome, GameStatus, History, WaitingReason, WinReason,
 };
 use types::{PieceCollision, Projection, ValidRes};
 
