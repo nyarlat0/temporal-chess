@@ -1,4 +1,5 @@
 use super::*;
+use crate::model::BoardTime;
 use crate::model::{Color, PieceKind, Sq};
 
 fn line(color: Color, sq: Sq, end: usize) -> Vec<State> {
@@ -54,7 +55,7 @@ fn consequence_free_cancellations_do_not_pause_or_spend_rights_or_turn() {
     assert_eq!(engine, unchanged);
 }
 
-fn play(engine: &mut Engine, t: usize, from: Sq, to: Sq) -> Move {
+fn play(engine: &mut Engine, t: BoardTime, from: Sq, to: Sq) -> Move {
     let piece = *engine.board(t).unwrap().get_piece(from.0, from.1).unwrap();
     let mv = engine
         .possible_moves(piece.origin, piece.age)

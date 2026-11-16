@@ -1,15 +1,16 @@
+use crate::model::BoardTime;
 use crate::pieces::PieceView;
 
 use super::Board;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PreBoard {
-    pub t: usize,
+    pub t: BoardTime,
     pub space: [[Vec<PieceView>; 8]; 8],
 }
 
 impl PreBoard {
-    pub fn new(t: usize) -> Self {
+    pub fn new(t: BoardTime) -> Self {
         let space = std::array::from_fn(|_| std::array::from_fn(|_| Vec::new()));
 
         Self { t, space }

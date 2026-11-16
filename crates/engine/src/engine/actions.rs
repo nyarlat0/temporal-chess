@@ -1,4 +1,5 @@
 use super::{Castling, Engine, EngineErr, Move};
+use crate::model::BoardTime;
 use crate::pieces::{Color, PieceView};
 
 impl Engine {
@@ -27,7 +28,7 @@ impl Engine {
                 return Err(EngineErr::WrongMove);
             }
             candidate.update_infos()?;
-            candidate.remember_information(candidate.turn, usize::MAX);
+            candidate.remember_information(candidate.turn, BoardTime::MAX);
             for state in candidate
                 .history
                 .worldlines
@@ -101,7 +102,7 @@ impl Engine {
         self.apply_admitted_move(mv, piece)
     }
 
-    fn apply_admitted_move(&mut self, mv: Move, mut piece: PieceView) -> Result<(), EngineErr> {
+    fn apply_admitted_move(&mut self, mut mv: Move, mut piece: PieceView) -> Result<(), EngineErr> {
         let checking = self.move_board(piece, mv.direction)?;
         let target_sq = mv.en_passant().unwrap_or(mv.sq);
         let target = checking
@@ -115,7 +116,7 @@ impl Engine {
         // Acknowledge the old view before replacing moves or editing routes.
         // Reactions beyond this board remain unanswered and retain their memory.
         let reaction_limit = if self.history.rules.global_reaction_reset {
-            usize::MAX
+            BoardTime::MAX
         } else {
             piece.t
         };
@@ -137,30 +138,21 @@ impl Engine {
         let idle_endpoints = self.deact_same_order(piece);
         self.deact_prev_reactable(piece.color, reaction_limit);
 
-        let end_t = self
-            .projection
-            .preboards
-            .last_key_value()
-            .map(|(&t, _)| t)
-            .unwrap_or(0);
-        let horizon = if piece.t == end_t && self.history.starting_position.fixed_end().is_none() {
-            self.prolongate_wlines(end_t, mv.to_past().then_some(piece.origin))?;
-            end_t.checked_add(1).ok_or(EngineErr::WrongMove)?
-        } else {
-            end_t
-        };
-        self.history.horizon = horizon;
+        mv = self.expand_for_move(mv)?;
+        piece = self.refreshed_piece(piece)?;
+        let horizon = self.history.horizon;
         self.apply_route(piece, mv, horizon)?;
         if let Some(rook) = rook {
-            // The king and rook have separate worldlines, so editing the king
-            // does not invalidate the saved source age of the rook.
+            let rook = self.refreshed_piece(rook)?;
             self.apply_route(rook, mv, horizon)?;
         }
         for idle in idle_endpoints {
+            let idle = self.refreshed_piece(idle)?;
             self.continue_idle_endpoint(idle, horizon)?;
         }
         self.update_bufs()?;
         if let Some(target) = target {
+            let target = self.refreshed_piece(target)?;
             let arrival = mv.direction.step(mv.t).ok_or(EngineErr::WrongMove)?;
             let victim = if target.t == arrival {
                 Some(target)
@@ -233,7 +225,6 @@ impl Engine {
 
     fn deact_same_order(&mut self, piece: PieceView) -> Vec<PieceView> {
         let mut idle_endpoints = Vec::new();
-        let starting_position = self.history.starting_position;
         for (origin, line) in self.history.worldlines.iter_mut().enumerate() {
             let last_age = line.len() - 1;
             for (age, state) in line.iter_mut().enumerate() {
@@ -247,17 +238,6 @@ impl Engine {
                         // A cancelled turn can leave a deliberate active
                         // endpoint. Once another piece takes its shared turn,
                         // it must wait, not become an inactive stranded end.
-                        if (state.inverted && state.t <= state.color.first_board())
-                            || (!state.inverted
-                                && starting_position
-                                    .last_own_board(state.color)
-                                    .is_some_and(|end| state.t >= end))
-                        {
-                            // There is no earlier own board to wait on. Keep
-                            // the boundary reserve available for a future turn.
-                            state.expire_reactions();
-                            continue;
-                        }
                         idle_endpoints.push(PieceView::from_state(state, origin, age));
                     }
                     state.make_unmovable();
@@ -267,7 +247,7 @@ impl Engine {
         idle_endpoints
     }
 
-    pub(super) fn deact_prev_reactable(&mut self, side: Color, until_t: usize) {
+    pub(super) fn deact_prev_reactable(&mut self, side: Color, until_t: BoardTime) {
         for state in self
             .history
             .worldlines

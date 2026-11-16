@@ -61,14 +61,16 @@ impl Engine {
         let target_exists = target.is_some();
         let selected = match target {
             Some(board) => board,
-            None if direction == TimeDirection::Future => self
+            None => self
                 .projection
                 .boards
                 .get(&piece.t)
                 .ok_or(EngineErr::AbsentBoard)?,
-            None => return Err(EngineErr::AbsentBoard),
         };
         let mut board = selected.clone();
+        if !target_exists {
+            board.age = target_time.ok_or(EngineErr::WrongMove)?;
+        }
         // A destination can exist without the passive endpoints continued by this move.
         // Include the ordinary endpoints that this shared turn will continue,
         // using their own orientation (not the mover's chosen direction).

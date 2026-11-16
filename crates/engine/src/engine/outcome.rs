@@ -61,9 +61,12 @@ impl Engine {
 
     /// Whether an opponent still owes an ordinary move in existing past time.
     pub fn has_past_debt(&self, side: Color) -> bool {
-        // In a finite two-front game the remote army's starting board is not
+        // In a two-front game the remote army's starting board is not
         // this side's present. Its natural frontier advances from its own end.
-        let fixed = self.history.starting_position.fixed_end().is_some();
+        let separated = matches!(
+            self.history.starting_position,
+            crate::model::StartingPosition::TimeWar { .. }
+        );
         let times = self
             .history
             .worldlines
@@ -73,10 +76,10 @@ impl Engine {
                 state.alive && state.color == side && Color::from_board(state.t) == side
             })
             .map(|state| state.t);
-        let frontier = if fixed && side == Color::Black {
+        let frontier = if separated && side == Color::Black {
             times.min().unwrap_or(self.history.horizon)
-        } else if fixed {
-            times.max().unwrap_or(0)
+        } else if separated {
+            times.max().unwrap_or(self.history.beginning)
         } else {
             self.history.horizon
         };
@@ -89,7 +92,7 @@ impl Engine {
                     && state.color == side
                     && state.rights.ordinary
                     && Color::from_board(state.t) == side
-                    && if fixed && side == Color::Black {
+                    && if separated && side == Color::Black {
                         state.t > frontier
                     } else {
                         state.t < frontier

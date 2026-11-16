@@ -1,6 +1,7 @@
 //! Presentation-only transitions. Worldline edges, not worldline IDs alone,
 //! connect occurrences across a board boundary (including reversed moves).
 use std::collections::HashSet;
+use temporal_chess_engine::model::BoardTime;
 use temporal_chess_engine::{
     engine::Engine,
     model::{Castling, Move, MoveId, PieceAt, PieceId, PieceKind, PieceView},
@@ -33,7 +34,7 @@ fn identity(piece: PieceView) -> PieceAt {
     }
 }
 
-fn pieces(engine: &Engine, t: usize) -> Vec<PieceView> {
+fn pieces(engine: &Engine, t: BoardTime) -> Vec<PieceView> {
     engine.preboard(t).map_or_else(Vec::new, |board| {
         board
             .space
@@ -104,11 +105,11 @@ pub struct PieceMotion {
 
 #[derive(Clone)]
 pub struct BoardTransition {
-    pub from_t: usize,
-    pub to_t: usize,
+    pub from_t: BoardTime,
+    pub to_t: BoardTime,
     // Activity markers must use each snapshot's own latest board.
-    pub source_horizon: usize,
-    pub target_horizon: usize,
+    pub source_horizon: BoardTime,
+    pub target_horizon: BoardTime,
     pub tracks: Vec<PieceMotion>,
     pub source: Vec<PieceView>,
     pub target: Vec<PieceView>,
@@ -118,7 +119,7 @@ pub struct BoardTransition {
 }
 
 pub struct CancellationAnimation {
-    pub t: usize,
+    pub t: BoardTime,
     pub before: Vec<PieceView>,
     pub after: Vec<PieceView>,
     pub mover: Option<PieceView>,
@@ -132,18 +133,43 @@ impl CancellationAnimation {
         after: &Engine,
         played: Option<Move>,
     ) -> std::collections::VecDeque<Self> {
+        let prior = before
+            .history()
+            .cancellations()
+            .iter()
+            .cloned()
+            .map(|mut edit| {
+                edit.source = after.history().remap_ancestry(edit.source);
+                for (wid, a, b) in &mut edit.lines {
+                    let floor = after
+                        .history()
+                        .worldlines()
+                        .get(*wid)
+                        .and_then(|l| l.first())
+                        .map_or(i64::MIN, |s| s.fut_seen);
+                    for line in [a, b] {
+                        for state in line.iter_mut() {
+                            state.fut_seen = state.fut_seen.max(floor);
+                        }
+                    }
+                }
+                edit
+            })
+            .collect::<Vec<_>>();
         let edits = after
             .history()
             .cancellations()
             .iter()
-            .filter(|edit| !before.history().cancellations().contains(edit))
+            .filter(|edit| !prior.contains(edit))
             .collect::<Vec<_>>();
         // Direct replacement can remove an old route without an undo event.
         let replacements = before
             .history()
             .moves()
             .values()
-            .filter(|mv| after.history().moves().get(&mv.id()) != Some(*mv))
+            .copied()
+            .map(|mv| after.history().remap_move(mv))
+            .filter(|mv| after.history().moves().get(&mv.id()) != Some(mv))
             .filter(|mv| !edits.iter().any(|edit| edit.source == mv.source()))
             .map(|mv| temporal_chess_engine::engine::Cancellation {
                 source: mv.source(),
@@ -168,6 +194,7 @@ impl CancellationAnimation {
                     .values()
                     .copied()
                     .chain(played)
+                    .map(|mv| after.history().remap_move(mv))
                     .find(|mv| mv.source() == edit.source)?;
                 let t = mv.direction.step(mv.t)?;
                 after.preboard(t)?;
@@ -242,7 +269,7 @@ impl BoardTransition {
     pub fn command_path(
         after: &Engine,
         command: temporal_chess_engine::record::Command,
-    ) -> Vec<usize> {
+    ) -> Vec<BoardTime> {
         use temporal_chess_engine::record::Command;
         let (source, minimum, until) = match command {
             Command::Move { mv, .. } => (mv.source(), 2, None),
@@ -250,6 +277,7 @@ impl BoardTransition {
             Command::Advance { source, to_t, .. } => (source, 1, Some(to_t)),
             _ => return vec![],
         };
+        let source = after.history().remap_ancestry(source);
         if let Some(line) = after.history().worldlines().get(source.piece.wid)
             && let Some(age) = line.iter().position(|s| {
                 s.t == source.t && PieceId::from_state(s, source.piece.wid) == source.piece
@@ -302,13 +330,20 @@ impl BoardTransition {
     pub fn between(
         before: &Engine,
         after: &Engine,
-        from_t: usize,
-        to_t: usize,
+        from_t: BoardTime,
+        to_t: BoardTime,
         played: Option<Move>,
     ) -> Option<Self> {
         before.preboard(from_t)?;
         after.preboard(to_t)?;
-        let source = pieces(before, from_t);
+        let canonical = |mut p: PieceView| {
+            p.fut_seen = after.history().remap_ancestry(identity(p)).piece.fut_seen;
+            p
+        };
+        let source = pieces(before, from_t)
+            .into_iter()
+            .map(canonical)
+            .collect::<Vec<_>>();
         let target = pieces(after, to_t);
         let mut used_source = HashSet::new();
         let mut used_target = HashSet::new();
@@ -336,6 +371,8 @@ impl BoardTransition {
                     } else {
                         continue;
                     };
+                    let from = canonical(from);
+                    let to = canonical(to);
                     let from_id = identity(from);
                     let to_id = identity(to);
                     let visible_from = source.iter().find(|p| identity(**p) == from_id);
@@ -343,8 +380,11 @@ impl BoardTransition {
                     if visible_from.is_none() && visible_to.is_none() {
                         continue;
                     }
-                    let command = recorded_edge(engine, a, b);
-                    let rank = if played.is_some() && command == played {
+                    let command =
+                        recorded_edge(engine, a, b).map(|mv| after.history().remap_move(mv));
+                    let rank = if played.is_some()
+                        && command == played.map(|mv| after.history().remap_move(mv))
+                    {
                         0
                     } else if command.is_some() {
                         1
@@ -543,14 +583,14 @@ impl WheelInertia {
 }
 
 pub struct SmoothScroll {
-    pub target: usize,
+    pub target: BoardTime,
     pub from_rows: f32,
     clock: AnimationClock,
     duration: f32,
 }
 
 impl SmoothScroll {
-    pub fn new(target: usize, from_rows: f32, target_row: usize) -> Self {
+    pub fn new(target: BoardTime, from_rows: f32, target_row: usize) -> Self {
         Self {
             target,
             from_rows,

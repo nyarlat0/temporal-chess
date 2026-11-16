@@ -1,9 +1,10 @@
 use super::{Engine, EngineErr, MoveId, PieceAt, TimeDirection};
+use crate::model::BoardTime;
 
 impl Engine {
     /// Structurally valid waiting destinations for UI previews. Just like
     /// possible_moves, final causality checks are performed by the command.
-    pub fn possible_skips(&self, source: PieceAt) -> Vec<usize> {
+    pub fn possible_skips(&self, source: PieceAt) -> Vec<BoardTime> {
         self.timeline_times()
             .filter(|&t| t != source.t)
             .filter(|&t| {
@@ -15,7 +16,7 @@ impl Engine {
     /// Advance to another existing time in the piece's current orientation.
     /// Spends a turn unless Free wait is enabled. Staying at the same time
     /// cannot relinquish a right. No spatial move is stored in either mode.
-    pub fn skip_ordinary(&mut self, source: PieceAt, to_t: usize) -> Result<(), EngineErr> {
+    pub fn skip_ordinary(&mut self, source: PieceAt, to_t: BoardTime) -> Result<(), EngineErr> {
         self.transaction(|candidate| {
             if candidate.history.rules.wait_before_move {
                 return candidate.skip_with_information(source, to_t);
@@ -25,7 +26,7 @@ impl Engine {
             preview.skip_inner(source, to_t)?;
             let actor = candidate.turn;
             let limit = if candidate.history.rules.global_reaction_reset {
-                usize::MAX
+                BoardTime::MAX
             } else {
                 source.t
             };
@@ -43,7 +44,7 @@ impl Engine {
     pub(super) fn skip_with_information(
         &mut self,
         source: PieceAt,
-        to_t: usize,
+        to_t: BoardTime,
     ) -> Result<(), EngineErr> {
         self.skip_with_information_mode(source, to_t, true, self.turn)
     }
@@ -51,7 +52,7 @@ impl Engine {
     pub(super) fn skip_with_information_mode(
         &mut self,
         source: PieceAt,
-        to_t: usize,
+        to_t: BoardTime,
         auto: bool,
         reconcile_turn: crate::model::Color,
     ) -> Result<(), EngineErr> {
@@ -87,7 +88,7 @@ impl Engine {
         }
     }
 
-    pub(super) fn skip_inner(&mut self, source: PieceAt, to_t: usize) -> Result<(), EngineErr> {
+    pub(super) fn skip_inner(&mut self, source: PieceAt, to_t: BoardTime) -> Result<(), EngineErr> {
         let location = *self
             .projection
             .pieces
@@ -107,6 +108,7 @@ impl Engine {
         }
         if crate::model::Color::from_board(to_t) != piece.color
             || to_t == piece.t
+            || to_t < self.history.beginning
             || to_t > self.history.horizon
             || (piece.inverted && to_t > piece.t)
             || (!piece.inverted && to_t < piece.t)

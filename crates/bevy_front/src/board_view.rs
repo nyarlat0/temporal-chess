@@ -6,6 +6,7 @@ use crate::{
     theme::{BACKGROUND, CAPTURE, INVERTED, MUTED, direction_color},
 };
 use bevy_egui::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
+use temporal_chess_engine::model::BoardTime;
 use temporal_chess_engine::{
     engine::CheckStatus,
     model::{Color, Sq},
@@ -151,7 +152,7 @@ pub fn ribbon(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt) -> Rect {
         }
         if game.history_focus_pending && game.jump_to.is_none() && game.viewport.scroll.is_none() {
             game.history_focus_pending = false;
-            game.next_history_transition(0);
+            game.next_history_transition(game.engine.history().beginning());
         }
         if game.move_focus_pending && game.jump_to.is_none() && game.viewport.scroll.is_none() {
             game.move_focus_pending = false;
@@ -711,10 +712,10 @@ fn paint_board(
     painter: &egui::Painter,
     game: &GameUi,
     art: &PieceArt,
-    t: usize,
+    t: BoardTime,
     board: Rect,
     cell: f32,
-    hovered: Option<(usize, Sq)>,
+    hovered: Option<(BoardTime, Sq)>,
 ) {
     let computed = game.engine.board(t).is_some();
     let alpha = if computed { 1.0 } else { 0.4 };
@@ -1060,7 +1061,7 @@ fn replaces_selected_move(game: &GameUi, old: temporal_chess_engine::model::Move
 }
 
 /// Only draw a retained command at the actual visible location of its living source.
-fn visible_moves(game: &GameUi, t: usize) -> Vec<(temporal_chess_engine::model::Move, Sq)> {
+fn visible_moves(game: &GameUi, t: BoardTime) -> Vec<(temporal_chess_engine::model::Move, Sq)> {
     let pieces = game.pieces(t);
     let mut seen = std::collections::BTreeSet::new();
     let mut visible: Vec<_> = game
@@ -1071,12 +1072,13 @@ fn visible_moves(game: &GameUi, t: usize) -> Vec<(temporal_chess_engine::model::
         .filter_map(|command| {
             if let Command::Move { mv, .. } | Command::MoveAndWait { mv, .. } = command
                 && mv.t == t
+                && let mv = game.engine.history().remap_move(*mv)
                 && let Some(source) = pieces.iter().find(|piece| identity(**piece) == mv.source())
                 && game
                     .engine
                     .piece_state(mv.source())
                     .is_some_and(|state| state.alive)
-                && (game.engine.history().moves().get(&mv.id()) == Some(mv)
+                && (game.engine.history().moves().get(&mv.id()) == Some(&mv)
                     || (game.record.commands().last() == Some(command)
                         && matches!(
                             game.engine.outcome(),
@@ -1086,7 +1088,7 @@ fn visible_moves(game: &GameUi, t: usize) -> Vec<(temporal_chess_engine::model::
                             })
                         )))
             {
-                seen.insert(mv.id()).then_some((*mv, source.sq))
+                seen.insert(mv.id()).then_some((mv, source.sq))
             } else {
                 None
             }
@@ -1178,7 +1180,7 @@ fn target_marker(
         temporal_chess_engine::model::PieceView,
     )],
     piece: temporal_chess_engine::model::PieceView,
-    hovered: Option<(usize, Sq)>,
+    hovered: Option<(BoardTime, Sq)>,
 ) -> (bool, bool) {
     let mut marked = false;
     let mut emphasized = false;
@@ -1197,11 +1199,11 @@ fn target_marker(
     (marked, emphasized)
 }
 
-fn ordinary_activity(piece: temporal_chess_engine::model::PieceView, horizon: usize) -> bool {
+fn ordinary_activity(piece: temporal_chess_engine::model::PieceView, horizon: BoardTime) -> bool {
     piece.can_move() && piece.t != horizon && piece.rights.ordinary
 }
 
-fn all_side_active(pieces: &[temporal_chess_engine::model::PieceView], t: usize) -> bool {
+fn all_side_active(pieces: &[temporal_chess_engine::model::PieceView], t: BoardTime) -> bool {
     let side = Color::from_board(t);
     pieces
         .iter()
@@ -1282,7 +1284,7 @@ fn piece_style(
     game: &GameUi,
     piece: temporal_chess_engine::model::PieceView,
     checked: &CheckStatus,
-    hovered: Option<(usize, Sq)>,
+    hovered: Option<(BoardTime, Sq)>,
 ) -> PieceStyle {
     let (capture, capture_hovered) = game.selected.as_ref().map_or((false, false), |selection| {
         target_marker(selection, &selection.captures, piece, hovered)
@@ -1398,12 +1400,69 @@ mod tests {
 mod stale_source_regression {
     use super::*;
     #[test]
-    fn relocated_queen_does_not_leave_an_arrow_at_its_old_source() {
-        let text = format!(
-            "{}move 4 5:10:1 f3 g4 - normal\nmove 1 19:9:1 b5 b2 - normal\nmove 0 2:0:0 c1 b2 + normal\nmove 5 22:7:2 e4 f2 - normal\n",
-            include_str!("../../engine/tests/fixtures/queen_post_move_information.nolan")
+    fn extending_time_war_rebases_retained_arrows_and_animation_ids() {
+        use temporal_chess_engine::model::{GameRules, StartingPosition};
+        let mut game = GameUi::with_start(
+            GameRules::default(),
+            StartingPosition::TimeWar { separation: 3 },
         );
-        let (engine, record) = temporal_chess_engine::record::GameRecord::load(&text).unwrap();
+        for (t, from, to) in [
+            (0, Sq(6, 0), Sq(5, 2)),
+            (3, Sq(1, 7), Sq(2, 5)),
+            (2, Sq(1, 0), Sq(2, 2)),
+        ] {
+            let source = *game
+                .engine
+                .board(t)
+                .unwrap()
+                .get_piece(from.0, from.1)
+                .unwrap();
+            let mv = game
+                .engine
+                .possible_moves(source.origin, source.age)
+                .unwrap()
+                .into_iter()
+                .find(|m| m.sq == to && m.to_past() == (t == 3))
+                .unwrap();
+            game.apply_confirmed(Command::Move { mv, from }).unwrap();
+            if t != 2 {
+                game.reset_playback();
+            }
+        }
+        let old = game.record.commands()[1].spatial_move().unwrap();
+        assert_eq!(old.pid.fut_seen, 3);
+        let arrows = visible_moves(&game, 3);
+        assert_eq!(arrows.len(), 1);
+        assert_eq!(arrows[0].0.pid.fut_seen, 4);
+        assert_eq!(arrows[0].1, Sq(1, 7));
+        assert!(game.cancellations.is_empty());
+        let first = game.transition_queue.front().unwrap();
+        assert!(first.tracks.iter().any(|track| track.from.origin == 17
+            && track.to.origin == 17
+            && track.from.sq == Sq(2, 5)
+            && track.to.sq == Sq(1, 7)));
+    }
+    #[test]
+    fn relocated_queen_does_not_leave_an_arrow_at_its_old_source() {
+        use temporal_chess_engine::{
+            engine::Engine,
+            model::{Color, PieceKind, State},
+        };
+        let mut queen = State::new(PieceKind::Q, Color::Black, Sq(1, 1));
+        queen.t = 3;
+        queen.fut_seen = 3;
+        queen.rights.ordinary = true;
+        let mut engine = Engine::from_worldlines(vec![vec![queen]], Color::Black).unwrap();
+        let mv = engine
+            .possible_moves(0, 0)
+            .unwrap()
+            .into_iter()
+            .find(|m| !m.to_past() && m.sq == Sq(1, 4))
+            .unwrap();
+        let mut record = temporal_chess_engine::record::GameRecord::default();
+        record
+            .apply(&mut engine, Command::Move { mv, from: Sq(1, 1) })
+            .unwrap();
         let game = GameUi {
             engine,
             record,
@@ -1416,7 +1475,7 @@ mod stale_source_regression {
         );
         let queen = arrows
             .iter()
-            .find(|(mv, _)| mv.pid.wid == 19)
+            .find(|(mv, _)| mv.pid.wid == 0)
             .expect("the living queen's retained move remains visible");
         assert_eq!(queen.1, Sq(1, 1));
         for (mv, from) in arrows {

@@ -3,6 +3,7 @@ mod boards;
 mod calculation;
 mod collision_rules;
 mod collisions;
+mod expansion;
 mod history;
 mod initialization;
 mod move_generation;
@@ -38,7 +39,7 @@ fn legacy_from_worldlines(
     worldlines: Vec<Vec<State>>,
     turn: crate::model::Color,
 ) -> Result<Engine, EngineErr> {
-    Engine::from_worldlines_with_rules(
+    let mut engine = Engine::from_worldlines_with_rules(
         worldlines,
         turn,
         crate::model::GameRules {
@@ -46,7 +47,11 @@ fn legacy_from_worldlines(
             global_reaction_reset: false,
             ..Default::default()
         },
-    )
+    )?;
+    engine.history.beginning = engine.history.beginning.min(0);
+    engine.update_bufs()?;
+    engine.reconcile()?;
+    Ok(engine)
 }
 
 #[cfg(test)]

@@ -1,3 +1,4 @@
+use temporal_chess_engine::model::BoardTime;
 use temporal_chess_engine::{
     engine::Engine,
     model::{Color, GameRules, Sq, StartingPosition, TimeDirection},
@@ -19,7 +20,7 @@ fn game(n: usize) -> Engine {
 fn play(
     engine: &mut Engine,
     record: &mut GameRecord,
-    t: usize,
+    t: BoardTime,
     from: Sq,
     to: Sq,
     direction: TimeDirection,
@@ -101,7 +102,7 @@ fn invalid_bounds_rejected() {
     }
 }
 #[test]
-fn offered_moves_always_apply_with_fixed_bounds() {
+fn offered_moves_always_apply_and_expand_only_at_boundaries() {
     for n in [3, 5, 9] {
         let mut engine = game(n);
         for _ in 0..8 {
@@ -109,17 +110,20 @@ fn offered_moves_always_apply_with_fixed_bounds() {
             let mut successor = None;
             for p in sources {
                 for mv in engine.possible_moves(p.origin, p.age).unwrap() {
-                    assert!(mv.direction.step(mv.t).unwrap() <= n);
+                    let old_lo = engine.history().beginning();
+                    let old_hi = engine.history().horizon();
                     let mut next = engine.clone();
                     next.apply_new_mv(mv)
                         .unwrap_or_else(|e| panic!("n={n} {mv:?}: {e}"));
-                    assert_eq!(next.history().horizon(), n);
+                    assert!((old_hi..=old_hi + 2).contains(&next.history().horizon()));
+                    assert!((old_lo - 2..=old_lo).contains(&next.history().beginning()));
                     assert!(
                         next.history()
                             .worldlines()
                             .iter()
                             .flat_map(|l| l.iter())
-                            .all(|s| s.t <= n)
+                            .all(|s| s.t >= next.history().beginning()
+                                && s.t <= next.history().horizon())
                     );
                     if successor.is_none() {
                         successor = Some(next);
@@ -132,7 +136,13 @@ fn offered_moves_always_apply_with_fixed_bounds() {
     }
 }
 
-fn advance(engine: &mut Engine, record: &mut GameRecord, t: usize, square: Sq, to_t: usize) {
+fn advance(
+    engine: &mut Engine,
+    record: &mut GameRecord,
+    t: BoardTime,
+    square: Sq,
+    to_t: BoardTime,
+) {
     let piece = *engine
         .board(t)
         .unwrap()
@@ -156,7 +166,7 @@ fn advance(engine: &mut Engine, record: &mut GameRecord, t: usize, square: Sq, t
 }
 
 #[test]
-fn both_boundaries_keep_reserves_and_allow_return_but_never_escape() {
+fn both_boundaries_expand_and_idle_reserves_follow_without_reversing() {
     let mut engine = game(9);
     let mut record = GameRecord::default();
     for sq in [Sq(1, 0), Sq(6, 0)] {
@@ -176,7 +186,7 @@ fn both_boundaries_keep_reserves_and_allow_return_but_never_escape() {
     );
     assert!(
         engine
-            .board(8)
+            .board(10)
             .unwrap()
             .get_piece(1, 0)
             .unwrap()
@@ -201,21 +211,22 @@ fn both_boundaries_keep_reserves_and_allow_return_but_never_escape() {
     );
     assert!(
         engine
-            .board(1)
+            .board(-1)
             .unwrap()
             .get_piece(6, 7)
             .unwrap()
             .rights
             .ordinary
     );
-    let white = engine.board(8).unwrap().get_piece(5, 2).unwrap();
-    assert!(white.inverted && white.rights.ordinary);
-    let black = engine.board(1).unwrap().get_piece(2, 5).unwrap();
-    assert!(!black.inverted && black.rights.ordinary);
+    let white = engine.board(10).unwrap().get_piece(5, 2).unwrap();
+    assert!(!white.inverted && white.rights.ordinary);
+    let black = engine.board(-1).unwrap().get_piece(2, 5).unwrap();
+    assert!(black.inverted && black.rights.ordinary);
     assert!(engine.board(9).unwrap().get_piece(5, 2).is_some());
     assert!(engine.board(0).unwrap().get_piece(2, 5).is_some());
     assert_eq!(GameRecord::load(&record.to_text()).unwrap().0, engine);
-    assert_eq!(engine.history().horizon(), 9);
+    assert_eq!(engine.history().horizon(), 10);
+    assert_eq!(engine.history().beginning(), -1);
 }
 
 #[test]

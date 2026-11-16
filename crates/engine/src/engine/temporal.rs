@@ -1,3 +1,5 @@
+use crate::model::BoardTime;
+use crate::model::TimeDirection;
 use crate::model::{CausalGap, MoveId, PieceAt, PieceId, State};
 use crate::pieces::{Color, PieceView, Sq};
 
@@ -99,13 +101,8 @@ impl Engine {
         age: usize,
         next: State,
     ) -> Result<(usize, bool), EngineErr> {
-        if self
-            .history
-            .starting_position
-            .fixed_end()
-            .is_some_and(|end| next.t > end)
-        {
-            return Err(EngineErr::InvalidHistory("state outside fixed timeline"));
+        if next.t < self.history.beginning || next.t > self.history.horizon {
+            return Err(EngineErr::InvalidHistory("state outside existing timeline"));
         }
         let line = &mut self.history.worldlines[wid];
         let key = MoveId::from_state(&next);
@@ -146,20 +143,12 @@ impl Engine {
         &mut self,
         piece: PieceView,
         mv: Move,
-        horizon: usize,
+        horizon: BoardTime,
     ) -> Result<(), EngineErr> {
         let source = self.history.worldlines[piece.origin][piece.age].clone();
         let mut next = source.step(mv.direction).ok_or(EngineErr::InvalidHistory(
             "time or temporal identity overflow while creating move arrival",
         ))?;
-        if self
-            .history
-            .starting_position
-            .fixed_end()
-            .is_some_and(|end| next.t > end)
-        {
-            return Err(EngineErr::WrongMove);
-        }
         next.apply_mv(mv);
         let line = &self.history.worldlines[piece.origin];
         let connected = line.gap_after(piece.age).is_none();
@@ -185,10 +174,8 @@ impl Engine {
         let line = &self.history.worldlines[piece.origin];
         if Color::from_board(line[age].t) != piece.color
             && (age + 1 == line.len() || line.gap_after(age).is_some())
-            && let Some(waiting) = match self.boundary_return(line[age].t, mv.direction) {
-                Some(direction) => line[age].step(direction),
-                None => self.passive_successor(&line[age]),
-            }
+            && let Some(waiting) = self.passive_successor(&line[age])
+            && waiting.t >= self.history.beginning
             && waiting.t <= horizon
         {
             self.advance_route(piece.origin, age, waiting)?;
@@ -196,9 +183,10 @@ impl Engine {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(super) fn prolongate_wlines(
         &mut self,
-        end_t: usize,
+        end_t: BoardTime,
         departing: Option<usize>,
     ) -> Result<(), EngineErr> {
         for wid in 0..self.history.worldlines.len() {
@@ -222,7 +210,7 @@ impl Engine {
     pub(super) fn continue_idle_endpoint(
         &mut self,
         piece: PieceView,
-        horizon: usize,
+        horizon: BoardTime,
     ) -> Result<(), EngineErr> {
         let mut age = piece.age;
         // New-frontier prolongation or castling may already have supplied the
@@ -232,12 +220,20 @@ impl Engine {
         }
         for _ in 0..2 {
             let source = &self.history.worldlines[piece.origin][age];
-            let next = self
-                .passive_successor(source)
-                .ok_or(EngineErr::InvalidHistory(
-                    "temporal endpoint cannot continue after its shared turn",
-                ))?;
-            if next.t > horizon {
+            let direction = TimeDirection::from_inverted(source.inverted);
+            let own = direction.step(source.t).and_then(|t| direction.step(t));
+            if age == piece.age
+                && (source.inverted
+                    || self.history.starting_position != crate::model::StartingPosition::Standard)
+                && own.is_none_or(|t| t < self.history.beginning || t > horizon)
+            {
+                self.history.worldlines[piece.origin][age].rights.ordinary = true;
+                break;
+            }
+            let Some(next) = self.passive_successor(source) else {
+                break;
+            };
+            if next.t > horizon || next.t < self.history.beginning {
                 break;
             }
             age = self.advance_route(piece.origin, age, next)?.0;

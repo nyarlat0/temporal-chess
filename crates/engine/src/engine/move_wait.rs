@@ -1,13 +1,14 @@
 //! A spatial move and its optional wait are one atomic turn.
 use super::{Engine, EngineErr, Move, PieceAt, PieceId};
+use crate::model::BoardTime;
 use crate::model::{Color, MoveId, MoveRights};
 
 impl Engine {
     fn moved_endpoint(&self, mv: Move) -> Option<PieceAt> {
         let line = self.history.worldlines.get(mv.pid.wid)?;
-        let age = line
-            .iter()
-            .position(|s| s.t == mv.t && PieceId::from_state(s, mv.pid.wid) == mv.pid)?;
+        let age = line.iter().position(|s| {
+            s.t == mv.t && s.loop_turn == mv.pid.loop_turn && s.fut_seen >= mv.pid.fut_seen
+        })?;
         let arrival = line.get(age + 1)?;
         if !arrival.alive
             || crate::model::Sq(arrival.x, arrival.y) != mv.sq
@@ -39,7 +40,7 @@ impl Engine {
 
     /// Existing own-color boards reachable after resolving the spatial capture.
     /// The captured incarnation is already dead when checking waiting blockers.
-    pub fn possible_move_waits(&self, mv: Move) -> Result<Vec<usize>, EngineErr> {
+    pub fn possible_move_waits(&self, mv: Move) -> Result<Vec<BoardTime>, EngineErr> {
         let mut probe = self.clone();
         probe.history.calculation.acknowledged.clear();
         probe.history.calculation.responsible = Some(self.turn);
@@ -64,7 +65,7 @@ impl Engine {
         Ok(result)
     }
 
-    pub fn after_move_with_wait(&self, mv: Move, until: usize) -> Result<Self, EngineErr> {
+    pub fn after_move_with_wait(&self, mv: Move, until: BoardTime) -> Result<Self, EngineErr> {
         let source = self.occurrence(mv.source()).ok_or(EngineErr::WrongPiece)?;
         if !self
             .possible_moves(source.origin, source.age)?
@@ -126,10 +127,15 @@ impl Engine {
             }
             // Unlike a player-selected wait, automatic continuation may cause
             // collisions. Let the normal reconciliation loop resolve them.
-            let Some(first) = state.prolongate().filter(|s| s.t <= self.history.horizon) else {
+            let Some(first) = state
+                .prolongate()
+                .filter(|s| s.t >= self.history.beginning && s.t <= self.history.horizon)
+            else {
                 continue;
             };
-            let last = first.prolongate().filter(|s| s.t <= self.history.horizon);
+            let last = first
+                .prolongate()
+                .filter(|s| s.t >= self.history.beginning && s.t <= self.history.horizon);
             // Only forward continuation may finish on the opponent's parity.
             // Inverted passive lines still stop on their first own-color board.
             if state.inverted && last.is_none() {
@@ -199,6 +205,7 @@ mod tests {
                 moves: BTreeMap::new(),
                 targets: BTreeMap::new(),
                 horizon,
+                beginning: 0,
                 status: GameStatus::Ongoing,
                 calculation: Default::default(),
             },
@@ -206,7 +213,13 @@ mod tests {
         )
         .unwrap()
     }
-    fn line(kind: PieceKind, color: Color, sq: Sq, from: usize, until: usize) -> Vec<State> {
+    fn line(
+        kind: PieceKind,
+        color: Color,
+        sq: Sq,
+        from: BoardTime,
+        until: BoardTime,
+    ) -> Vec<State> {
         (from..=until)
             .map(|t| {
                 let mut state = State::new(kind, color, sq);
@@ -347,7 +360,7 @@ mod tests {
             let engine = scenario(
                 vec![
                     pawn.clone(),
-                    line(PieceKind::P { moved: true }, Color::White, Sq(0, 2), 1, 1),
+                    line(PieceKind::P { moved: true }, Color::White, Sq(0, 2), 0, 1),
                     line(PieceKind::N, Color::Black, Sq(7, 7), 0, 6),
                 ],
                 false,
@@ -401,7 +414,7 @@ mod tests {
                 !wait_before_move
             );
             let last = engine.history.worldlines[6].last().unwrap();
-            assert_eq!(last.t, usize::from(!wait_before_move));
+            assert_eq!(last.t, BoardTime::from(!wait_before_move));
             assert_eq!((last.x, last.y), (6, 0));
             assert_eq!(engine.history.moves, moves);
             assert_eq!(engine.turn(), Color::Black);

@@ -1,8 +1,9 @@
+use crate::model::BoardTime;
 use crate::pieces::{Color, PieceView, Sq};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Board {
-    pub(crate) age: usize,
+    pub(crate) age: BoardTime,
     pub(crate) pieces: Vec<PieceView>,
     occ: [[Option<usize>; 8]; 8],
 }
@@ -20,7 +21,7 @@ impl Default for Board {
 }
 
 impl Board {
-    pub fn empty(t: usize) -> Self {
+    pub fn empty(t: BoardTime) -> Self {
         Self {
             age: t,
             pieces: Vec::new(),
@@ -28,7 +29,7 @@ impl Board {
         }
     }
 
-    pub fn time(&self) -> usize {
+    pub fn time(&self) -> BoardTime {
         self.age
     }
 

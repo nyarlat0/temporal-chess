@@ -1,5 +1,6 @@
 use temporal_chess_engine::board::{Board, PreBoard};
 use temporal_chess_engine::engine::{Engine, EngineErr};
+use temporal_chess_engine::model::BoardTime;
 use temporal_chess_engine::model::{Castling, Move, PieceId, State};
 use temporal_chess_engine::pieces::{Color, PieceKind, PieceView, Sq};
 
@@ -20,7 +21,7 @@ fn view(kind: PieceKind, color: Color, square: Sq, origin: usize) -> PieceView {
 }
 
 #[test]
-fn starting_engine_is_ready_and_has_twenty_white_moves() {
+fn starting_engine_is_ready_and_offers_both_directions() {
     let engine = Engine::default();
     let board = engine.board(0).unwrap();
     assert_eq!(board.pieces().len(), 32);
@@ -35,7 +36,7 @@ fn starting_engine_is_ready_and_has_twenty_white_moves() {
         .filter(|p| p.color == Color::White)
         .map(|p| engine.possible_moves(p.origin, p.age).unwrap().len())
         .sum();
-    assert_eq!(count, 20);
+    assert_eq!(count, 40);
     for piece in board.pieces() {
         assert_eq!(board.get_piece(piece.sq.0, piece.sq.1), Some(piece));
         assert_eq!(
@@ -85,8 +86,8 @@ fn move_expires_only_own_reactions_on_the_same_or_earlier_boards() {
     let mut reactor = stationary_line(PieceKind::P { moved: true }, Color::White, Sq(0, 1), 4);
     for state in &mut reactor {
         state.rights.ordinary = false;
-        state.rights.new_information = state.t.is_multiple_of(2);
-        state.rights.cancelled_move = state.t.is_multiple_of(2);
+        state.rights.new_information = state.t.rem_euclid(2) == 0;
+        state.rights.cancelled_move = state.t.rem_euclid(2) == 0;
     }
     let mut opponent = stationary_line(PieceKind::N, Color::Black, Sq(6, 7), 4);
     opponent[1].rights.cancelled_move = true;
@@ -176,7 +177,7 @@ fn an_occupied_future_square_is_rejected_before_applying_a_move() {
             .possible_moves(0, 0)
             .unwrap()
             .iter()
-            .any(|mv| mv.sq == Sq(0, 1))
+            .any(|mv| !mv.to_past() && mv.sq == Sq(0, 1))
     );
     let mv = Move {
         pid: PieceId::from_piv(engine.get_piv(0, 0).unwrap()),
@@ -347,7 +348,7 @@ fn promotion_is_required_and_has_four_choices() {
     )
     .unwrap();
     let moves = engine.possible_moves(0, 0).unwrap();
-    assert_eq!(moves.len(), 4);
+    assert_eq!(moves.len(), 8);
     assert!(moves.iter().all(|mv| mv.promotion().is_some()));
     let mv = *moves
         .iter()
@@ -399,7 +400,7 @@ fn malformed_history_is_rejected_without_panics() {
     ));
     state.x = 0;
     state.inverted = true;
-    assert!(state.prolongate().is_none());
+    assert_eq!(state.prolongate().unwrap().t, -1);
     assert!(Sq(usize::MAX, 0).shift(1, 0).is_none());
 
     state.t = 2;
@@ -427,8 +428,8 @@ fn malformed_history_is_rejected_without_panics() {
 #[test]
 fn overflowing_time_is_a_rejected_command_without_mutation() {
     let mut state = State::new(PieceKind::N, Color::Black, Sq(1, 7));
-    state.t = usize::MAX;
-    state.fut_seen = usize::MAX;
+    state.t = BoardTime::MAX;
+    state.fut_seen = BoardTime::MAX;
     state.rights.ordinary = true;
     let mut engine = Engine::from_worldlines(vec![vec![state]], Color::Black).unwrap();
     let snapshot = engine.clone();
@@ -441,7 +442,7 @@ fn overflowing_time_is_a_rejected_command_without_mutation() {
     );
     let mv = Move {
         pid: PieceId::from_state(&engine.history().worldlines()[0][0], 0),
-        t: usize::MAX,
+        t: BoardTime::MAX,
         sq: Sq(2, 5),
         direction: temporal_chess_engine::model::TimeDirection::Future,
         effect: temporal_chess_engine::model::MoveEffect::Normal,
@@ -486,7 +487,7 @@ fn present_blockers_stop_inverted_sliding_attacks() {
 }
 
 #[test]
-fn opening_counts_forward_and_boundary_rebound_replies() {
+fn opening_counts_forward_and_backward_expansion_replies() {
     let initial = Engine::default();
     let mut leaves = 0;
     for piece in initial
@@ -514,7 +515,7 @@ fn opening_counts_forward_and_boundary_rebound_replies() {
             }
         }
     }
-    assert_eq!(leaves, 800);
+    assert_eq!(leaves, 1600);
 }
 
 #[test]

@@ -138,12 +138,19 @@ fn an_existing_inverted_segment_can_move_and_be_undone_without_erasing_its_state
         .find(|mv| mv.to_past() && mv.sq == Sq(2, 2))
         .unwrap();
     engine.apply_new_mv(mv).unwrap();
-    assert_eq!(engine.get_piv(0, 1).unwrap().t, 3);
-    assert_eq!(engine.get_piv(0, 1).unwrap().sq, Sq(2, 2));
-    engine.undo_mv(mv.id()).unwrap();
+    assert_eq!(engine.get_piv(0, 2).unwrap().t, 3);
+    assert_eq!(engine.get_piv(0, 2).unwrap().sq, Sq(2, 2));
+    let id = engine
+        .history
+        .moves
+        .values()
+        .find(|m| m.pid.wid == 0 && m.t == mv.t)
+        .unwrap()
+        .id();
+    engine.undo_mv(id).unwrap();
     engine.reconcile().unwrap();
-    assert_eq!(engine.history.worldlines[0].len(), 3);
-    assert_eq!(engine.get_piv(0, 1).unwrap().sq, Sq(1, 0));
+    assert_eq!(engine.history.worldlines[0].len(), 4);
+    assert_eq!(engine.get_piv(0, 2).unwrap().sq, Sq(1, 0));
     assert_eq!(engine.get_piv(0, 2).unwrap().sq, Sq(1, 0));
 }
 
@@ -298,10 +305,9 @@ fn cancelling_a_rook_transition_finds_its_castling_command() {
 
             // A later independent rook move takes precedence over castling.
             let mut engine = castled;
-            engine
-                .prolongate_wlines(engine.history.horizon, None)
-                .unwrap();
+            let end = engine.history.horizon;
             engine.history.horizon += 1;
+            engine.prolongate_wlines(end, None).unwrap();
             engine.turn = color;
             engine.reconcile().unwrap();
             let rook = engine.get_piv(1, 2).unwrap();
@@ -395,6 +401,7 @@ fn oncoming_tracking_uses_orientation_even_when_inverted_piece_knows_more_future
             moves: BTreeMap::new(),
             targets: BTreeMap::new(),
             horizon: 2,
+            beginning: 0,
             status: GameStatus::Ongoing,
             calculation: Default::default(),
         },
@@ -552,7 +559,12 @@ fn backward_castling_requires_two_inverted_participants_and_can_be_cancelled() {
                 );
                 if let Some(castle) = castle {
                     engine.apply_new_mv(castle).unwrap();
-                    let arrival = engine.get_piv(1, 1).unwrap();
+                    let arrival = engine.history.worldlines[1]
+                        .iter()
+                        .enumerate()
+                        .find(|(_, s)| s.t == t - 1)
+                        .map(|(age, s)| PieceView::from_state(s, 1, age))
+                        .unwrap();
                     assert_eq!(arrival.t, t - 1);
                     assert_eq!(
                         arrival.sq,
@@ -562,7 +574,12 @@ fn backward_castling_requires_two_inverted_participants_and_can_be_cancelled() {
                     engine.reconcile().unwrap();
                     assert!(!engine.history.moves.contains_key(&castle.id()));
                     for (wid, x) in [(0, 4), (1, rook_x)] {
-                        let restored = engine.get_piv(wid, 1).unwrap();
+                        let restored = engine.history.worldlines[wid]
+                            .iter()
+                            .enumerate()
+                            .find(|(_, s)| s.t == t - 1)
+                            .map(|(age, s)| PieceView::from_state(s, wid, age))
+                            .unwrap();
                         assert_eq!(restored.sq, Sq(x, y));
                         assert!(restored.inverted);
                         assert_eq!(
@@ -581,7 +598,7 @@ fn backward_castling_requires_two_inverted_participants_and_can_be_cancelled() {
 }
 
 #[test]
-fn cancelling_boundary_move_removes_its_automatic_turn() {
+fn cancelling_boundary_move_keeps_extended_boards_without_an_automatic_turn() {
     for color in [Color::White, Color::Black] {
         let mut engine = Engine::with_start(
             crate::model::GameRules {
@@ -611,19 +628,33 @@ fn cancelling_boundary_move_removes_its_automatic_turn() {
             .unwrap();
         engine.apply_new_mv(mv).unwrap();
         let line = &engine.history.worldlines[piece.origin];
-        assert_eq!(line[piece.age + 2].t, t);
-        assert_ne!(line[piece.age + 2].inverted, piece.inverted);
-        engine.undo_mv(mv.id()).unwrap();
+        let end = line.last().unwrap();
+        assert_eq!(end.t, direction.step(direction.step(t).unwrap()).unwrap());
+        assert_eq!(end.inverted, piece.inverted);
+        let actual = engine
+            .history
+            .moves
+            .values()
+            .find(|m| m.t == mv.t && m.pid.wid == mv.pid.wid)
+            .copied()
+            .unwrap();
+        engine.undo_mv(actual.id()).unwrap();
         engine.reconcile().unwrap();
-        let line = &engine.history.worldlines[piece.origin];
-        assert_eq!(line.len(), piece.age + 1);
-        assert!(line[piece.age].rights.ordinary);
-        assert_eq!(line[piece.age].inverted, piece.inverted);
+        assert!(
+            engine.history.worldlines[piece.origin]
+                .iter()
+                .all(|s| Sq(s.x, s.y) == piece.sq)
+        );
+        assert!(
+            engine
+                .preboard(direction.step(direction.step(t).unwrap()).unwrap())
+                .is_some()
+        );
     }
 }
 
 #[test]
-fn black_rebounds_at_zero_in_standard_game_without_bouncing_idle_piece() {
+fn black_crosses_zero_and_shared_idle_reserve_follows_without_turning() {
     let mut knight = State::new(PieceKind::N, Color::Black, Sq(6, 7));
     knight.t = 1;
     knight.fut_seen = 1;
@@ -652,9 +683,12 @@ fn black_rebounds_at_zero_in_standard_game_without_bouncing_idle_piece() {
         .unwrap();
     engine.apply_new_mv(mv).unwrap();
     let line = &engine.history.worldlines[0];
-    assert_eq!(line.iter().map(|s| s.t).collect::<Vec<_>>(), vec![1, 0, 1]);
-    assert!(!line[2].inverted && line[2].rights.ordinary);
-    assert_eq!(line[2].loop_turn, 1);
-    assert_eq!(engine.history.worldlines[1].len(), 1);
-    assert!(engine.history.worldlines[1][0].rights.ordinary);
+    assert_eq!(
+        line.iter().map(|s| s.t).collect::<Vec<_>>(),
+        vec![2, 1, 0, -1]
+    );
+    assert!(line.last().unwrap().inverted && line.last().unwrap().rights.ordinary);
+    assert_eq!(line.last().unwrap().loop_turn, 0);
+    assert!(engine.history.worldlines[1].last().unwrap().inverted);
+    assert_eq!(engine.history.worldlines[1].last().unwrap().t, -1);
 }

@@ -11,6 +11,8 @@ mod worldline;
 pub use pieces::{Color, PieceKind, PieceView, Sq};
 pub use worldline::{CausalGap, Worldline};
 
+pub type BoardTime = i64;
+
 pub const MAX_TIME_WAR_SEPARATION: usize = 255;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -30,14 +32,14 @@ impl StartingPosition {
             }
         }
     }
-    pub fn fixed_end(self) -> Option<usize> {
+    pub fn initial_end(self) -> Option<BoardTime> {
         match self {
             Self::Standard => None,
-            Self::TimeWar { separation } => Some(separation),
+            Self::TimeWar { separation } => Some(separation as BoardTime),
         }
     }
-    pub fn last_own_board(self, color: Color) -> Option<usize> {
-        self.fixed_end().map(|end| {
+    pub fn initial_last_own_board(self, color: Color) -> Option<BoardTime> {
+        self.initial_end().map(|end| {
             if color == Color::White {
                 end.saturating_sub(1)
             } else {
@@ -115,11 +117,11 @@ impl MoveRights {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct State {
-    pub t: usize,
+    pub t: BoardTime,
     pub x: usize,
     pub y: usize,
     // furthest seen t
-    pub fut_seen: usize,
+    pub fut_seen: BoardTime,
     // number of time-turnes. Its incremented +1 when changing time orientation
     // and decremented -2 when passing (t > t_loop) loop pivot
     pub loop_turn: usize,
@@ -135,15 +137,15 @@ pub struct State {
     /// free waiting and calculation never overwrite it.
     pub remembered: BTreeSet<Observation>,
     // points in time, on which piece inverted to and began moving to past.
-    pub loop_pivots: Vec<usize>,
+    pub loop_pivots: Vec<BoardTime>,
 }
 
 /// A move slot shared by pieces of the same causal order on one board.
 /// No worldline ID: one piece's reaction can replace another piece's move.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct MoveId {
-    pub t: usize,
-    pub fut_seen: usize,
+    pub t: BoardTime,
+    pub fut_seen: BoardTime,
     pub loop_turn: usize,
 }
 
@@ -151,7 +153,7 @@ pub struct MoveId {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct PieceId {
     pub wid: usize,
-    pub fut_seen: usize,
+    pub fut_seen: BoardTime,
     pub loop_turn: usize,
 }
 
@@ -184,7 +186,7 @@ impl TimeDirection {
         self == Self::Past
     }
 
-    pub fn step(self, t: usize) -> Option<usize> {
+    pub fn step(self, t: BoardTime) -> Option<BoardTime> {
         match self {
             Self::Future => t.checked_add(1),
             Self::Past => t.checked_sub(1),
@@ -225,7 +227,7 @@ pub enum MoveEffect {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Move {
     pub pid: PieceId,
-    pub t: usize,
+    pub t: BoardTime,
     pub sq: Sq,
     pub direction: TimeDirection,
     pub effect: MoveEffect,
@@ -236,7 +238,7 @@ pub struct Move {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PieceAt {
     pub piece: PieceId,
-    pub t: usize,
+    pub t: BoardTime,
 }
 
 impl Move {
@@ -420,18 +422,12 @@ impl State {
 
     /// Continue passively in the current orientation, without a boundary bounce.
     pub fn prolongate(&self) -> Option<Self> {
-        if self.inverted && self.t <= self.color.first_board() {
-            return None;
-        }
         self.step(TimeDirection::from_inverted(self.inverted))
     }
 
     /// Advance subjective age by one tick in the requested direction.
     /// A pivot is crossed strictly after its time, and only going forward.
     pub fn step(&self, direction: TimeDirection) -> Option<Self> {
-        if direction == TimeDirection::Past && self.t == 0 {
-            return None;
-        }
         let mut new_st = self.shallow_cp();
 
         if direction.is_inverted() != self.inverted {

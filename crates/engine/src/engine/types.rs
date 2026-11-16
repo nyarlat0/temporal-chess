@@ -1,3 +1,4 @@
+use crate::model::BoardTime;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 
@@ -60,7 +61,7 @@ impl CheckStatus {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CalculationStatus {
     Complete,
-    Paused { t: usize, side: Color },
+    Paused { t: BoardTime, side: Color },
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
@@ -90,12 +91,25 @@ pub struct History {
     /// in its legality view, so a recorded pawn capture can be revalidated.
     pub(super) targets: BTreeMap<MoveId, Vec<PieceAt>>,
     /// The timeline still advances when its newest board contains no pieces.
-    pub(super) horizon: usize,
+    pub(super) horizon: BoardTime,
+    pub(super) beginning: BoardTime,
     pub(super) status: GameStatus,
     pub(super) calculation: Calculation,
 }
 
 impl History {
+    /// Retroactively exposed inverted ancestry can raise the knowledge floor.
+    /// Journal IDs retain their original spelling; live indexes use this version.
+    pub fn remap_ancestry(&self, mut at: PieceAt) -> PieceAt {
+        if let Some(first) = self.worldlines.get(at.piece.wid).and_then(|l| l.first()) {
+            at.piece.fut_seen = at.piece.fut_seen.max(first.fut_seen);
+        }
+        at
+    }
+    pub fn remap_move(&self, mut mv: Move) -> Move {
+        mv.pid = self.remap_ancestry(mv.source()).piece;
+        mv
+    }
     /// Ordered physical edits retained for cancellation consequence tracking.
     /// Presentation clients can compare snapshots without running the engine again.
     pub fn cancellations(&self) -> &[Cancellation] {
@@ -113,7 +127,10 @@ impl History {
     pub fn moves(&self) -> &BTreeMap<MoveId, Move> {
         &self.moves
     }
-    pub fn horizon(&self) -> usize {
+    pub fn beginning(&self) -> BoardTime {
+        self.beginning
+    }
+    pub fn horizon(&self) -> BoardTime {
         self.horizon
     }
 }
@@ -121,8 +138,8 @@ impl History {
 /// Entirely derived from History. Rebuilt together after every history mutation.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct Projection {
-    pub preboards: BTreeMap<usize, PreBoard>,
-    pub boards: BTreeMap<usize, Board>,
+    pub preboards: BTreeMap<BoardTime, PreBoard>,
+    pub boards: BTreeMap<BoardTime, Board>,
     pub pieces: HashMap<PieceAt, ShortPieceId>,
 }
 
@@ -188,10 +205,10 @@ impl Engine {
     pub fn turn(&self) -> Color {
         self.turn
     }
-    pub fn board(&self, t: usize) -> Option<&Board> {
+    pub fn board(&self, t: BoardTime) -> Option<&Board> {
         self.projection.boards.get(&t)
     }
-    pub fn preboard(&self, t: usize) -> Option<&PreBoard> {
+    pub fn preboard(&self, t: BoardTime) -> Option<&PreBoard> {
         self.projection.preboards.get(&t)
     }
 

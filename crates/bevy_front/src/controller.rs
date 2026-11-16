@@ -3,6 +3,7 @@ use bevy::{
     prelude::Resource,
     tasks::{AsyncComputeTaskPool, Task, TaskPool, futures::check_ready},
 };
+use temporal_chess_engine::model::BoardTime;
 use temporal_chess_engine::{
     engine::{
         CalculationStatus, CheckStatus, Engine, GameOutcome, GameStatus, WaitingReason, WinReason,
@@ -40,12 +41,12 @@ pub struct Selection {
     pub moves: Vec<Move>,
     pub captures: Vec<(Move, PieceView)>,
     pub fatal_captures: Vec<(Move, PieceView)>,
-    pub skips: Vec<usize>,
-    pub waits: Vec<(Move, usize)>,
+    pub skips: Vec<BoardTime>,
+    pub waits: Vec<(Move, BoardTime)>,
 }
 
 impl Selection {
-    pub fn moves_to(&self, t: usize, square: Sq) -> Vec<Move> {
+    pub fn moves_to(&self, t: BoardTime, square: Sq) -> Vec<Move> {
         self.moves
             .iter()
             .copied()
@@ -57,7 +58,7 @@ impl Selection {
             .collect()
     }
 
-    pub fn skip_to(&self, t: usize, square: Sq) -> bool {
+    pub fn skip_to(&self, t: BoardTime, square: Sq) -> bool {
         self.direction == TimeDirection::from_inverted(self.piece.inverted)
             && square == self.piece.sq
             && self.skips.contains(&t)
@@ -78,13 +79,13 @@ pub struct GameUi {
     pub worldline_selected: Option<usize>,
     pub inspected: Option<PieceAt>,
     pub promotion: Vec<Move>,
-    pub move_wait_until: Option<usize>,
+    pub move_wait_until: Option<BoardTime>,
     pub overlapping: Vec<PieceView>,
     pub notice: crate::i18n::Message,
     pub is_error: bool,
     pub cell_size: f32,
     pub animation_speed: f32,
-    pub jump_to: Option<usize>,
+    pub jump_to: Option<BoardTime>,
     pub confirm_restart: bool,
     pub new_game_rules: GameRules,
     pub new_game_start: StartingPosition,
@@ -102,7 +103,7 @@ pub struct GameUi {
     pub remote_focus: Option<u64>,
     pub returning_camera: bool,
     pub playback_turn: Option<Color>,
-    pub playback_destination: Option<usize>,
+    pub playback_destination: Option<BoardTime>,
     pub facing: crate::animation::BoardFacing,
     pub local_auto_flip: bool,
     pub record: GameRecord,
@@ -110,7 +111,7 @@ pub struct GameUi {
     pub import_text: String,
     pub import_error: Option<crate::i18n::Message>,
     pub replay_job: Option<ReplayJob>,
-    pub pending_square: Option<(usize, Sq, bool)>,
+    pub pending_square: Option<(BoardTime, Sq, bool)>,
     pub pending_move: Option<Move>,
 }
 
@@ -118,13 +119,13 @@ pub struct GameUi {
 enum ReplayKind {
     Import,
     Network,
-    Undo { source_t: usize },
+    Undo { source_t: BoardTime },
     Preview { command: Command },
 }
 
 pub struct MovePlayback {
     transitions: std::collections::VecDeque<BoardTransition>,
-    destination: usize,
+    destination: BoardTime,
 }
 
 pub struct ReplayJob {
@@ -141,7 +142,7 @@ struct ReplayResult {
 /// Retain the visible board when newer boards are inserted above it.
 #[derive(Default)]
 pub struct TimelineViewport {
-    pub times: Vec<usize>,
+    pub times: Vec<BoardTime>,
     pub offset: f32,
     pub stride: f32,
     pub scroll: Option<SmoothScroll>,
@@ -149,11 +150,11 @@ pub struct TimelineViewport {
     pub frame: Option<u64>,
     pub motion_progress: f32,
     pub cancellation_progress: f32,
-    pub focused: Option<usize>,
+    pub focused: Option<BoardTime>,
 }
 
 impl TimelineViewport {
-    pub fn anchored_offset(&self, times: &[usize], stride: f32) -> f32 {
+    pub fn anchored_offset(&self, times: &[BoardTime], stride: f32) -> f32 {
         // Do not repeatedly decompose/recompose an unchanged camera position:
         // f32 rounding otherwise moves a resting ribbon on subsequent frames.
         if self.times == times && self.stride == stride {
@@ -245,7 +246,7 @@ impl GameUi {
         self.playback_turn.unwrap_or_else(|| self.engine.turn())
     }
 
-    pub fn finish_travel(&mut self, fallback: usize) {
+    pub fn finish_travel(&mut self, fallback: BoardTime) {
         let side = if self.online.enabled {
             self.online.side.unwrap_or(self.engine.turn())
         } else if let Some(human) = self.bot.settings.human_side() {
@@ -269,7 +270,7 @@ impl GameUi {
         self.returning_camera = true;
     }
 
-    pub fn show_next_cancellation(&mut self, fallback: usize) {
+    pub fn show_next_cancellation(&mut self, fallback: BoardTime) {
         if let Some(animation) = self.cancellations.front() {
             self.cancellation_show = true;
             self.cancellation_focus_pending = true;
@@ -313,7 +314,7 @@ impl GameUi {
         self.history_focus_pending = true;
         self.playback_turn = Some(self.engine.turn());
         self.viewport.scroll = None;
-        self.jump_to = Some(0);
+        self.jump_to = Some(self.engine.history().beginning());
     }
 
     pub fn can_replay_move(&self) -> bool {
@@ -444,7 +445,7 @@ impl GameUi {
         })
     }
 
-    pub fn next_history_transition(&mut self, from: usize) {
+    pub fn next_history_transition(&mut self, from: BoardTime) {
         self.transition = (from < self.engine.history().horizon())
             .then(|| BoardTransition::between(&self.engine, &self.engine, from, from + 1, None))
             .flatten();
@@ -483,7 +484,7 @@ impl GameUi {
         }
     }
 
-    pub fn times(&self) -> Vec<usize> {
+    pub fn times(&self) -> Vec<BoardTime> {
         self.engine.timeline_times().rev().collect()
     }
 
@@ -498,11 +499,11 @@ impl GameUi {
         self.checks = combined;
     }
 
-    pub fn active_times(&self) -> Vec<usize> {
+    pub fn active_times(&self) -> Vec<BoardTime> {
         self.active_times_for(self.engine.turn())
     }
 
-    pub fn active_times_for(&self, side: Color) -> Vec<usize> {
+    pub fn active_times_for(&self, side: Color) -> Vec<BoardTime> {
         let times: std::collections::BTreeSet<_> =
             self.engine.active_occurrences(side).map(|p| p.t).collect();
         times.into_iter().rev().collect()
@@ -521,7 +522,7 @@ impl GameUi {
         self.navigate_times(&active, next);
     }
 
-    pub fn checked_times_for(&self, side: Color) -> Vec<usize> {
+    pub fn checked_times_for(&self, side: Color) -> Vec<BoardTime> {
         let times: std::collections::BTreeSet<_> = self
             .checks
             .ordinary
@@ -550,7 +551,7 @@ impl GameUi {
         self.navigate_times(&times, true);
     }
 
-    fn navigate_times(&mut self, active: &[usize], next: bool) {
+    fn navigate_times(&mut self, active: &[BoardTime], next: bool) {
         if active.is_empty() {
             return;
         }
@@ -591,7 +592,7 @@ impl GameUi {
         self.jump_to = Some(active[index]);
     }
 
-    pub fn pieces(&self, t: usize) -> Vec<PieceView> {
+    pub fn pieces(&self, t: BoardTime) -> Vec<PieceView> {
         if let Some(preboard) = self.engine.preboard(t) {
             return preboard
                 .space
@@ -703,11 +704,11 @@ impl GameUi {
         }
     }
 
-    pub fn click_square(&mut self, t: usize, sq: Sq) {
+    pub fn click_square(&mut self, t: BoardTime, sq: Sq) {
         self.click_square_with_direction(t, sq, false);
     }
 
-    fn click_square_with_direction(&mut self, t: usize, sq: Sq, reverse: bool) {
+    fn click_square_with_direction(&mut self, t: BoardTime, sq: Sq, reverse: bool) {
         if !self.promotion.is_empty()
             || self.confirm_restart
             || !self.overlapping.is_empty()
@@ -1114,7 +1115,10 @@ impl GameUi {
                 self.sound_events.push(crate::sound::Event::Reset);
                 self.refresh_checks();
                 self.jump_to = Some(match kind {
-                    ReplayKind::Undo { source_t } => source_t.min(self.engine.history().horizon()),
+                    ReplayKind::Undo { source_t } => source_t.clamp(
+                        self.engine.history().beginning(),
+                        self.engine.history().horizon(),
+                    ),
                     ReplayKind::Import | ReplayKind::Network => {
                         match self.engine.calculation_status() {
                             CalculationStatus::Paused { t, .. } => t,
@@ -1123,7 +1127,7 @@ impl GameUi {
                                     .engine
                                     .history()
                                     .starting_position()
-                                    .fixed_end()
+                                    .initial_end()
                                     .is_some()
                                 {
                                     let side = self.online.side.unwrap_or(self.engine.turn());
@@ -1236,7 +1240,8 @@ mod tests {
     fn cancellations_follow_spatial_travel_and_are_not_in_last_move_preview() {
         let text =
             include_str!("../../engine/tests/fixtures/castling_missing_rook_revalidation.nolan");
-        let (engine, record) = GameRecord::load(text).unwrap();
+        let (engine, record) =
+            GameRecord::load(&text.lines().take(33).collect::<Vec<_>>().join("\n")).unwrap();
         let mut game = GameUi {
             engine,
             record,
@@ -1245,7 +1250,7 @@ mod tests {
         let king = game
             .engine
             .move_sources()
-            .find(|p| p.origin == 4 && p.t == 22)
+            .find(|p| p.origin == 4 && p.t == 20)
             .unwrap();
         let mv = game
             .engine
@@ -1263,7 +1268,7 @@ mod tests {
         assert!(!game.cancellation_show);
         assert_eq!(
             game.cancellations.iter().map(|a| a.t).collect::<Vec<_>>(),
-            [11, 21]
+            [11, 19]
         );
         let castle = &game.cancellations[0];
         assert!(
@@ -1289,7 +1294,7 @@ mod tests {
         assert!(!game.returning_camera);
         game.cancellations.pop_front();
         game.show_next_cancellation(11);
-        assert_eq!(game.jump_to, Some(21));
+        assert_eq!(game.jump_to, Some(19));
         let engine = game.engine.clone();
         let record = game.record.clone();
         game.reset_playback();
@@ -1689,6 +1694,34 @@ mod tests {
     }
 
     #[test]
+    fn negative_history_playback_starts_at_its_actual_beginning_and_undo_clamps_focus() {
+        let text = format!(
+            "{}move 0 6:0:0 g1 f3 - normal\nmove 1 17:1:0 b8 c6 + normal\nmove -2 6:0:1 f3 h4 - normal\n",
+            GameRecord::default().to_text()
+        );
+        let (engine, record) = GameRecord::load(&text).unwrap();
+        let mut game = GameUi {
+            engine,
+            record,
+            ..GameUi::default()
+        };
+        assert_eq!(game.times().last(), Some(&-4));
+        game.play_history();
+        assert_eq!(game.jump_to, Some(-4));
+        game.reset_playback();
+        game.undo_last_move();
+        finish_import(&mut game);
+        assert_eq!(game.engine.history().beginning(), -2);
+        assert_eq!(game.jump_to, Some(-2));
+        game.undo_last_move();
+        finish_import(&mut game);
+        game.undo_last_move();
+        finish_import(&mut game);
+        assert_eq!(game.engine.history().beginning(), 0);
+        assert_eq!(game.jump_to, Some(0));
+    }
+
+    #[test]
     fn import_is_atomic_and_successful_import_can_be_played_and_exported_again() {
         let mut game = GameUi::default();
         game.click_square(0, Sq(4, 1));
@@ -1718,7 +1751,7 @@ mod tests {
         );
     }
     #[test]
-    fn time_war_selection_uses_inversion_and_bounds_without_growing_boards() {
+    fn time_war_selection_allows_spatial_expansion_but_waits_stay_inside_history() {
         let mut game = GameUi::with_start(
             GameRules::default(),
             StartingPosition::TimeWar { separation: 9 },
@@ -1746,7 +1779,10 @@ mod tests {
         let selected = game.selected.as_ref().unwrap();
         assert_eq!(selected.direction, TimeDirection::Past);
         assert!(!selected.moves.is_empty());
-        assert!(selected.moves.iter().all(|m| m.to_past()));
+        assert!(selected.moves.iter().any(|m| !m.to_past()));
+        assert!(selected.skips.iter().all(
+            |&t| t >= game.engine.history().beginning() && t <= game.engine.history().horizon()
+        ));
         assert_eq!(
             GameRecord::load(&game.record.to_text()).unwrap().0,
             game.engine

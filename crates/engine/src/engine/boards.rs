@@ -1,11 +1,12 @@
 use crate::board::{Board, PreBoard};
+use crate::model::BoardTime;
 use crate::model::{MoveId, ShortPieceId};
 use crate::pieces::{Color, PieceView};
 
 use super::{BoardConflict, BoardErr, Engine, EngineErr, PieceAt, PieceId, Projection, ValidRes};
 
 impl Engine {
-    pub fn make_board(&self, t: usize) -> Result<Board, BoardErr> {
+    pub fn make_board(&self, t: BoardTime) -> Result<Board, BoardErr> {
         let preboard = self
             .projection
             .preboards
@@ -19,14 +20,14 @@ impl Engine {
 
     /// Resolve at most one intersection. The caller rebuilds every derived view
     /// before continuing, so no conflict is resolved against stale projections.
-    pub(super) fn build_boards(&mut self, through: usize) -> Result<ValidRes, EngineErr> {
+    pub(super) fn build_boards(&mut self, through: BoardTime) -> Result<ValidRes, EngineErr> {
         self.projection.boards.clear();
         self.extend_boards(through)
     }
 
     /// Reuse a checked prefix only within one reconciliation pass. The caller
     /// must discard it as soon as any history edit occurs.
-    pub(super) fn extend_boards(&mut self, through: usize) -> Result<ValidRes, EngineErr> {
+    pub(super) fn extend_boards(&mut self, through: BoardTime) -> Result<ValidRes, EngineErr> {
         use std::ops::Bound::{Excluded, Included, Unbounded};
         // Preserve build_boards' barrier view: it queries after clearing boards.
         let prefix = std::mem::take(&mut self.projection.boards);
@@ -119,7 +120,7 @@ impl Engine {
     /// Accept the pre-command view on the boards whose reactions expire. Include
     /// suppressed later observations too, so deduplication cannot postpone an
     /// already acknowledged target's reaction until another recalculation.
-    pub(super) fn remember_information(&mut self, side: Color, until_t: usize) {
+    pub(super) fn remember_information(&mut self, side: Color, until_t: BoardTime) {
         for state in self
             .history
             .worldlines
@@ -136,14 +137,8 @@ impl Engine {
     /// for historical move lookup. Empty slices are kept even if everyone died.
     pub(super) fn update_bufs(&mut self) -> Result<(), EngineErr> {
         let mut projection = Projection::default();
-        if let Some(end) = self.history.starting_position.fixed_end() {
-            for t in 0..=end {
-                projection.preboards.insert(t, PreBoard::new(t));
-            }
-        } else {
-            projection
-                .preboards
-                .insert(self.history.horizon, PreBoard::new(self.history.horizon));
+        for t in self.history.beginning..=self.history.horizon {
+            projection.preboards.insert(t, PreBoard::new(t));
         }
         for (origin, line) in self.history.worldlines.iter().enumerate() {
             for (age, state) in line.iter().enumerate() {

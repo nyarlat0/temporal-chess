@@ -1,8 +1,9 @@
 use super::collision_rules::{CollisionEffect, collision_effects};
 use super::*;
+use crate::model::BoardTime;
 use crate::pieces::{Color, PieceKind, PieceView, Sq};
 
-fn state(color: Color, sq: Sq, t: usize, inverted: bool) -> State {
+fn state(color: Color, sq: Sq, t: BoardTime, inverted: bool) -> State {
     let mut s = State::new(PieceKind::N, color, sq);
     s.t = t;
     s.rights.ordinary = Color::from_board(t) == color;
@@ -33,7 +34,7 @@ fn cancelled_return_leaves_an_ordinary_endpoint_for_either_color() {
             engine.undo_mv(mv.id()).unwrap();
             let line = &engine.history.worldlines[0];
             assert!(!line[0].rights.cancelled_move);
-            assert_eq!(line.len(), 1);
+            assert_eq!(line.len(), 2);
             let active: Vec<_> = line.iter().filter(|s| s.rights.ordinary).collect();
             assert_eq!(active.len(), 1);
             assert_eq!(active[0].t, first + 4);
@@ -735,8 +736,12 @@ fn shared_turn_does_not_discard_an_inverted_reserve_at_the_boundary() {
             .unwrap();
         engine.apply_new_mv(mv).unwrap();
         let line = &engine.history.worldlines[1];
-        assert_eq!(line.len(), 1);
-        assert!(line[0].alive && line[0].rights.ordinary && line[0].inverted);
+        assert_eq!(line.len(), 2);
+        assert!(
+            line.last().unwrap().alive
+                && line.last().unwrap().rights.ordinary
+                && line.last().unwrap().inverted
+        );
     }
 }
 

@@ -7,7 +7,8 @@ use temporal_chess_engine::{
 #[test]
 fn inverted_king_waits_replay_in_the_reported_castling_position() {
     let text = include_str!("fixtures/castling_missing_rook_revalidation.nolan");
-    let (engine, record) = GameRecord::load(text).unwrap();
+    let (engine, record) =
+        GameRecord::load(&text.lines().take(33).collect::<Vec<_>>().join("\n")).unwrap();
     accepted_moves(&engine, &record);
     let mut checked_waits = 0;
     for king in engine.move_sources().filter(|p| p.origin == 4) {

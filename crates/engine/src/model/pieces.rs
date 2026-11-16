@@ -1,4 +1,5 @@
 use super::{Move, MoveRights, State};
+use crate::model::BoardTime;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Color {
@@ -8,7 +9,7 @@ pub enum Color {
 
 impl Color {
     /// Earliest board on which this side can act, including a temporal return.
-    pub fn first_board(self) -> usize {
+    pub fn first_board(self) -> BoardTime {
         match self {
             Self::White => 0,
             Self::Black => 1,
@@ -22,8 +23,8 @@ impl Color {
         }
     }
 
-    pub fn from_board(board_id: usize) -> Self {
-        if board_id.is_multiple_of(2) {
+    pub fn from_board(board_id: BoardTime) -> Self {
+        if board_id.rem_euclid(2) == 0 {
             Color::White
         } else {
             Color::Black
@@ -63,8 +64,8 @@ impl PieceKind {
 pub struct PieceView {
     pub origin: usize, // wid
     pub age: usize,    // pid
-    pub t: usize,
-    pub fut_seen: usize,
+    pub t: BoardTime,
+    pub fut_seen: BoardTime,
     pub loop_turn: usize,
     pub kind: PieceKind,
     pub color: Color,

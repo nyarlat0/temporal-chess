@@ -6,6 +6,7 @@ use crate::{
     piece_art::{PieceArt, PieceStyle},
 };
 use bevy_egui::egui::{self, Color32, Pos2, Rect, Stroke, Vec2};
+use temporal_chess_engine::model::BoardTime;
 use temporal_chess_engine::model::{Color, Sq, State};
 
 fn color(state: &State) -> Color32 {
@@ -116,7 +117,7 @@ pub fn paint(
     painter: &egui::Painter,
     game: &GameUi,
     art: &PieceArt,
-    times: &[usize],
+    times: &[BoardTime],
     board_at: &impl Fn(usize) -> Rect,
     cell: f32,
 ) {

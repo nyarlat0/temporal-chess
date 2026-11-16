@@ -24,8 +24,8 @@ impl Engine {
         engine
     }
 
-    /// Construct an explicit starting layout. Time War owns an immutable closed
-    /// interval; black starts naturally inverted, with no artificial loop pivot.
+    /// Construct an explicit starting layout. Time War starts with separated
+    /// armies; black is naturally inverted, with no artificial loop pivot.
     pub fn with_start(
         rules: GameRules,
         starting_position: StartingPosition,
@@ -38,7 +38,7 @@ impl Engine {
         if starting_position == StartingPosition::Standard {
             return Ok(Self::new(rules));
         }
-        let end = starting_position.fixed_end().unwrap();
+        let end = starting_position.initial_end().unwrap();
         let worldlines = initial_position()
             .into_iter()
             .map(|(kind, color, sq)| {
@@ -60,6 +60,7 @@ impl Engine {
                 moves: BTreeMap::new(),
                 targets: BTreeMap::new(),
                 horizon: end,
+                beginning: 0,
                 status: super::GameStatus::Ongoing,
                 calculation: Default::default(),
             },
@@ -67,41 +68,19 @@ impl Engine {
         )
     }
 
-    /// Spatial arrivals may touch a boundary: their mandatory next tick rebounds.
     pub(super) fn time_direction_available(
         &self,
         piece: crate::model::PieceView,
         direction: TimeDirection,
     ) -> bool {
-        direction.step(piece.t).is_some_and(|t| {
-            self.history
-                .starting_position
-                .fixed_end()
-                .is_none_or(|end| t <= end)
-        })
-    }
-
-    pub(super) fn boundary_return(
-        &self,
-        t: usize,
-        direction: TimeDirection,
-    ) -> Option<TimeDirection> {
-        match direction {
-            TimeDirection::Past if t == 0 => Some(TimeDirection::Future),
-            TimeDirection::Future if self.history.starting_position.fixed_end() == Some(t) => {
-                Some(TimeDirection::Past)
-            }
-            _ => None,
-        }
+        direction
+            .step(piece.t)
+            .and_then(|t| direction.step(t))
+            .is_some()
     }
 
     pub(super) fn passive_successor(&self, state: &State) -> Option<State> {
-        state.prolongate().filter(|next| {
-            self.history
-                .starting_position
-                .last_own_board(state.color)
-                .is_none_or(|end| next.t <= end)
-        })
+        state.prolongate()
     }
 
     /// Build a scenario from worldlines, validating and projecting it immediately.
@@ -114,6 +93,7 @@ impl Engine {
         turn: Color,
         rules: GameRules,
     ) -> Result<Self, EngineErr> {
+        let beginning = worldlines.iter().flatten().map(|s| s.t).min().unwrap_or(0);
         let horizon = worldlines
             .iter()
             .flatten()
@@ -128,6 +108,7 @@ impl Engine {
                 moves: BTreeMap::new(),
                 targets: BTreeMap::new(),
                 horizon,
+                beginning,
                 status: super::GameStatus::Ongoing,
                 calculation: Default::default(),
             },
@@ -137,13 +118,8 @@ impl Engine {
 
     /// Restore an owned snapshot without trusting any cached boards or lookups.
     pub fn from_history(history: History, turn: Color) -> Result<Self, EngineErr> {
-        if !history.starting_position.is_valid()
-            || history
-                .starting_position
-                .fixed_end()
-                .is_some_and(|end| history.horizon != end)
-        {
-            return Err(EngineErr::InvalidHistory("invalid fixed timeline bounds"));
+        if !history.starting_position.is_valid() || history.beginning > history.horizon {
+            return Err(EngineErr::InvalidHistory("invalid timeline bounds"));
         }
         for line in &history.worldlines {
             if !line.gaps.is_empty() {
@@ -156,7 +132,10 @@ impl Engine {
                 if !Sq(state.x, state.y).on_board() {
                     return Err(EngineErr::InvalidHistory("square outside the board"));
                 }
-                if state.fut_seen < state.t || state.t > history.horizon {
+                if state.fut_seen < state.t
+                    || state.t > history.horizon
+                    || state.t < history.beginning
+                {
                     return Err(EngineErr::InvalidHistory("invalid temporal coordinates"));
                 }
                 if state.color != first.color {

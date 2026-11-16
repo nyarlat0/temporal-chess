@@ -1,5 +1,6 @@
 //! Portable, append-only commands starting from an explicit initial position.
 //! Recorded moves in History can be replaced or cancelled; they are not a replay log.
+use crate::model::BoardTime;
 use crate::{
     engine::{Engine, EngineErr},
     model::{
@@ -16,7 +17,7 @@ pub enum Command {
     MoveAndWait {
         mv: Move,
         from: Sq,
-        until: usize,
+        until: BoardTime,
     },
     Move {
         mv: Move,
@@ -25,7 +26,7 @@ pub enum Command {
     Advance {
         source: PieceAt,
         from: Sq,
-        to_t: usize,
+        to_t: BoardTime,
     },
     Continue,
     DeclineReactions,
@@ -396,7 +397,7 @@ impl std::str::FromStr for Command {
     }
 }
 
-fn number(text: &str) -> Result<usize, String> {
+fn number<T: std::str::FromStr>(text: &str) -> Result<T, String> {
     text.parse()
         .map_err(|_| format!("Некорректное число: {text}"))
 }
@@ -483,7 +484,7 @@ impl Command {
             || (matches!(self, Self::Advance { .. }) && !rules.wait_before_move)
     }
 
-    pub fn source_time(self) -> Option<usize> {
+    pub fn source_time(self) -> Option<BoardTime> {
         self.spatial_move().map(|mv| mv.t).or(match self {
             Self::Advance { source, .. } => Some(source.t),
             _ => None,
@@ -496,7 +497,7 @@ impl Command {
             _ => None,
         }
     }
-    pub fn wait_until(self) -> Option<usize> {
+    pub fn wait_until(self) -> Option<BoardTime> {
         match self {
             Self::MoveAndWait { until, .. } => Some(until),
             _ => None,

@@ -10,7 +10,7 @@ fn timeline(color: Color, end: usize) -> Vec<State> {
 }
 
 #[test]
-fn inverted_continuation_stops_on_first_own_board() {
+fn inverted_states_continue_through_zero_without_a_direction_change() {
     for color in [Color::White, Color::Black] {
         let boundary = color.first_board();
         let mut source = State::new(PieceKind::N, color, Sq(1, 0));
@@ -20,10 +20,10 @@ fn inverted_continuation_stops_on_first_own_board() {
         let endpoint = arriving.prolongate().unwrap();
         assert_eq!(endpoint.t, boundary);
         assert!(endpoint.rights.ordinary);
-        assert!(endpoint.prolongate().is_none());
+        assert_eq!(endpoint.prolongate().unwrap().t, boundary - 1);
         assert_eq!(
             endpoint.step(TimeDirection::Past).map(|s| s.t),
-            if color == Color::Black { Some(0) } else { None }
+            Some(boundary - 1)
         );
         assert_eq!(
             endpoint.step(TimeDirection::Future).unwrap().t,

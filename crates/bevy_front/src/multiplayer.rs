@@ -105,7 +105,7 @@ fn validate_proposal(
     let source = match command {
         Command::Move { mv, .. } | Command::MoveAndWait { mv, .. } => Some(mv.source()),
         Command::Advance { source, to_t, .. } => {
-            if to_t > engine.history().horizon() {
+            if to_t < engine.history().beginning() || to_t > engine.history().horizon() {
                 return Err("board is unavailable".into());
             }
             Some(source)
@@ -113,7 +113,8 @@ fn validate_proposal(
         Command::Continue | Command::DeclineReactions => None,
     };
     if source.is_some_and(|source| {
-        source.t > engine.history().horizon()
+        source.t < engine.history().beginning()
+            || source.t > engine.history().horizon()
             || source.piece.wid >= engine.history().worldlines().len()
             || source.piece.fut_seen > engine.history().horizon()
             || source.piece.loop_turn > MAX_COMMANDS
@@ -330,7 +331,11 @@ pub fn poll(
                     game.online.room = None;
                     ClientMessage::CreateGame {
                         engine_revision: ENGINE_REVISION.to_owned(),
-                        time_war_separation: game.online.starting_position.fixed_end(),
+                        time_war_separation: game
+                            .online
+                            .starting_position
+                            .initial_end()
+                            .map(|t| t as usize),
                         chain_info_activation: game.online.rules.chain_info_activation,
                         global_reaction_reset: game.online.rules.global_reaction_reset,
                         wait_before_move: game.online.rules.wait_before_move,
@@ -1000,6 +1005,29 @@ mod tests {
         game.apply_prepared(prepared.command, prepared.engine, prepared.record);
         assert_eq!(game.engine.turn(), Color::Black);
         assert_eq!(game.record.commands().len(), 1);
+    }
+
+    #[test]
+    fn consensus_accepts_spatial_expansion_and_moves_from_negative_boards() {
+        let mut engine = Engine::default().with_interactive_calculation().unwrap();
+        let mut record = GameRecord::default();
+        for (revision, side, command) in [
+            (0, Side::White, "move 0 6:0:0 g1 f3 - normal"),
+            (1, Side::Black, "move 1 17:1:0 b8 c6 + normal"),
+            (2, Side::White, "move -2 6:0:1 f3 h4 - normal"),
+        ] {
+            let proposal = CommandProposal {
+                id: "b".repeat(32),
+                revision,
+                side,
+                command: command.into(),
+            };
+            let prepared = validate_proposal(engine, record, &proposal).unwrap();
+            engine = prepared.engine;
+            record = prepared.record;
+            assert_eq!(GameRecord::load(&record.to_text()).unwrap().0, engine);
+        }
+        assert_eq!(engine.history().beginning(), -4);
     }
 
     #[test]

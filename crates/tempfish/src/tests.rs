@@ -89,8 +89,8 @@ fn node_budget_is_bounded_and_selected_action_replays_in_every_ruleset() {
             };
             let engine = Engine::new(rules).with_interactive_calculation().unwrap();
             let before = engine.clone();
-            let result = solve(&engine, MAX_DEPTH, 50);
-            assert!(result.nodes <= 50);
+            let result = solve(&engine, MAX_DEPTH, 150);
+            assert!(result.nodes <= 150);
             assert!(result.completed_depth >= 1);
             assert_eq!(engine, before);
             let mut next = engine.clone();
@@ -247,7 +247,7 @@ fn generated_actions_include_inversion_promotion_decline_and_calculation() {
             .iter()
             .filter(|c| matches!(c, Command::Move { mv, .. } if mv.promotion().is_some()))
             .count(),
-        4
+        8
     );
     let mut rook = State::new(PieceKind::R { moved: true }, Color::White, Sq(0, 0));
     rook.rights.ordinary = false;
@@ -289,7 +289,7 @@ fn both_colors_can_complete_and_replay_a_short_bot_game() {
 }
 
 #[test]
-fn time_war_search_uses_fixed_timeline_and_replayable_actions() {
+fn time_war_search_uses_expanding_timeline_and_replayable_actions() {
     use temporal_chess_engine::model::StartingPosition;
     let mut engine = Engine::with_start(
         GameRules::default(),
@@ -305,7 +305,7 @@ fn time_war_search_uses_fixed_timeline_and_replayable_actions() {
         record
             .apply(&mut engine, result.command.expect("Time War action"))
             .unwrap();
-        assert_eq!(engine.history().horizon(), 5);
+        assert!(engine.history().horizon() >= 5);
     }
     assert_eq!(GameRecord::load(&record.to_text()).unwrap().0, engine);
 }
@@ -463,7 +463,14 @@ fn rerooted_search_reuses_completed_depths_without_changing_scores() {
 fn parallel_memory_survives_the_opponents_next_turn() {
     use crate::parallel::{Memory, run, run_with_memory};
     use std::sync::atomic::AtomicBool;
-    let root = Engine::default();
+    let root = Engine::from_worldlines(
+        vec![
+            vec![State::new(PieceKind::N, Color::White, Sq(1, 0))],
+            vec![State::new(PieceKind::N, Color::Black, Sq(1, 7))],
+        ],
+        Color::White,
+    )
+    .unwrap();
     let stop = AtomicBool::new(false);
     let mut memory = Memory::default();
     let initial = run_with_memory(

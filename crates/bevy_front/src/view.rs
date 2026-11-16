@@ -416,7 +416,7 @@ fn sidebar(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState) {
                 .engine
                 .history()
                 .starting_position()
-                .fixed_end()
+                .initial_end()
                 .is_some()
             {
                 "Time War"
@@ -424,7 +424,14 @@ fn sidebar(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState) {
                 crate::tr!("Лента времени", "Timeline")
             },
         );
-        ui.colored_label(SUBTLE, format!("0 — {}", game.engine.history().horizon()));
+        ui.colored_label(
+            SUBTLE,
+            format!(
+                "{} — {}",
+                game.engine.history().beginning(),
+                game.engine.history().horizon()
+            ),
+        );
     });
     ui.horizontal(|ui| {
         if icon_button(
@@ -440,7 +447,8 @@ fn sidebar(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState) {
                 crate::tr!("Проиграть историю", "Play timeline")
             },
             game.history_playback,
-            game.history_playback || (idle && game.engine.history().horizon() > 0),
+            game.history_playback
+                || (idle && game.engine.history().horizon() > game.engine.history().beginning()),
         )
         .clicked()
         {
@@ -472,7 +480,7 @@ fn sidebar(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState) {
         )
         .clicked()
         {
-            game.jump_to = Some(0);
+            game.jump_to = Some(game.engine.history().beginning());
         }
         if icon_button(
             ui,
@@ -725,7 +733,7 @@ pub fn starting_position_controls(
                     .speed(2.0),
             );
         });
-        ui.small(crate::tr!("Нечётное число от 3 до 255. Белые — на 0, чёрные — на N. Границы истории фиксированы.", "Odd number from 3 to 255. White starts at 0, Black at N. The timeline has fixed bounds."));
+        ui.small(crate::tr!("Нечётное число от 3 до 255. Белые — на 0, чёрные — на N. Ходы могут расширять историю в обе стороны.", "Odd number from 3 to 255. White starts at 0, Black at N. Moves can extend the timeline in both directions."));
         if *separation % 2 == 0 {
             ui.colored_label(
                 egui::Color32::LIGHT_RED,

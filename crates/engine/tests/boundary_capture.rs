@@ -1,7 +1,7 @@
 use temporal_chess_engine::record::GameRecord;
 
 #[test]
-fn black_king_survives_inverted_capture_and_boundary_return() {
+fn inverted_capture_continues_below_zero_without_protecting_other_contacts() {
     let text = "NOLAN-CHESS 4
 chain_info_activation off
 global_reaction_reset off
@@ -21,16 +21,12 @@ move 1 20:1:0 e8 f7 - normal
             .replace("start standard", "wait_before_move off\nstart standard"),
     ] {
         let (engine, record) = GameRecord::load(&text).unwrap();
-        for t in [0, 1] {
+        for t in [-1, 0] {
             let king = engine.board(t).unwrap().get_piece(5, 6).unwrap();
-            assert_eq!(king.origin, 20, "Black's king wins at t={t}");
-            assert_eq!(king.inverted, t == 0);
-            assert!(
-                !engine.history().worldlines()[6]
-                    .iter()
-                    .any(|s| s.t == t && s.x == 5 && s.y == 6 && s.alive)
-            );
+            assert_eq!(king.origin, 20);
+            assert!(king.inverted);
         }
+        assert_eq!(engine.board(1).unwrap().get_piece(5, 6).unwrap().origin, 6);
         assert_eq!(GameRecord::load(&record.to_text()).unwrap().0, engine);
         let (prefix, _) = record.without_last_move().unwrap();
         let (before, _) = GameRecord::load(&prefix.to_text()).unwrap();

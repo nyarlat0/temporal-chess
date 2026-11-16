@@ -1,4 +1,5 @@
 use super::*;
+use crate::model::BoardTime;
 use crate::model::{Color, PieceKind, Sq};
 
 #[test]
@@ -27,7 +28,7 @@ fn reported_bishop_opening_keeps_turn_and_allows_replies_under_check() {
     }
 }
 
-fn line(kind: PieceKind, color: Color, sq: Sq, end: usize) -> Vec<State> {
+fn line(kind: PieceKind, color: Color, sq: Sq, end: BoardTime) -> Vec<State> {
     let mut states = vec![State::new(kind, color, sq)];
     for _ in 0..end {
         states.push(states.last().unwrap().prolongate().unwrap());
@@ -38,7 +39,7 @@ fn line(kind: PieceKind, color: Color, sq: Sq, end: usize) -> Vec<State> {
     states
 }
 
-fn play(engine: &mut Engine, wid: usize, t: usize, direction: TimeDirection, sq: Sq) -> Move {
+fn play(engine: &mut Engine, wid: usize, t: BoardTime, direction: TimeDirection, sq: Sq) -> Move {
     let piece = engine
         .move_sources()
         .find(|p| p.origin == wid && p.t == t)
@@ -204,7 +205,7 @@ fn invalid_waits_are_atomic_and_reactions_alone_cannot_wait() {
     let mut engine = super::legacy_from_worldlines(vec![knight], Color::White).unwrap();
     let source = Engine::piece_at(engine.get_piv(0, 2).unwrap());
     let before = engine.clone();
-    for to in [0, 5, usize::MAX] {
+    for to in [0, 5, BoardTime::MAX] {
         assert_eq!(engine.skip_ordinary(source, to), Err(EngineErr::WrongMove));
         assert_eq!(engine, before);
     }
@@ -649,8 +650,8 @@ fn an_impossible_departure_breaks_the_collision_cycle_in_both_rulesets() {
             let earlier = color.first_board() + 2;
             let departure = color.first_board() + 8;
             let mut knight = line(PieceKind::N, color, Sq(5, 5), departure);
-            knight[earlier].rights.ordinary = true;
-            knight[departure].rights.ordinary = true;
+            knight[earlier as usize].rights.ordinary = true;
+            knight[departure as usize].rights.ordinary = true;
             let mut engine = Engine::from_worldlines(vec![knight], color).unwrap();
             engine.history.rules.chain_info_activation = gaps;
             let old = play(&mut engine, 0, departure, TimeDirection::Past, Sq(4, 3));

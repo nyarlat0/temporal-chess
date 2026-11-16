@@ -138,11 +138,19 @@ mod tests {
         let first = "move 0 12:0:0 e2 e4 + normal";
         let mut session = Session::new();
         session.start(&opening, 100_000, false).unwrap();
-        assert!(run(&mut session, first, 3).completed);
+        let initial = run(&mut session, first, 3);
+        assert!(initial.completed);
+        // Reassigning the same position must reuse its exact completed result.
+        session.start(&opening, 100_000, false).unwrap();
+        let repeated = run(&mut session, first, 3);
+        assert!(repeated.completed);
+        assert_eq!(repeated.score, initial.score);
+        assert!(repeated.nodes < initial.nodes);
         let continued = format!("{opening}{first}\n");
         session.start(&continued, 100_000, false).unwrap();
-        // The played line follows the previous search's best continuation;
-        // other replies may only have a bound from an alpha-beta cutoff.
+        // Advancing the journal retains useful subtrees. A separate search can
+        // choose a tied reply with only a bound in the previous tree, so cache
+        // reuse here need not reduce the number of visited nodes.
         let mut reference = tempfish::Search::new(
             session.engine.clone(),
             Limits {
@@ -161,7 +169,6 @@ mod tests {
         assert!(warm.completed && fresh.completed);
         assert_eq!(warm.score, fresh.score);
         assert!(warm.cache_hits > 0);
-        assert!(warm.nodes < fresh.nodes, "warm={warm:?}; fresh={fresh:?}");
         // Undo/import of another journal cannot retain the old work assignment.
         session.start(&opening, 100_000, false).unwrap();
         let reset = run(&mut session, first, 1);

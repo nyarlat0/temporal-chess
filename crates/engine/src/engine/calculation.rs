@@ -1,3 +1,4 @@
+use crate::model::BoardTime;
 use crate::model::{Color, PieceAt, PieceId, State};
 
 use super::{CalculationStatus, Engine, EngineErr, GameOutcome, GameStatus, WinReason};
@@ -19,7 +20,7 @@ impl Engine {
         }
     }
 
-    pub(super) fn calculation_barrier(&self) -> Option<usize> {
+    pub(super) fn calculation_barrier(&self) -> Option<BoardTime> {
         if !self.history.calculation.interactive || self.outcome().is_some() {
             return None;
         }
@@ -243,7 +244,7 @@ impl Engine {
     }
 
     /// All actual times, including not-yet-reconciled preboards.
-    pub fn timeline_times(&self) -> impl DoubleEndedIterator<Item = usize> + '_ {
+    pub fn timeline_times(&self) -> impl DoubleEndedIterator<Item = BoardTime> + '_ {
         self.projection.preboards.keys().copied()
     }
 

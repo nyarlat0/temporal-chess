@@ -1,4 +1,5 @@
 use super::*;
+use crate::model::BoardTime;
 use crate::model::{Color, PieceKind, Sq};
 
 fn line(last: usize) -> Vec<State> {
@@ -19,7 +20,7 @@ fn game(last: usize) -> Engine {
             x: 7,
             y: 7,
             rights: MoveRights {
-                ordinary: !st.t.is_multiple_of(2),
+                ordinary: st.t.rem_euclid(2) != 0,
                 ..MoveRights::default()
             },
             ..st.clone()
@@ -30,7 +31,13 @@ fn game(last: usize) -> Engine {
 
 // These worldline fixtures select the acting side explicitly; the public command
 // must still flip it, and ordinary integration tests exercise alternating play.
-fn play(engine: &mut Engine, t: usize, loop_turn: usize, direction: TimeDirection, sq: Sq) -> Move {
+fn play(
+    engine: &mut Engine,
+    t: BoardTime,
+    loop_turn: usize,
+    direction: TimeDirection,
+    sq: Sq,
+) -> Move {
     engine.turn = Color::White;
     engine.reconcile().unwrap();
     let piece = engine

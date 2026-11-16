@@ -1,4 +1,5 @@
 use super::*;
+use crate::model::BoardTime;
 use crate::model::{Color, PieceKind, Sq};
 
 fn line(kind: PieceKind, side: Color, sq: Sq, inverted: bool) -> Vec<State> {
@@ -10,7 +11,7 @@ fn line(kind: PieceKind, side: Color, sq: Sq, inverted: bool) -> Vec<State> {
     first.rights = MoveRights::default();
     let mut states = vec![first];
     while let Some(mut next) = states.last().unwrap().prolongate() {
-        if next.t > 4 {
+        if next.t > 4 || next.t < 0 {
             break;
         }
         next.rights = MoveRights::default();
@@ -35,7 +36,7 @@ fn observed(inverted: bool) -> Engine {
     .unwrap()
 }
 
-fn reacting_times(engine: &Engine, wid: usize) -> Vec<usize> {
+fn reacting_times(engine: &Engine, wid: usize) -> Vec<BoardTime> {
     engine.history.worldlines[wid]
         .iter()
         .filter(|s| s.rights.new_information)
@@ -58,7 +59,7 @@ fn first_observation_is_selected_in_causal_order_and_per_worldline() {
         );
         engine.reconcile().unwrap();
         let first_t = if inverted { 4 } else { 0 };
-        assert_eq!(reacting_times(&engine, 0), [first_t]);
+        assert_eq!(reacting_times(&engine, 0), [first_t as BoardTime]);
         assert_eq!(reacting_times(&engine, 2), [first_t]);
         let before = engine.clone();
         engine.reconcile().unwrap();
@@ -95,7 +96,7 @@ fn disappearance_within_the_same_turn_clears_or_reassigns_the_reaction() {
         );
         engine.history.worldlines[1][first_t].x = 0;
         engine.reconcile().unwrap();
-        assert_eq!(reacting_times(&engine, 0), [first_t]);
+        assert_eq!(reacting_times(&engine, 0), [first_t as BoardTime]);
         assert_eq!(engine.turn(), Color::White);
     }
 }
@@ -440,26 +441,10 @@ fn waiting_remembers_its_result_without_activating_the_waiting_piece() {
 }
 
 #[test]
-fn own_move_keeps_new_information_from_its_result_unacknowledged() {
-    use crate::record::GameRecord;
+fn archived_bounce_journal_rejects_the_obsolete_return_incarnation() {
     let text = include_str!("../../tests/fixtures/queen_post_move_information.nolan");
-    let (engine, record) = GameRecord::load(text).unwrap();
-    let queen = engine.history.worldlines[19]
-        .iter()
-        .find(|s| s.t == 5 && s.inverted)
-        .unwrap();
-    assert_eq!(Sq(queen.x, queen.y), Sq(1, 1));
-    assert!(queen.rights.new_information);
-    assert!(!queen.informed.is_subset(&queen.remembered));
-    let (prefix, _) = record.without_last_move().unwrap();
-    let (before, _) = GameRecord::load(&prefix.to_text()).unwrap();
-    let old = before.history.worldlines[19]
-        .iter()
-        .find(|s| s.t == 5 && s.inverted)
-        .unwrap();
-    let expected = old.remembered.union(&old.informed).copied().collect();
-    assert_eq!(queen.remembered, expected);
-    assert_eq!(GameRecord::load(&record.to_text()).unwrap().0, engine);
+    let error = crate::record::GameRecord::load(text).unwrap_err();
+    assert_eq!(error.line, 16);
 }
 
 #[test]
