@@ -2,6 +2,7 @@
 // next frame. Decoding is asynchronous; tokens prevent late music from starting.
 let context;
 let music;
+let musicGain;
 let desired = '';
 let queued = false;
 let generation = 0;
@@ -21,7 +22,9 @@ async function playMusic(name, token) {
         if (generation !== token || !desired) return;
         const source = context.createBufferSource();
         source.buffer = decoded;
-        source.connect(context.destination);
+        if (!musicGain) { musicGain = context.createGain(); musicGain.connect(context.destination); }
+        musicGain.gain.value = name.startsWith('no_future') ? 0.3 : 1;
+        source.connect(musicGain);
         music = source;
         source.onended = () => {
             if (generation !== token) return;

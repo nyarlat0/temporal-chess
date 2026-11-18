@@ -48,6 +48,7 @@ pub fn ribbon(
     let max_offset = (times.len() as f32 * height - viewport.height()).max(0.0);
     let frame = ui.ctx().cumulative_frame_nr();
     if game.viewport.frame != Some(frame) {
+        game.update_worldline_transition(ui.ctx());
         let mut offset = game.viewport.anchored_offset(&times, height);
         if game.cancellation_show && !game.cancellation_focus_pending {
             let progress = game
@@ -210,6 +211,7 @@ pub fn ribbon(
             game.playback_turn = None;
             game.replaying_move = false;
         }
+        game.update_worldline_transition(ui.ctx());
         game.viewport.times = times.clone();
         game.viewport.stride = height;
         game.viewport.offset = offset;
@@ -380,6 +382,8 @@ pub fn ribbon(
     {
         game.worldline_mode = !game.worldline_mode;
         game.worldline_selected = None;
+        game.worldline_state = None;
+        game.worldline_transition = None;
         game.clear_selection();
         game.inspect_mode = false;
     }
@@ -390,9 +394,13 @@ pub fn ribbon(
             .max_rect(controls.shrink(4.0))
             .layout(egui::Layout::top_down(egui::Align::Center)),
     );
+    let following_line = game.worldline_mode && game.worldline_selected.is_some();
+    nav.style_mut().visuals.selection.bg_fill = Color32::from_rgb(100, 35, 70);
+    nav.style_mut().visuals.selection.stroke.color = Color32::from_rgb(255, 110, 180);
     let enabled = !moving
         && game.replay_job.is_none()
-        && (!game.active_times().is_empty()
+        && (following_line
+            || !game.active_times().is_empty()
             || !game
                 .active_times_for(game.engine.turn().opposite())
                 .is_empty());
@@ -414,7 +422,20 @@ pub fn ribbon(
             ),
         ),
     ] {
-        let response = icon_button(&mut nav, icon, hint, false, enabled);
+        let next = if following_line { !next } else { next };
+        let hint = if following_line {
+            if next {
+                crate::tr!("Следующее состояние мировой линии", "Next worldline state")
+            } else {
+                crate::tr!(
+                    "Предыдущее состояние мировой линии",
+                    "Previous worldline state"
+                )
+            }
+        } else {
+            hint
+        };
+        let response = icon_button(&mut nav, icon, hint, following_line, enabled);
         let opponent = response.secondary_clicked();
         if response.clicked() || opponent {
             game.navigate_active(next, opponent);
@@ -425,6 +446,7 @@ pub fn ribbon(
         || game.viewport.scroll.is_some()
         || game.viewport.wheel.active()
         || game.viewport.touch_inertia.active()
+        || game.worldline_transition.is_some()
         || game.jump_to.is_some()
     {
         ui.ctx().request_repaint();
@@ -916,17 +938,6 @@ fn paint_board(
                     Color32::WHITE,
                 );
             }
-            if game
-                .inspected
-                .is_some_and(|id| occupants.iter().any(|p| identity(**p) == id))
-            {
-                painter.rect_stroke(
-                    rect.shrink(1.0),
-                    0.0,
-                    Stroke::new(2.0, INVERTED),
-                    StrokeKind::Inside,
-                );
-            }
             let coordinate_color = if dark { LIGHT } else { DARK }.gamma_multiply(alpha);
             if x == if game.facing.black_bottom { 7 } else { 0 } {
                 painter.text(
@@ -948,6 +959,15 @@ fn paint_board(
             }
         }
     }
+    if let Some(piece) = game.inspected_piece().filter(|p| p.t == t) {
+        let rect = square_rect(board, cell, piece.sq, game.facing.black_bottom);
+        painter.rect_stroke(
+            rect.expand(1.5),
+            3.0,
+            Stroke::new(3.0, Color32::from_rgb(92, 157, 255)),
+            StrokeKind::Inside,
+        );
+    }
     let worldline_visible =
         game.worldline_mode && !game.playback_busy() && !game.facing.animating();
     // Paint after every square, so neighboring squares cannot crop the glow.
@@ -956,24 +976,52 @@ fn paint_board(
             if worldline_visible && game.worldline_selected == Some(piece.origin) {
                 continue;
             }
-            art.paint_tinted(
-                painter,
-                piece.kind,
-                piece.color,
+            let inspecting = game.inspect_mode && game.inspected == Some(identity(piece));
+            let focused = crate::worldline_view::focused_rect(
+                painter.ctx(),
+                identity(piece),
                 rect,
-                alpha
-                    * if worldline_visible && game.worldline_selected.is_some() {
-                        0.28
-                    } else {
-                        1.0
-                    },
-                piece_style(game, piece, checked, hovered),
-                if worldline_visible && game.worldline_selected.is_some() {
-                    Color32::from_gray(130)
-                } else {
-                    Color32::WHITE
-                },
+                inspecting,
             );
+            let piece_painter = if focused.width() > rect.width() {
+                painter.with_clip_rect(rect.intersect(painter.clip_rect()))
+            } else {
+                painter.clone()
+            };
+            let opacity = alpha
+                * if worldline_visible && game.worldline_selected.is_some() {
+                    0.28
+                } else {
+                    1.0
+                };
+            let tint = if worldline_visible && game.worldline_selected.is_some() {
+                Color32::from_gray(130)
+            } else {
+                Color32::WHITE
+            };
+            let style = piece_style(game, piece, checked, hovered);
+            if inspecting || focused != rect {
+                art.paint_focus(
+                    &piece_painter,
+                    piece.kind,
+                    piece.color,
+                    rect,
+                    focused,
+                    opacity,
+                    style,
+                    tint,
+                );
+            } else {
+                art.paint_tinted(
+                    &piece_painter,
+                    piece.kind,
+                    piece.color,
+                    rect,
+                    opacity,
+                    style,
+                    tint,
+                );
+            }
         }
     }
     if let Some(animation) = cancellation {

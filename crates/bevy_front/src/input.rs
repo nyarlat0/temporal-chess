@@ -205,8 +205,14 @@ pub fn handle(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState) {
         }
     }
     if pressed || escape {
+        if game.inspect_mode {
+            game.inspect_mode = false;
+            game.clear_selection();
+        }
         game.worldline_mode = false;
         game.worldline_selected = None;
+        game.worldline_state = None;
+        game.worldline_transition = None;
     }
     if released {
         shell.zoom_gesture = false;
@@ -216,10 +222,7 @@ pub fn handle(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState) {
     }
     ctx.input(|i| {
         if i.key_pressed(Key::I) && !i.modifiers.command && !i.modifiers.ctrl {
-            game.clear_selection();
-            game.inspect_mode = !game.inspect_mode;
-            game.worldline_mode = false;
-            game.worldline_selected = None;
+            game.toggle_inspector();
         }
         if i.key_pressed(Key::C)
             && !i.modifiers.command
@@ -286,6 +289,34 @@ pub fn wheel_delta(i: &egui::InputState) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn right_press_exits_piece_inspection_and_clears_the_piece() {
+        let ctx = egui::Context::default();
+        let mut game = GameUi {
+            inspect_mode: true,
+            ..Default::default()
+        };
+        game.click_square(0, temporal_chess_engine::model::Sq(0, 6));
+        assert!(game.inspected.is_some());
+        let before = game.engine.clone();
+        let mut shell = ShellState::default();
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                events: vec![egui::Event::PointerButton {
+                    pos: egui::pos2(50.0, 50.0),
+                    button: PointerButton::Secondary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                }],
+                ..Default::default()
+            },
+            |ui| handle(ui.ctx(), &mut game, &mut shell),
+        );
+        output.textures_delta.clear();
+        assert!(!game.inspect_mode && game.inspected.is_none());
+        assert_eq!(game.engine, before);
+    }
 
     fn touch(id: u64, phase: egui::TouchPhase, x: f32, y: f32) -> egui::Event {
         egui::Event::Touch {

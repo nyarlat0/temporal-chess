@@ -65,6 +65,13 @@ impl Selection {
     }
 }
 
+#[derive(Clone, Copy)]
+pub struct WorldlineFocusTransition {
+    pub from: Option<PieceAt>,
+    pub scrolling: bool,
+    pub travel: bool,
+}
+
 #[derive(Resource)]
 pub struct GameUi {
     pub sound_events: Vec<crate::sound::Event>,
@@ -77,6 +84,8 @@ pub struct GameUi {
     pub inspect_mode: bool,
     pub worldline_mode: bool,
     pub worldline_selected: Option<usize>,
+    pub worldline_state: Option<PieceAt>,
+    pub worldline_transition: Option<WorldlineFocusTransition>,
     pub inspected: Option<PieceAt>,
     pub promotion: Vec<Move>,
     pub move_wait_until: Option<BoardTime>,
@@ -188,6 +197,8 @@ impl Default for GameUi {
             inspect_mode: false,
             worldline_mode: false,
             worldline_selected: None,
+            worldline_state: None,
+            worldline_transition: None,
             inspected: None,
             promotion: Vec::new(),
             move_wait_until: None,
@@ -514,6 +525,10 @@ impl GameUi {
         if self.playback_busy() {
             return;
         }
+        if self.worldline_mode && self.worldline_selected.is_some() {
+            self.navigate_worldline(next);
+            return;
+        }
         let side = if opponent {
             self.engine.turn().opposite()
         } else {
@@ -521,6 +536,80 @@ impl GameUi {
         };
         let active = self.active_times_for(side);
         self.navigate_times(&active, next);
+    }
+
+    /// Follow subjective worldline order, including reversed and dead states.
+    pub fn navigate_worldline(&mut self, next: bool) {
+        let Some(wid) = self.worldline_selected else {
+            return;
+        };
+        let Some(line) = self
+            .engine
+            .history()
+            .worldlines()
+            .get(wid)
+            .filter(|l| !l.is_empty())
+        else {
+            return;
+        };
+        let age = self
+            .worldline_state
+            .and_then(|at| {
+                line.iter()
+                    .position(|s| s.t == at.t && PieceId::from_state(s, wid) == at.piece)
+            })
+            .unwrap_or(0);
+        let index = if next {
+            (age + 1) % line.len()
+        } else {
+            (age + line.len() - 1) % line.len()
+        };
+        let state = &line[index];
+        let target = PieceAt {
+            piece: PieceId::from_state(state, wid),
+            t: state.t,
+        };
+        self.focus_worldline(target, true);
+        self.viewport.wheel.stop();
+        self.viewport.touch_inertia.stop();
+        self.viewport.scroll = None;
+    }
+
+    pub fn focus_worldline(&mut self, target: PieceAt, travel: bool) {
+        let from = self
+            .worldline_transition
+            .map_or(self.worldline_state, |pending| pending.from);
+        self.worldline_selected = Some(target.piece.wid);
+        self.worldline_state = Some(target);
+        self.worldline_transition = Some(WorldlineFocusTransition {
+            from,
+            scrolling: false,
+            travel,
+        });
+    }
+
+    pub fn update_worldline_transition(&mut self, ctx: &bevy_egui::egui::Context) {
+        let Some(mut pending) = self.worldline_transition else {
+            return;
+        };
+        if !pending.scrolling {
+            if pending
+                .from
+                .is_some_and(|at| crate::worldline_view::focus_amount(ctx, at, false) > 0.0)
+            {
+                ctx.request_repaint();
+                return;
+            }
+            if pending.travel {
+                self.jump_to = self.worldline_state.map(|at| at.t);
+                pending.scrolling = true;
+                self.worldline_transition = Some(pending);
+            } else {
+                self.worldline_transition = None;
+            }
+        } else if self.jump_to.is_none() && self.viewport.scroll.is_none() {
+            self.worldline_transition = None;
+        }
     }
 
     pub fn checked_times_for(&self, side: Color) -> Vec<BoardTime> {
@@ -631,7 +720,7 @@ impl GameUi {
     pub fn choose(&mut self, piece: PieceView) {
         self.move_wait_until = None;
         if self.worldline_mode {
-            self.worldline_selected = Some(piece.origin);
+            self.focus_worldline(identity(piece), false);
             self.overlapping.clear();
             return;
         }
@@ -640,6 +729,7 @@ impl GameUi {
         }
         self.overlapping.clear();
         if self.inspect_mode {
+            self.selected = None;
             self.inspected = Some(identity(piece));
             return;
         }
@@ -705,6 +795,40 @@ impl GameUi {
         }
     }
 
+    pub fn inspected_piece(&self) -> Option<PieceView> {
+        let at = self.inspection_state()?;
+        self.engine
+            .history()
+            .worldlines()
+            .get(at.piece.wid)?
+            .iter()
+            .enumerate()
+            .find(|(_, s)| s.t == at.t && PieceId::from_state(s, at.piece.wid) == at.piece)
+            .map(|(age, s)| PieceView::from_state(s, at.piece.wid, age))
+    }
+
+    pub fn inspection_state(&self) -> Option<PieceAt> {
+        if self.worldline_mode {
+            self.worldline_state
+        } else if self.inspect_mode {
+            self.inspected
+        } else {
+            None
+        }
+    }
+
+    pub fn toggle_inspector(&mut self) {
+        let next = !self.inspect_mode;
+        let selected = self.selected.as_ref().map(|s| identity(s.piece));
+        self.clear_selection();
+        self.inspect_mode = next;
+        self.inspected = if next { selected } else { None };
+        self.worldline_mode = false;
+        self.worldline_selected = None;
+        self.worldline_state = None;
+        self.worldline_transition = None;
+    }
+
     pub fn click_square(&mut self, t: BoardTime, sq: Sq) {
         self.click_square_with_direction(t, sq, false);
     }
@@ -742,30 +866,42 @@ impl GameUi {
         }
         if self.worldline_mode {
             let inspected_wid = self.worldline_selected;
-            let mut origins: Vec<_> = self
+            let states: Vec<_> = self
                 .engine
                 .history()
                 .worldlines()
                 .iter()
                 .enumerate()
-                .filter_map(|(wid, line)| {
+                .flat_map(|(wid, line)| {
                     line.iter()
-                        .any(|state| {
+                        .enumerate()
+                        .filter(move |(_, state)| {
                             state.t == t
                                 && Sq(state.x, state.y) == sq
                                 && (state.alive || inspected_wid == Some(wid))
                         })
-                        .then_some(wid)
+                        .map(move |(age, state)| {
+                            (
+                                wid,
+                                age,
+                                PieceAt {
+                                    piece: PieceId::from_state(state, wid),
+                                    t: state.t,
+                                },
+                            )
+                        })
                 })
                 .collect();
-            origins.sort_unstable();
-            origins.dedup();
-            if !origins.is_empty() {
+            if !states.is_empty() {
                 let next = self
-                    .worldline_selected
-                    .and_then(|wid| origins.iter().position(|&p| p == wid))
-                    .map_or(0, |i| (i + 1) % origins.len());
-                self.worldline_selected = Some(origins[next]);
+                    .worldline_state
+                    .and_then(|at| states.iter().position(|p| p.2 == at))
+                    .map_or(0, |i| (i + 1) % states.len());
+                self.focus_worldline(states[next].2, false);
+            } else {
+                self.worldline_selected = None;
+                self.worldline_state = None;
+                self.worldline_transition = None;
             }
             return;
         }
@@ -807,7 +943,11 @@ impl GameUi {
             .filter(|p| p.sq == sq && (self.inspect_mode || self.selectable(*p)))
             .collect();
         match pieces.len() {
-            0 => {}
+            0 => {
+                if self.inspect_mode {
+                    self.inspected = None;
+                }
+            }
             1 => self.choose(pieces[0]),
             _ => self.overlapping = pieces,
         }
@@ -1167,6 +1307,8 @@ impl GameUi {
                 self.inspect_mode = false;
                 self.worldline_mode = false;
                 self.worldline_selected = None;
+                self.worldline_state = None;
+                self.worldline_transition = None;
                 self.message(
                     match kind {
                         ReplayKind::Network => crate::message!(

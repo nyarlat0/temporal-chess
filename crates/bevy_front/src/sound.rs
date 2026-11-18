@@ -100,6 +100,10 @@ mod web {
 fn bit(side: Color) -> u8 {
     if side == Color::White { 1 } else { 2 }
 }
+
+fn audible_waiting(waiting: u8, viewer: Option<Color>) -> u8 {
+    viewer.map_or(waiting, |side| waiting & bit(side))
+}
 fn finale(outcome: GameOutcome, viewer: Option<Color>, direction: TimeDirection) -> &'static str {
     let won = match outcome {
         GameOutcome::Victory { winner, .. } => viewer.is_none_or(|s| s == winner),
@@ -221,6 +225,11 @@ pub fn update(
     } else {
         game.bot.settings.human_side()
     };
+    let waiting = if game.online.enabled && viewer.is_none() {
+        0
+    } else {
+        audible_waiting(audio.waiting, viewer)
+    };
     let desired = if let Some(outcome) = game.engine.outcome() {
         // Draws use the regular defeat track; local/self-play victories use victory.
         let direction = if outcome == GameOutcome::Stalemate {
@@ -229,8 +238,8 @@ pub fn update(
             audio.direction
         };
         Music::Finale(finale(outcome, viewer, direction))
-    } else if audio.waiting != 0 {
-        Music::Waiting(audio.waiting)
+    } else if waiting != 0 {
+        Music::Waiting(waiting)
     } else {
         Music::Silent
     };
@@ -249,7 +258,13 @@ pub fn update(
                     commands
                         .spawn((
                             AudioPlayer::new(audio.sources[name].clone()),
-                            PlaybackSettings::ONCE,
+                            PlaybackSettings::ONCE.with_volume(bevy::audio::Volume::Linear(
+                                if matches!(desired, Music::Waiting(_)) {
+                                    0.3
+                                } else {
+                                    1.0
+                                },
+                            )),
                         ))
                         .id(),
                 );
@@ -285,7 +300,7 @@ pub fn update(
             commands
                 .spawn((
                     AudioPlayer::new(audio.sources[name].clone()),
-                    PlaybackSettings::ONCE,
+                    PlaybackSettings::ONCE.with_volume(bevy::audio::Volume::Linear(0.3)),
                 ))
                 .id(),
         );
@@ -305,6 +320,15 @@ fn stop(audio: &mut Director, commands: &mut Commands, sinks: &Query<&AudioSink>
 mod tests {
     use super::*;
     use temporal_chess_engine::engine::WinReason;
+    #[test]
+    fn waiting_music_is_only_audible_to_the_waiting_player() {
+        assert_eq!(audible_waiting(1, Some(Color::White)), 1);
+        assert_eq!(audible_waiting(1, Some(Color::Black)), 0);
+        assert_eq!(audible_waiting(2, Some(Color::White)), 0);
+        assert_eq!(audible_waiting(2, Some(Color::Black)), 2);
+        assert_eq!(audible_waiting(3, Some(Color::White)), 1);
+        assert_eq!(audible_waiting(3, None), 3); // One shared audio output in local play.
+    }
     #[test]
     fn endings_follow_perspective_and_temporal_direction() {
         let result = GameOutcome::Victory {

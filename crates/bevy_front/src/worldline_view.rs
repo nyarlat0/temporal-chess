@@ -7,7 +7,29 @@ use crate::{
 };
 use bevy_egui::egui::{self, Color32, Pos2, Rect, Stroke, Vec2};
 use temporal_chess_engine::model::BoardTime;
-use temporal_chess_engine::model::{Color, Sq, State};
+use temporal_chess_engine::model::{Color, PieceAt, PieceId, Sq, State};
+
+/// Focus scales the artwork around the cell center; callers clip to the cell.
+pub fn focused_rect(ctx: &egui::Context, at: PieceAt, rect: Rect, selected: bool) -> Rect {
+    let amount = focus_amount(ctx, at, selected);
+    Rect::from_center_size(
+        rect.center(),
+        rect.size() * (1.0 + 0.12 * crate::animation::ease(amount)),
+    )
+}
+
+pub fn focus_amount(ctx: &egui::Context, at: PieceAt, selected: bool) -> f32 {
+    let id = egui::Id::new(("worldline_state_focus", at));
+    let fresh = ctx.data_mut(|d| {
+        let fresh = d.get_temp::<bool>(id).is_none();
+        d.insert_temp(id, true);
+        fresh
+    });
+    if fresh {
+        ctx.animate_bool_with_time(id, false, 0.22);
+    }
+    ctx.animate_bool_with_time(id, selected, 0.22)
+}
 
 fn color(state: &State) -> Color32 {
     match (state.alive, state.inverted, state.color) {
@@ -121,6 +143,9 @@ pub fn paint(
     board_at: &impl Fn(usize) -> Rect,
     cell: f32,
 ) {
+    let Some(wid) = game.worldline_selected else {
+        return;
+    };
     let Some(line) = game
         .worldline_selected
         .and_then(|wid| game.engine.history().worldlines().get(wid))
@@ -220,11 +245,21 @@ pub fn paint(
     }
     // Selected occurrences, including ghosts, are always above the entire curve.
     for (state, rect) in nodes {
+        let at = PieceAt {
+            piece: PieceId::from_state(state, wid),
+            t: state.t,
+        };
+        let focused = focused_rect(
+            painter.ctx(),
+            at,
+            rect,
+            game.worldline_transition.is_none() && game.worldline_state == Some(at),
+        );
         if !rect.intersects(painter.clip_rect()) {
             continue;
         }
-        art.paint_tinted(
-            painter,
+        art.paint_focus(
+            &painter.with_clip_rect(rect.intersect(painter.clip_rect())),
             state.kind,
             if state.alive {
                 state.color
@@ -232,6 +267,7 @@ pub fn paint(
                 Color::White
             },
             rect,
+            focused,
             if state.alive { 1.0 } else { 0.55 },
             PieceStyle {
                 inverted: state.alive && state.inverted,
@@ -249,6 +285,177 @@ pub fn paint(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn navigation_shrinks_then_scrolls_then_grows() {
+        let ctx = egui::Context::default();
+        let old = PieceAt {
+            piece: PieceId {
+                wid: 0,
+                fut_seen: 0,
+                loop_turn: 0,
+            },
+            t: 0,
+        };
+        let target = PieceAt { t: 2, ..old };
+        let mut game = GameUi {
+            worldline_mode: true,
+            worldline_selected: Some(0),
+            worldline_state: Some(old),
+            ..Default::default()
+        };
+        for time in [0.0, 0.1, 0.25] {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    time: Some(time),
+                    ..Default::default()
+                },
+                |ui| {
+                    focus_amount(ui.ctx(), old, true);
+                },
+            );
+            output.textures_delta.clear();
+        }
+        game.jump_to = None;
+        game.focus_worldline(target, true);
+        for time in [0.3, 0.6, 0.7, 0.8, 0.95] {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    time: Some(time),
+                    ..Default::default()
+                },
+                |ui| {
+                    game.update_worldline_transition(ui.ctx());
+                    let amount =
+                        focus_amount(ui.ctx(), target, game.worldline_transition.is_none());
+                    if time == 0.3 {
+                        assert!(game.jump_to.is_none());
+                        assert!(!game.worldline_transition.unwrap().scrolling);
+                        assert_eq!(amount, 0.0);
+                    } else if time == 0.6 {
+                        assert_eq!(game.jump_to, Some(2));
+                        assert!(game.worldline_transition.unwrap().scrolling);
+                        assert_eq!(amount, 0.0);
+                        game.jump_to = None;
+                        game.viewport.scroll = Some(crate::animation::SmoothScroll::new(2, 0.0, 1));
+                    } else if time == 0.7 {
+                        assert!(game.worldline_transition.is_some());
+                        assert_eq!(amount, 0.0);
+                        game.viewport.scroll = None;
+                    } else {
+                        assert!(game.worldline_transition.is_none());
+                        assert!(amount > 0.0);
+                    }
+                },
+            );
+            output.textures_delta.clear();
+        }
+    }
+
+    #[test]
+    fn focus_grows_and_shrinks_smoothly_when_switching_states() {
+        let ctx = egui::Context::default();
+        let at = |t| PieceAt {
+            piece: PieceId {
+                wid: 0,
+                fut_seen: 0,
+                loop_turn: 0,
+            },
+            t,
+        };
+        let rect = Rect::from_min_size(Pos2::ZERO, Vec2::splat(64.0));
+        let mut sizes = Vec::new();
+        for (time, selected) in [(0.0, 0), (0.1, 0), (0.24, 0), (0.34, 1), (0.6, 1)] {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    time: Some(time),
+                    ..Default::default()
+                },
+                |ui| {
+                    sizes.push((
+                        focused_rect(ui.ctx(), at(0), rect, selected == 0).width(),
+                        focused_rect(ui.ctx(), at(1), rect, selected == 1).width(),
+                    ));
+                },
+            );
+            output.textures_delta.clear();
+        }
+        assert!(sizes[0].0 < sizes[1].0 && sizes[1].0 <= sizes[2].0);
+        assert!(sizes[3].0 < sizes[2].0 && sizes[4].0 <= sizes[3].0);
+        assert!(sizes[4].1 > sizes[3].1);
+        assert!(
+            sizes
+                .iter()
+                .all(|(a, b)| (64.0..=71.69).contains(a) && (64.0..=71.69).contains(b))
+        );
+    }
+
+    #[test]
+    fn state_navigation_follows_causality_through_reversal_and_death_and_empty_click_resets() {
+        use temporal_chess_engine::{
+            engine::Engine,
+            model::{PieceKind, TimeDirection},
+        };
+        let mut state = State::new(PieceKind::N, Color::White, Sq(1, 0));
+        state.t = -2;
+        state.fut_seen = -2;
+        let mut line = vec![state];
+        for (direction, sq) in [
+            (TimeDirection::Future, Sq(2, 2)),
+            (TimeDirection::Past, Sq(1, 4)),
+            (TimeDirection::Past, Sq(0, 6)),
+        ] {
+            let mut next = line.last().unwrap().step(direction).unwrap();
+            next.x = sq.0;
+            next.y = sq.1;
+            line.push(next);
+        }
+        line.last_mut().unwrap().alive = false;
+        // A real opposing arrival sustains the death during reconciliation.
+        let mut rook = State::new(PieceKind::R { moved: true }, Color::Black, Sq(0, 5));
+        rook.t = -4;
+        rook.fut_seen = -1;
+        let mut arrival = rook.step(TimeDirection::Future).unwrap();
+        arrival.y = 6;
+        let engine =
+            Engine::from_worldlines(vec![line, vec![rook, arrival]], Color::White).unwrap();
+        let before = engine.clone();
+        let mut game = GameUi {
+            engine,
+            worldline_mode: true,
+            ..Default::default()
+        };
+        game.click_square(-2, Sq(1, 0));
+        let original = game.worldline_state.unwrap();
+        let ctx = egui::Context::default();
+        game.navigate_active(true, false);
+        game.update_worldline_transition(&ctx);
+        assert_eq!(game.jump_to, Some(-1));
+        game.navigate_active(true, true);
+        game.update_worldline_transition(&ctx);
+        assert_eq!(game.jump_to, Some(-2));
+        assert_ne!(game.worldline_state.unwrap(), original);
+        game.navigate_active(true, false);
+        game.update_worldline_transition(&ctx);
+        assert_eq!(game.jump_to, Some(-3));
+        assert!(
+            !game
+                .engine
+                .piece_state(game.worldline_state.unwrap())
+                .unwrap()
+                .alive
+        );
+        game.navigate_active(true, false);
+        game.update_worldline_transition(&ctx);
+        assert_eq!(game.worldline_state, Some(original));
+        game.navigate_active(false, false);
+        game.update_worldline_transition(&ctx);
+        assert_eq!(game.jump_to, Some(-3));
+        game.click_square(-2, Sq(7, 7));
+        assert!(game.worldline_mode);
+        assert!(game.worldline_selected.is_none() && game.worldline_state.is_none());
+        assert_eq!(game.engine, before);
+    }
 
     #[test]
     fn reversal_continues_old_direction_then_turns_without_a_cusp() {

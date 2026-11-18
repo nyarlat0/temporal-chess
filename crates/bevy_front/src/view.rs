@@ -48,31 +48,36 @@ fn initial_sidebar(saved: Option<&str>, mobile: bool) -> bool {
     }
 }
 
-fn saved_sidebar() -> Option<String> {
+fn stored_setting(key: &str) -> Option<String> {
     #[cfg(target_arch = "wasm32")]
     {
         web_sys::window()?
             .local_storage()
             .ok()??
-            .get_item("temporal-chess.sidebar")
+            .get_item(key)
             .ok()?
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
+        let _ = key;
         None
     }
 }
 
-fn save_sidebar(open: bool) {
+fn store_setting(key: &str, value: &str) {
     #[cfg(target_arch = "wasm32")]
     if let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
-        let _ = storage.set_item(
-            "temporal-chess.sidebar",
-            if open { "open" } else { "closed" },
-        );
+        let _ = storage.set_item(key, value);
     }
     #[cfg(not(target_arch = "wasm32"))]
-    let _ = open;
+    let _ = (key, value);
+}
+
+fn saved_animation_speed(value: &str) -> Option<f32> {
+    value
+        .parse::<f32>()
+        .ok()
+        .filter(|v| v.is_finite() && (0.25..=3.0).contains(v))
 }
 
 fn mobile_browser() -> bool {
@@ -96,12 +101,25 @@ pub fn mobile_layout(ctx: &egui::Context) -> bool {
 pub fn draw(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState, art: &PieceArt) {
     if !shell.initialized {
         shell.sidebar_open = initial_sidebar(
-            saved_sidebar().as_deref(),
+            stored_setting("temporal-chess.sidebar").as_deref(),
             mobile_browser() || ctx.viewport_rect().width() < 760.0,
         );
+        if let Some(flip) =
+            stored_setting("temporal-chess.swap-boards").and_then(|v| v.parse::<bool>().ok())
+        {
+            game.local_auto_flip = flip;
+        }
+        if let Some(speed) = stored_setting("temporal-chess.animation-speed")
+            .as_deref()
+            .and_then(saved_animation_speed)
+        {
+            game.animation_speed = speed;
+        }
         shell.initialized = true;
     }
     let previous_sidebar = shell.sidebar_open;
+    let previous_flip = game.local_auto_flip;
+    let previous_speed = game.animation_speed;
     let compact = mobile_layout(ctx);
     crate::input::handle(ctx, game, shell);
     let drawer_duration = 0.45 / (crate::animation::BASE_ANIMATION_SPEED * game.animation_speed);
@@ -180,7 +198,26 @@ pub fn draw(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState, art:
         });
     menu_button(ctx, shell, modal);
     if previous_sidebar != shell.sidebar_open {
-        save_sidebar(shell.sidebar_open);
+        store_setting(
+            "temporal-chess.sidebar",
+            if shell.sidebar_open { "open" } else { "closed" },
+        );
+    }
+    if previous_flip != game.local_auto_flip {
+        store_setting(
+            "temporal-chess.swap-boards",
+            if game.local_auto_flip {
+                "true"
+            } else {
+                "false"
+            },
+        );
+    }
+    if previous_speed != game.animation_speed {
+        store_setting(
+            "temporal-chess.animation-speed",
+            &game.animation_speed.to_string(),
+        );
     }
     crate::dialogs::draw(ctx, game, shell, art);
     if game.replay_job.is_some() {
@@ -229,12 +266,15 @@ fn game_hud(
     modal: bool,
 ) -> f32 {
     let compact = mobile_layout(parent.ctx());
+    let mut rect = rect;
+    rect.max.y = parent.clip_rect().bottom() - if compact { 110.0 } else { 12.0 };
+
     let mut child = parent.new_child(
         egui::UiBuilder::new()
             .id_salt("game_status_hud")
             .max_rect(rect),
     );
-    child.set_clip_rect(parent.clip_rect());
+    child.set_clip_rect(parent.clip_rect().intersect(rect));
     let ui = &mut child;
     if modal {
         ui.disable();
@@ -250,7 +290,11 @@ fn game_hud(
                 (rect.width() - 24.0).clamp(132.0, 172.0)
             });
             ui.spacing_mut().item_spacing.x = if compact { 4.0 } else { 6.0 };
-            if compact && game.selected.is_some() {
+            if compact
+                && (game.selected.is_some()
+                    || ((game.inspect_mode || game.worldline_mode)
+                        && game.inspected_piece().is_some()))
+            {
                 ui.columns(2, |columns| {
                     hud_turn(&mut columns[0], game, art, true);
                     hud_selection(&mut columns[1], game, art, true);
@@ -267,7 +311,10 @@ fn game_hud(
                 });
             } else {
                 hud_turn(ui, game, art, compact);
-                if game.selected.is_some() {
+                if game.selected.is_some()
+                    || ((game.inspect_mode || game.worldline_mode)
+                        && game.inspected_piece().is_some())
+                {
                     ui.separator();
                 }
                 hud_selection(ui, game, art, compact);
@@ -328,21 +375,30 @@ fn hud_turn(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt, compact: bool)
     });
     // Columns justify direct children across their width. A button row keeps
     // the replay control square instead of stretching it with the column.
-    if ui
-        .horizontal(|ui| {
-            icon_button(
-                ui,
-                Icon::Replay,
-                crate::tr!("Повторить предыдущий ход", "Replay previous move"),
-                game.replaying_move,
-                game.can_replay_move(),
-            )
-        })
-        .inner
+    ui.horizontal(|ui| {
+        if icon_button(
+            ui,
+            Icon::Replay,
+            crate::tr!("Повторить предыдущий ход", "Replay previous move"),
+            game.replaying_move,
+            game.can_replay_move(),
+        )
         .clicked()
-    {
-        game.replay_last_move();
-    }
+        {
+            game.replay_last_move();
+        }
+        if icon_button(
+            ui,
+            Icon::Inspect,
+            crate::tr!("Инспекция фигуры · I", "Inspect piece · I"),
+            game.inspect_mode,
+            idle,
+        )
+        .clicked()
+        {
+            game.toggle_inspector();
+        }
+    });
     if game.engine.can_decline_reactions()
         && ui
             .add_enabled(
@@ -382,6 +438,12 @@ fn hud_turn(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt, compact: bool)
 }
 
 fn hud_selection(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt, compact: bool) {
+    if game.inspect_mode || game.worldline_mode {
+        if let Some(piece) = game.inspected_piece() {
+            inspection_hud(ui, game, art, piece);
+        }
+        return;
+    }
     if let Some(selection) = &game.selected {
         let piece = selection.piece;
         let direction = selection.direction;
@@ -437,6 +499,205 @@ fn hud_selection(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt, compact: 
             ui.label(crate::controller::direction_name(direction));
         });
     }
+}
+
+fn inspection_hud(
+    ui: &mut egui::Ui,
+    game: &GameUi,
+    art: &PieceArt,
+    piece: temporal_chess_engine::model::PieceView,
+) {
+    let Some(state) = game.engine.piece_state(crate::controller::identity(piece)) else {
+        return;
+    };
+    ui.scope(|ui| {
+        ui.horizontal_wrapped(|ui| {
+            let (rect, _) = ui.allocate_exact_size(Vec2::splat(32.0), egui::Sense::hover());
+            art.paint_styled(
+                ui.painter(),
+                piece.kind,
+                piece.color,
+                rect,
+                1.0,
+                crate::piece_art::PieceStyle {
+                    inverted: piece.inverted,
+                    ..Default::default()
+                },
+            );
+            ui.label(format!(
+                "{} · ({}, {})",
+                piece_name(piece.kind),
+                square_name(piece.sq),
+                piece.t
+            ));
+        });
+        if piece.fut_seen != piece.t || piece.loop_turn != 0 {
+            ui.horizontal(|ui| {
+                let (rect, response) =
+                    ui.allocate_exact_size(Vec2::splat(22.0), egui::Sense::hover());
+                crate::icons::paint(
+                    ui.painter(),
+                    Icon::PastClock,
+                    rect.shrink(2.0),
+                    egui::Stroke::new(1.5, TEXT),
+                );
+                response.on_hover_text(format!(
+                    "fut_seen: {} · loop_turn: {}",
+                    piece.fut_seen, piece.loop_turn
+                ));
+                ui.label(piece.fut_seen.to_string());
+            });
+        }
+        let visible: Vec<_> = state
+            .informed
+            .iter()
+            .map(|o| (*o, !state.remembered.contains(o)))
+            .collect();
+        let board = game.pieces(piece.t);
+        let memory: Vec<_> = state
+            .remembered
+            .iter()
+            .filter(|o| {
+                !board.iter().any(|p| {
+                    p.color != piece.color
+                        && temporal_chess_engine::model::Observation {
+                            square: p.sq,
+                            kind: p.kind.set_moved(false),
+                            inverted: p.inverted,
+                        } == **o
+                })
+            })
+            .map(|o| (*o, false))
+            .collect();
+        // No nested scroller: compact the grids to the remaining screen height.
+        let remaining = (ui.max_rect().bottom() - ui.cursor().min.y - 22.0).max(64.0);
+        let columns = ((ui.available_width() + 4.0) / 40.0).floor().max(1.0);
+        let visible_rows = if visible.is_empty() {
+            0.0
+        } else {
+            ((visible.len() + 1) as f32 / columns).ceil()
+        };
+        let memory_rows = if memory.is_empty() {
+            0.0
+        } else {
+            ((memory.len() + 1) as f32 / columns).ceil()
+        };
+        let visible_height = remaining * visible_rows / (visible_rows + memory_rows).max(1.0);
+        if !visible.is_empty() {
+            ui.separator();
+            observation_block(
+                ui,
+                art,
+                Icon::Information,
+                crate::tr!("Видимая информация", "Visible information"),
+                piece.color.opposite(),
+                &visible,
+                visible_height,
+            );
+        }
+        if !memory.is_empty() {
+            ui.separator();
+            observation_block(
+                ui,
+                art,
+                Icon::Memory,
+                crate::tr!("Память", "Memory"),
+                piece.color.opposite(),
+                &memory,
+                remaining - visible_height,
+            );
+        }
+    });
+}
+
+fn observation_block(
+    ui: &mut egui::Ui,
+    art: &PieceArt,
+    icon: Icon,
+    title: &str,
+    side: temporal_chess_engine::model::Color,
+    observations: &[(temporal_chess_engine::model::Observation, bool)],
+    height: f32,
+) {
+    let (size, capacity) = observation_grid(ui.available_width(), height, observations.len());
+    let cell = Vec2::new((size + 2.0).max(22.0), size + 9.0);
+    let shown = if observations.len() > capacity {
+        capacity.saturating_sub(1)
+    } else {
+        observations.len()
+    };
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = Vec2::splat(4.0);
+        let (rect, response) = ui.allocate_exact_size(cell, egui::Sense::hover());
+        crate::icons::paint(
+            ui.painter(),
+            icon,
+            egui::Rect::from_center_size(rect.center(), Vec2::splat(size.min(22.0))),
+            egui::Stroke::new(1.5, TEXT),
+        );
+        response.on_hover_text(title);
+        for (observation, new) in observations.iter().take(shown) {
+            let (rect, response) = ui.allocate_exact_size(cell, egui::Sense::hover());
+            let image = egui::Rect::from_min_size(rect.min, Vec2::splat(size));
+            art.paint_styled(
+                ui.painter(),
+                observation.kind,
+                side,
+                image,
+                1.0,
+                crate::piece_art::PieceStyle {
+                    inverted: observation.inverted,
+                    outline: if *new {
+                        crate::piece_art::Outline::Information
+                    } else {
+                        crate::piece_art::Outline::None
+                    },
+                    ..Default::default()
+                },
+            );
+            let square = square_name(observation.square);
+            ui.painter().text(
+                rect.right_bottom(),
+                egui::Align2::RIGHT_BOTTOM,
+                &square,
+                egui::FontId::proportional(9.5),
+                TEXT,
+            );
+            response.on_hover_text(format!("{} · {square}", piece_name(observation.kind)));
+        }
+        if shown < observations.len() {
+            let (rect, response) = ui.allocate_exact_size(cell, egui::Sense::hover());
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                format!("+{}", observations.len() - shown),
+                egui::FontId::proportional(10.0),
+                TEXT,
+            );
+            response.on_hover_text(
+                observations[shown..]
+                    .iter()
+                    .map(|(o, _)| format!("{} · {}", piece_name(o.kind), square_name(o.square)))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            );
+        }
+    });
+}
+
+fn observation_grid(width: f32, height: f32, count: usize) -> (f32, usize) {
+    let mut result = (18.0, 0);
+    for size in [34.0_f32, 30.0, 26.0, 22.0, 18.0] {
+        let columns = ((width + 4.0) / ((size + 2.0).max(22.0) + 4.0))
+            .floor()
+            .max(1.0) as usize;
+        let rows = ((height + 4.0) / (size + 13.0)).floor().max(1.0) as usize;
+        result = (size, (columns * rows).saturating_sub(1));
+        if count <= result.1 {
+            break;
+        }
+    }
+    result
 }
 
 fn language_header(ui: &mut egui::Ui) {
@@ -703,6 +964,8 @@ fn details_panel(
             game.inspect_mode = true;
             game.worldline_mode = false;
             game.worldline_selected = None;
+            game.worldline_state = None;
+            game.worldline_transition = None;
         }
     });
     if game.inspect_mode {
@@ -956,6 +1219,140 @@ mod tests {
                 .is_empty()
         );
         output
+    }
+
+    #[test]
+    fn large_inspection_memory_fits_phone_height_without_an_inner_scroller() {
+        use temporal_chess_engine::{
+            engine::Engine,
+            model::{Color, Observation, State},
+        };
+        let mut queen = State::new(PieceKind::Q, Color::White, Sq(3, 3));
+        for x in 0..8 {
+            for y in 0..8 {
+                for inverted in [false, true] {
+                    queen.remembered.insert(Observation {
+                        square: Sq(x, y),
+                        kind: PieceKind::Q,
+                        inverted,
+                    });
+                }
+            }
+        }
+        let engine = Engine::from_worldlines(vec![vec![queen]], Color::White).unwrap();
+        let mut game = GameUi {
+            engine,
+            inspect_mode: true,
+            ..Default::default()
+        };
+        game.click_square(0, Sq(3, 3));
+        let ctx = egui::Context::default();
+        crate::theme::configure(&ctx);
+        let art = PieceArt::new(&ctx);
+        let mut shell = ShellState::default();
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(375.0, 600.0))),
+                ..Default::default()
+            },
+            |ui| draw(ui.ctx(), &mut game, &mut shell, &art),
+        );
+        output.textures_delta.clear();
+        assert!(shell.ribbon_rect.top() < 500.0);
+        assert!(shell.ribbon_rect.height() > 90.0);
+    }
+
+    #[test]
+    fn inspector_hud_shows_current_information_and_absent_remembered_pieces() {
+        use temporal_chess_engine::{
+            engine::Engine,
+            model::{Color, Observation, State},
+        };
+        let mut queen = State::new(PieceKind::Q, Color::White, Sq(3, 3));
+        let knight = State::new(PieceKind::N, Color::Black, Sq(5, 5));
+        let bishop = State::new(PieceKind::B, Color::Black, Sq(3, 6));
+        queen.remembered.insert(Observation::from_state(&knight));
+        queen.remembered.insert(Observation {
+            square: Sq(0, 7),
+            kind: PieceKind::R { moved: false },
+            inverted: false,
+        });
+        let engine =
+            Engine::from_worldlines(vec![vec![queen], vec![knight], vec![bishop]], Color::White)
+                .unwrap();
+        let mut game = GameUi {
+            engine,
+            inspect_mode: true,
+            ..Default::default()
+        };
+        game.click_square(0, Sq(3, 3));
+        let ctx = egui::Context::default();
+        let output = frame(&ctx, &mut game, vec![]);
+        text_position(&output, "f6");
+        text_position(&output, "d7");
+        text_position(&output, "a8");
+        game.inspect_mode = false;
+        game.worldline_mode = true;
+        game.click_square(0, Sq(3, 3));
+        assert_eq!(game.inspected_piece().unwrap().sq, Sq(3, 3));
+        let worldline_output = frame(&ctx, &mut game, vec![]);
+        text_position(&worldline_output, "f6");
+        text_position(&worldline_output, "d7");
+        text_position(&worldline_output, "a8");
+    }
+
+    #[test]
+    fn empty_information_and_memory_do_not_add_section_rows() {
+        let ctx = egui::Context::default();
+        crate::theme::configure(&ctx);
+        let art = PieceArt::new(&ctx);
+        let mut game = GameUi {
+            inspect_mode: true,
+            ..Default::default()
+        };
+        game.click_square(0, Sq(4, 1));
+        let piece = game.inspected_piece().unwrap();
+        let state = game
+            .engine
+            .piece_state(crate::controller::identity(piece))
+            .unwrap();
+        assert!(state.informed.is_empty() && state.remembered.is_empty());
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_max_width(300.0);
+            inspection_hud(ui, &game, &art, piece);
+            assert!(ui.min_rect().height() <= 40.0);
+        });
+        output.textures_delta.clear();
+    }
+
+    #[test]
+    fn hud_inspector_button_selects_inactive_opponents_without_playing() {
+        let ctx = egui::Context::default();
+        let mut game = GameUi::default();
+        let before = game.engine.clone();
+        game.click_square(0, Sq(4, 1));
+        frame(&ctx, &mut game, vec![]);
+        let replay = icon_position(
+            &ctx,
+            crate::tr!("Повторить предыдущий ход", "Replay previous move"),
+        );
+        let inspect = icon_position(
+            &ctx,
+            crate::tr!("Инспекция фигуры · I", "Inspect piece · I"),
+        );
+        assert!(inspect.x > replay.x && (inspect.y - replay.y).abs() < 1.0);
+        click(&ctx, &mut game, inspect);
+        assert!(game.inspect_mode && game.selected.is_none());
+        assert_eq!(game.inspected_piece().unwrap().sq, Sq(4, 1));
+        game.click_square(0, Sq(0, 6));
+        let enemy = game.inspected_piece().unwrap();
+        assert_eq!(enemy.color, temporal_chess_engine::model::Color::Black);
+        assert!(!game.selectable(enemy));
+        frame(&ctx, &mut game, vec![]);
+        game.click_square(0, Sq(3, 3));
+        assert!(game.inspected.is_none());
+        assert_eq!(game.engine, before);
+        assert!(game.record.commands().is_empty());
     }
 
     #[test]

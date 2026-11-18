@@ -10,6 +10,7 @@ pub enum Outline {
     Check,
     InvertedCheck,
     Capture,
+    Information,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -32,6 +33,7 @@ impl Outline {
             Self::None => Color32::TRANSPARENT,
             Self::Check | Self::Capture => CAPTURE,
             Self::InvertedCheck => Color32::from_rgb(239, 137, 185),
+            Self::Information => crate::theme::INFORMATION,
         }
     }
 }
@@ -46,7 +48,7 @@ pub struct PieceArt {
 
 #[derive(Default)]
 struct TextureCache {
-    entries: HashMap<(usize, usize, PieceStyle, bool), CachedTexture>,
+    entries: HashMap<(usize, usize, PieceStyle, bool, bool), CachedTexture>,
     pruned_frame: Option<u64>,
 }
 
@@ -112,7 +114,36 @@ impl PieceArt {
         style: PieceStyle,
         tint: Color32,
     ) {
-        self.paint_layer(painter, kind, side, rect, alpha, style, tint, 0.0, false);
+        self.paint_layer(
+            painter, kind, side, rect, alpha, style, tint, 0.0, false, None,
+        );
+    }
+
+    /// Keep one texture throughout a focus animation; only its screen rectangle changes.
+    #[allow(clippy::too_many_arguments)]
+    pub fn paint_focus(
+        &self,
+        painter: &egui::Painter,
+        kind: PieceKind,
+        side: Color,
+        cell: Rect,
+        focused: Rect,
+        alpha: f32,
+        style: PieceStyle,
+        tint: Color32,
+    ) {
+        self.paint_layer(
+            painter,
+            kind,
+            side,
+            focused,
+            alpha,
+            style,
+            tint,
+            0.0,
+            false,
+            Some(cell.width() * 1.12),
+        );
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -139,6 +170,7 @@ impl PieceArt {
             Color32::WHITE,
             angle,
             false,
+            None,
         );
         self.paint_layer(
             painter,
@@ -150,6 +182,7 @@ impl PieceArt {
             Color32::WHITE,
             angle,
             true,
+            None,
         );
     }
 
@@ -165,6 +198,7 @@ impl PieceArt {
         tint: Color32,
         angle: f32,
         red: bool,
+        stable_width: Option<f32>,
     ) {
         let kind = match kind {
             PieceKind::K { .. } => 0,
@@ -181,8 +215,14 @@ impl PieceArt {
         // Native vector edge coverage, then one texel per physical pixel. Avoid
         // a second low-pass filter from downsampling and fractional placement.
         let scale = painter.ctx().pixels_per_point();
-        let size = (rect.width() * scale).round().clamp(16.0, 384.0) as usize;
-        let rect = pixel_aligned(rect, scale, size);
+        let size = (stable_width.unwrap_or(rect.width()) * scale)
+            .round()
+            .clamp(16.0, 384.0) as usize;
+        let rect = if stable_width.is_some() {
+            rect
+        } else {
+            pixel_aligned(rect, scale, size)
+        };
         // Both hover states live in one texture. Entering a square changes
         // only UVs, never a GPU texture allocation or bindless texture slot.
         let highlighted = style.hovered && style.outline != Outline::None;
@@ -190,7 +230,7 @@ impl PieceArt {
             hovered: false,
             ..style
         };
-        let key = (index, size, style, red);
+        let key = (index, size, style, red, stable_width.is_some());
         let frame = painter.ctx().cumulative_frame_nr();
         let mut cache = self.textures.lock().expect("piece textures");
         if cache.pruned_frame != Some(frame) {
@@ -215,7 +255,11 @@ impl PieceArt {
                     }
                     image
                 },
-                egui::TextureOptions::NEAREST,
+                if stable_width.is_some() {
+                    egui::TextureOptions::LINEAR
+                } else {
+                    egui::TextureOptions::NEAREST
+                },
             ),
             last_used: frame,
         });
@@ -226,7 +270,7 @@ impl PieceArt {
             let left = if highlighted { 0.5 } else { 0.0 };
             Rect::from_min_max(Pos2::new(left, 0.0), Pos2::new(left + 0.5, 1.0))
         };
-        let rect = rect.expand(padding(size) as f32 / scale);
+        let rect = rect.expand(padding(size) as f32 * rect.width() / size as f32);
         if angle == 0.0 {
             painter.image(texture.handle.id(), rect, uv, tint.gamma_multiply(alpha));
         } else {
@@ -513,6 +557,32 @@ fn dilate_mask(alpha: &[u8], n: usize, radius: usize) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn focus_animation_reuses_one_texture_across_all_sizes() {
+        let ctx = egui::Context::default();
+        let art = PieceArt::new(&ctx);
+        let cell = Rect::from_min_size(Pos2::ZERO, Vec2::splat(64.0));
+        for step in 0..=20 {
+            let focused = Rect::from_center_size(
+                cell.center(),
+                cell.size() * (1.0 + 0.12 * step as f32 / 20.0),
+            );
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                art.paint_focus(
+                    ui.painter(),
+                    PieceKind::N,
+                    Color::White,
+                    cell,
+                    focused,
+                    1.0,
+                    PieceStyle::default(),
+                    Color32::WHITE,
+                );
+            });
+            output.textures_delta.clear();
+        }
+        assert_eq!(art.textures.lock().unwrap().entries.len(), 1);
+    }
 
     #[test]
     fn texture_is_placed_one_to_one_on_physical_pixels_at_fractional_dpi() {
@@ -731,7 +801,7 @@ mod tests {
                 .all(|(_, p)| p.a() == 0),
             "canvas must not clip the glow"
         );
-        for outline in [Outline::Check, Outline::InvertedCheck] {
+        for outline in [Outline::Check, Outline::InvertedCheck, Outline::Information] {
             let styled = raster(
                 svg,
                 64,

@@ -26,6 +26,9 @@ pub enum Icon {
     ResetZoom,
     Skull,
     Information,
+    Inspect,
+    PastClock,
+    Memory,
     CancelledMove,
 }
 
@@ -60,9 +63,27 @@ pub fn icon_button(
     response.widget_info(|| {
         egui::WidgetInfo::selected(egui::WidgetType::Button, enabled, selected, label)
     });
+    let line_navigation = selected && matches!(icon, Icon::Up | Icon::Down);
+    let pressed = response.is_pointer_button_down_on();
+    if line_navigation && enabled {
+        let fill = if pressed {
+            egui::Color32::from_rgb(100, 35, 70)
+        } else if response.hovered() {
+            egui::Color32::from_rgb(245, 82, 154)
+        } else {
+            egui::Color32::from_rgb(225, 65, 133)
+        };
+        ui.painter().rect_filled(
+            response.rect,
+            ui.visuals().widgets.inactive.corner_radius,
+            fill,
+        );
+    }
     let color = if !enabled {
         SUBTLE.gamma_multiply(0.35)
-    } else if selected && matches!(icon, Icon::Worldline) {
+    } else if line_navigation && !pressed {
+        egui::Color32::WHITE
+    } else if selected && matches!(icon, Icon::Worldline | Icon::Up | Icon::Down) {
         egui::Color32::from_rgb(255, 110, 180)
     } else if selected {
         ACCENT
@@ -102,6 +123,31 @@ pub fn paint(painter: &egui::Painter, icon: Icon, rect: Rect, stroke: Stroke) {
         painter.rect_stroke(Rect::from_min_max(a, b), 2.0, stroke, StrokeKind::Inside);
     };
     match icon {
+        Icon::Inspect | Icon::Memory | Icon::Information => {
+            for outline in lucide_outline(icon) {
+                let points: Vec<_> = outline
+                    .iter()
+                    .map(|v| p(v[0] / 24.0, v[1] / 24.0))
+                    .collect();
+                if let (Some(first), Some(last)) = (points.first(), points.last()) {
+                    painter.circle_filled(*first, stroke.width * 0.5, stroke.color);
+                    painter.circle_filled(*last, stroke.width * 0.5, stroke.color);
+                }
+                painter.add(egui::Shape::line(points, stroke));
+            }
+        }
+        Icon::PastClock => {
+            let points = (0..=32)
+                .map(|i| {
+                    let angle =
+                        std::f32::consts::PI * 1.2 - i as f32 / 32.0 * std::f32::consts::TAU * 0.85;
+                    p(0.5 + 0.43 * angle.cos(), 0.5 + 0.43 * angle.sin())
+                })
+                .collect();
+            painter.add(egui::Shape::line(points, stroke));
+            line(&[(0.05, 0.08), (0.15, 0.32), (0.37, 0.22)]);
+            line(&[(0.5, 0.27), (0.5, 0.53), (0.67, 0.63)]);
+        }
         Icon::Worldline => {
             let scale = rect.height() * 0.76 / 17.0;
             for outline in pawn_outline() {
@@ -116,20 +162,6 @@ pub fn paint(painter: &egui::Painter, icon: Icon, rect: Rect, stroke: Stroke) {
             line(&[(0.32, 0.09), (0.5, -0.12), (0.68, 0.09)]);
         }
 
-        Icon::Information => {
-            line(&[
-                (0.05, 0.5),
-                (0.25, 0.28),
-                (0.5, 0.2),
-                (0.75, 0.28),
-                (0.95, 0.5),
-                (0.75, 0.72),
-                (0.5, 0.8),
-                (0.25, 0.72),
-                (0.05, 0.5),
-            ]);
-            painter.circle_stroke(p(0.5, 0.5), rect.width() * 0.16, stroke);
-        }
         Icon::CancelledMove => {
             line(&[(0.5, 0.9), (0.5, 0.1)]);
             line(&[(0.15, 0.45), (0.5, 0.1), (0.85, 0.45)]);
@@ -267,62 +299,84 @@ pub fn paint(painter: &egui::Painter, icon: Icon, rect: Rect, stroke: Stroke) {
 /// Rendering it as a stroked vector keeps the icon crisp at every UI scale.
 fn pawn_outline() -> &'static [Vec<[f32; 2]>] {
     static OUTLINE: std::sync::OnceLock<Vec<Vec<[f32; 2]>>> = std::sync::OnceLock::new();
-    OUTLINE.get_or_init(|| {
-        use resvg::{tiny_skia::PathSegment, usvg};
-        let tree = usvg::Tree::from_str(
-            include_str!("../assets/icons/tabler/chess.svg"),
-            &usvg::Options::default(),
-        )
-        .expect("embedded pawn SVG");
-        tree.root()
-            .children()
-            .iter()
-            .filter_map(|node| match node {
-                usvg::Node::Path(path) => Some(path),
-                _ => None,
-            })
-            .map(|path| {
-                let mut points = Vec::new();
-                let mut current = Vec2::ZERO;
-                for segment in path.data().segments() {
-                    let v = |p: resvg::tiny_skia::Point| Vec2::new(p.x, p.y);
-                    match segment {
-                        PathSegment::MoveTo(p) | PathSegment::LineTo(p) => {
-                            current = v(p);
-                            points.push([current.x, current.y]);
-                        }
-                        PathSegment::CubicTo(c1, c2, end) => {
-                            for i in 1..=24 {
-                                let t = i as f32 / 24.0;
-                                let u = 1.0 - t;
-                                let p = current * u.powi(3)
-                                    + v(c1) * (3.0 * u * u * t)
-                                    + v(c2) * (3.0 * u * t * t)
-                                    + v(end) * t.powi(3);
-                                points.push([p.x, p.y]);
-                            }
-                            current = v(end);
-                        }
-                        PathSegment::QuadTo(control, end) => {
-                            for i in 1..=24 {
-                                let t = i as f32 / 24.0;
-                                let u = 1.0 - t;
-                                let p = current * (u * u)
-                                    + v(control) * (2.0 * u * t)
-                                    + v(end) * (t * t);
-                                points.push([p.x, p.y]);
-                            }
-                            current = v(end);
-                        }
-                        PathSegment::Close => {
-                            if let Some(&first) = points.first() {
-                                points.push(first);
-                            }
-                        }
+    OUTLINE.get_or_init(|| svg_outlines(include_str!("../assets/icons/tabler/chess.svg")))
+}
+
+fn lucide_outline(icon: Icon) -> &'static [Vec<[f32; 2]>] {
+    static INFO: std::sync::OnceLock<Vec<Vec<[f32; 2]>>> = std::sync::OnceLock::new();
+    static BRAIN: std::sync::OnceLock<Vec<Vec<[f32; 2]>>> = std::sync::OnceLock::new();
+    static EYE: std::sync::OnceLock<Vec<Vec<[f32; 2]>>> = std::sync::OnceLock::new();
+    match icon {
+        Icon::Information => {
+            EYE.get_or_init(|| svg_outlines(include_str!("../assets/icons/lucide/eye.svg")))
+        }
+        Icon::Inspect => {
+            INFO.get_or_init(|| svg_outlines(include_str!("../assets/icons/lucide/info.svg")))
+        }
+        Icon::Memory => {
+            BRAIN.get_or_init(|| svg_outlines(include_str!("../assets/icons/lucide/brain.svg")))
+        }
+        _ => &[],
+    }
+}
+
+fn svg_outlines(svg: &str) -> Vec<Vec<[f32; 2]>> {
+    use resvg::{tiny_skia::PathSegment, usvg};
+    let tree = usvg::Tree::from_str(svg, &usvg::Options::default()).expect("embedded icon SVG");
+    let mut outlines = Vec::new();
+    for node in tree.root().children() {
+        let usvg::Node::Path(path) = node else {
+            continue;
+        };
+        let mut points = Vec::new();
+        let mut current = Vec2::ZERO;
+        let v = |p: resvg::tiny_skia::Point| Vec2::new(p.x, p.y);
+        for segment in path.data().segments() {
+            match segment {
+                PathSegment::MoveTo(p) => {
+                    if !points.is_empty() {
+                        outlines.push(std::mem::take(&mut points));
+                    }
+                    current = v(p);
+                    points.push([p.x, p.y]);
+                }
+                PathSegment::LineTo(p) => {
+                    current = v(p);
+                    points.push([p.x, p.y]);
+                }
+                PathSegment::CubicTo(c1, c2, end) => {
+                    for i in 1..=24 {
+                        let t = i as f32 / 24.0;
+                        let u = 1.0 - t;
+                        let point = current * u.powi(3)
+                            + v(c1) * (3.0 * u * u * t)
+                            + v(c2) * (3.0 * u * t * t)
+                            + v(end) * t.powi(3);
+                        points.push([point.x, point.y]);
+                    }
+                    current = v(end);
+                }
+                PathSegment::QuadTo(control, end) => {
+                    for i in 1..=24 {
+                        let t = i as f32 / 24.0;
+                        let u = 1.0 - t;
+                        let point =
+                            current * (u * u) + v(control) * (2.0 * u * t) + v(end) * (t * t);
+                        points.push([point.x, point.y]);
+                    }
+                    current = v(end);
+                }
+                PathSegment::Close => {
+                    if let Some(&first) = points.first() {
+                        points.push(first);
+                        current = Vec2::from(first);
                     }
                 }
-                points
-            })
-            .collect()
-    })
+            }
+        }
+        if !points.is_empty() {
+            outlines.push(points);
+        }
+    }
+    outlines
 }
