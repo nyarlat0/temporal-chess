@@ -290,7 +290,6 @@ impl BoardTransition {
                 reached |= until == Some(state.t);
                 if reached
                     && offset + 1 >= minimum
-                    && !state.is_loop_exit()
                     && temporal_chess_engine::model::Color::from_board(state.t) == state.color
                     && (state.rights.ordinary
                         || line

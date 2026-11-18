@@ -744,8 +744,11 @@ fn sidebar(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState) {
     if rules.wait_before_move {
         ui.small(crate::tr!("Свободное ожидание", "Free wait"));
     }
-    if rules.chain_info_activation {
-        ui.small(crate::tr!("Цепная инфоактивация", "Chain info-activation"));
+    if !rules.chain_info_activation {
+        ui.small(crate::tr!(
+            "Инфоактивация с обучением",
+            "Learn info-activation"
+        ));
     }
     if !rules.global_reaction_reset {
         ui.small(crate::tr!("Реагировать многократно", "React multiple"));
@@ -1163,17 +1166,17 @@ pub fn rule_controls(ui: &mut egui::Ui, rules: &mut temporal_chess_engine::model
         crate::tr!("Свободное ожидание", "Free wait"),
     )
     .on_hover_text(crate::tr!(
-        "Ожидание не передаёт ход. Авто-ожидание заблокированных фигур выключается; выход из петли остаётся автоматическим.",
-        "Waiting does not spend a turn. Disables automatic waits for blocked pieces; loop exits still wait automatically."
+        "Ожидание не передаёт ход. Авто-ожидание заблокированных фигур выключается.",
+        "Waiting does not spend a turn. Disables automatic waits for blocked pieces."
     ));
-    ui.checkbox(
-        &mut rules.chain_info_activation,
-        crate::tr!("Цепная инфоактивация", "Chain info-activation"),
-    )
-    .on_hover_text(crate::tr!(
-        "Новая информация активирует каждое увидевшее её состояние мировой линии.",
-        "New information activates every observing state of a worldline."
-    ));
+    let mut learn = !rules.chain_info_activation;
+    ui.checkbox(&mut learn,
+        crate::tr!("Инфоактивация с обучением", "Learn info-activation"))
+        .on_hover_text(crate::tr!(
+            "Включено: реагирует только первое увидевшее состояние каждой мировой линии. Выключено: реагируют все увидевшие состояния (по умолчанию).",
+            "On: only the first observing state of each worldline reacts. Off: all observing states react (default)."
+        ));
+    rules.chain_info_activation = !learn;
     let mut multiple = !rules.global_reaction_reset;
     ui.checkbox(&mut multiple,
         crate::tr!("Реагировать многократно", "React multiple"))
@@ -1299,6 +1302,35 @@ mod tests {
         text_position(&worldline_output, "f6");
         text_position(&worldline_output, "d7");
         text_position(&worldline_output, "a8");
+    }
+
+    #[test]
+    fn learn_info_activation_checkbox_inverts_chain_and_starts_unchecked() {
+        let ctx = egui::Context::default();
+        let mut game = GameUi {
+            confirm_restart: true,
+            ..Default::default()
+        };
+        let before = game.new_game_rules;
+        assert!(before.chain_info_activation);
+        frame(&ctx, &mut game, vec![]);
+        let output = frame(&ctx, &mut game, vec![]);
+        let position = text_position(
+            &output,
+            crate::tr!("Инфоактивация с обучением", "Learn info-activation"),
+        );
+        click(&ctx, &mut game, position);
+        assert!(!game.new_game_rules.chain_info_activation);
+        assert_eq!(
+            game.new_game_rules.global_reaction_reset,
+            before.global_reaction_reset
+        );
+        assert_eq!(
+            game.new_game_rules.wait_before_move,
+            before.wait_before_move
+        );
+        click(&ctx, &mut game, position);
+        assert_eq!(game.new_game_rules, before);
     }
 
     #[test]

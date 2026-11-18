@@ -225,7 +225,7 @@ impl GameRecord {
             "NOLAN-CHESS 1" => GameRules {
                 wait_before_move: true,
                 global_reaction_reset: false,
-                ..Default::default()
+                chain_info_activation: false,
             },
             "NOLAN-CHESS 2" => {
                 let (line, mode) = lines
@@ -235,7 +235,7 @@ impl GameRecord {
                     "causal_gaps off" => GameRules {
                         wait_before_move: true,
                         global_reaction_reset: false,
-                        ..Default::default()
+                        chain_info_activation: false,
                     },
                     "causal_gaps on" => {
                         return Err(error(line, "Режим причинных разрывов удалён".into()));

@@ -120,7 +120,7 @@ fn records_keep_independent_rules_and_reject_removed_gap_mode() {
         crate::model::GameRules {
             wait_before_move: true,
             global_reaction_reset: false,
-            ..Default::default()
+            chain_info_activation: false,
         }
     );
 }

@@ -63,7 +63,7 @@ impl Default for GameRules {
     fn default() -> Self {
         Self {
             wait_before_move: false,
-            chain_info_activation: false,
+            chain_info_activation: true,
             global_reaction_reset: true,
         }
     }
@@ -415,7 +415,7 @@ impl State {
         self.kind = kind;
     }
 
-    /// The returning occurrence at a pivot must wait before moving again.
+    /// A returning occurrence exactly at a remembered temporal pivot.
     pub fn is_loop_exit(&self) -> bool {
         !self.inverted && self.loop_pivots.last() == Some(&self.t)
     }

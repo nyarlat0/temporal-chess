@@ -10,15 +10,8 @@ impl Engine {
     /// first move to a board where it can act.
     fn prune_immobile_undo_reactions(&mut self) -> Result<bool, EngineErr> {
         let mut clear = Vec::new();
-        let mut exits = Vec::new();
         for (wid, line) in self.history.worldlines.iter().enumerate() {
             for (age, state) in line.iter().enumerate() {
-                if state.is_loop_exit()
-                    && (state.rights.is_reaction()
-                        || (age + 1 < line.len() && state.rights.ordinary))
-                {
-                    exits.push((wid, age, age + 1 == line.len()));
-                }
                 if state.alive
                     && state.rights.cancelled_move
                     && self.board(state.t).is_some()
@@ -31,14 +24,7 @@ impl Engine {
         for &(wid, age) in &clear {
             self.history.worldlines[wid][age].rights.cancelled_move = false;
         }
-        for &(wid, age, terminal) in &exits {
-            if terminal {
-                self.history.worldlines[wid][age].rights.expire_reactions();
-            } else {
-                self.history.worldlines[wid][age].rights = Default::default();
-            }
-        }
-        Ok(!clear.is_empty() || !exits.is_empty())
+        Ok(!clear.is_empty())
     }
     /// A collision cycle can prevent the chronological frontier from reaching
     /// the move which created that collision. Before declaring a paradox, cancel

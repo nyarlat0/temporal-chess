@@ -18,7 +18,7 @@ impl Engine {
         }
         let mut endpoint_age = age + 2;
         let mut endpoint = line.get(endpoint_age)?;
-        while endpoint.is_loop_exit() || Color::from_board(endpoint.t) != endpoint.color {
+        while Color::from_board(endpoint.t) != endpoint.color {
             if !endpoint.alive
                 || crate::model::Sq(endpoint.x, endpoint.y) != mv.sq
                 || line.gap_after(endpoint_age).is_some()
@@ -102,12 +102,12 @@ impl Engine {
             let line = &self.history.worldlines[wid];
             let age = line.len() - 1;
             let state = &line[age];
-            if (self.history.rules.wait_before_move || !blocked) && !state.is_loop_exit() {
+            if self.history.rules.wait_before_move || !blocked {
                 continue;
             }
             if line.is_borrowed(age)
                 || !state.alive
-                || (!state.rights.is_movable() && !state.is_loop_exit())
+                || !state.rights.is_movable()
                 || Color::from_board(state.t) != state.color
                 || self.board(state.t).is_none()
                 || self

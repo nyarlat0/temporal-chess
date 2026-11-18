@@ -5,10 +5,9 @@ use temporal_chess_engine::{
 };
 
 #[test]
-fn inverted_king_waits_replay_in_the_reported_castling_position() {
-    let text = include_str!("fixtures/castling_missing_rook_revalidation.nolan");
-    let (engine, record) =
-        GameRecord::load(&text.lines().take(33).collect::<Vec<_>>().join("\n")).unwrap();
+fn inverted_king_waits_replay_with_updated_collision_rules() {
+    let text = include_str!("fixtures/king_inversion_wait.nolan");
+    let (engine, record) = GameRecord::load(text).unwrap();
     accepted_moves(&engine, &record);
     let mut checked_waits = 0;
     for king in engine.move_sources().filter(|p| p.origin == 4) {
@@ -16,7 +15,7 @@ fn inverted_king_waits_replay_in_the_reported_castling_position() {
             .possible_moves(king.origin, king.age)
             .unwrap()
             .into_iter()
-            .filter(|mv| mv.to_past() && mv.sq == Sq(7, 0))
+            .filter(|mv| mv.to_past() && mv.sq == Sq(5, 2))
         {
             let waits = engine.possible_move_waits(mv).unwrap();
             for until in waits {
@@ -125,23 +124,21 @@ fn king_can_invert_into_a_pawns_origin_and_replay_the_result() {
     }
 }
 
-// The former long collision regressions contained spatial moves at loop exits.
-// Their engine mechanisms now have minimal unit fixtures independent of that
-// obsolete sequence (castling cancellation, dead-source replacement, cycles).
 #[test]
-fn archived_loop_exit_journals_report_the_first_obsolete_command() {
+fn archived_explicit_loop_exit_waits_are_playable_again() {
     for text in [
         include_str!("fixtures/castling_rook_collision.nolan"),
         include_str!("fixtures/knight_capture_paradox.nolan"),
     ] {
-        let error = GameRecord::load(text).unwrap_err();
-        // The return to t=2 automatically continues to t=4. The old explicit
-        // advance from that exit is no longer an available command.
-        assert_eq!(error.line, 8);
-        let prefix = text.lines().take(7).collect::<Vec<_>>().join("\n");
+        // The first eight lines include the explicit wait from the returning
+        // state which the previous mandatory-loop-wait rule rejected.
+        let prefix = text.lines().take(8).collect::<Vec<_>>().join("\n");
         let (engine, record) = GameRecord::load(&prefix).unwrap();
-        assert!(!accepted_moves(&engine, &record).is_empty());
         assert_eq!(GameRecord::load(&record.to_text()).unwrap().0, engine);
+        assert_eq!(
+            Engine::from_history(engine.history().clone(), engine.turn()).unwrap(),
+            engine
+        );
     }
 }
 

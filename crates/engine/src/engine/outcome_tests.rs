@@ -571,7 +571,7 @@ fn an_inverted_wait_reaches_zero_but_cannot_discard_its_boundary_right() {
 }
 
 #[test]
-fn mandatory_wait_crosses_pivot_without_recording_an_extra_move() {
+fn optional_wait_crosses_pivot_without_recording_an_extra_spatial_move() {
     let mut knight = line(PieceKind::N, Color::White, Sq(1, 0), 6);
     for t in [0, 2, 4, 6] {
         knight[t].rights.ordinary = true;
@@ -590,6 +590,13 @@ fn mandatory_wait_crosses_pivot_without_recording_an_extra_move() {
         .find(|mv| mv.direction == TimeDirection::Future && mv.sq == Sq(4, 3))
         .unwrap();
     engine.apply_new_mv(mv).unwrap();
+    engine.turn = Color::White;
+    let endpoint = engine
+        .move_sources()
+        .find(|p| p.origin == 0 && p.t == 4 && p.loop_turn == 2)
+        .unwrap();
+    assert!(!engine.possible_moves(0, endpoint.age).unwrap().is_empty());
+    engine.skip_ordinary(Engine::piece_at(endpoint), 6).unwrap();
     engine.turn = Color::White;
     let journal = engine.history.moves.clone();
     assert_eq!(engine.history.worldlines[0].last().unwrap().t, 6);

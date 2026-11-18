@@ -458,8 +458,42 @@ fn collision_policy_covers_colors_directions_and_future_knowledge() {
     informed.fut_seen = 3;
     assert_eq!(
         plan(informed, mover, target),
-        vec![KillFrom(ShortPieceId { wid: 1, age: 1 })]
+        vec![KillFrom(ShortPieceId { wid: 0, age: 1 })]
     );
+}
+
+#[test]
+fn inverted_enemy_always_wins_oncoming_contact_with_either_color_and_arrival() {
+    for color in [Color::White, Color::Black] {
+        for seen in [2, 4, 10] {
+            for moved in [false, true] {
+                let mut before = State::new(PieceKind::N, color, Sq(1, 0));
+                before.t = 2;
+                before.fut_seen = seen;
+                let mut ordinary = before.prolongate().unwrap();
+                if moved {
+                    ordinary.x = 2;
+                    ordinary.y = 2;
+                }
+                let mut inv = ordinary.clone();
+                inv.color = color.opposite();
+                inv.inverted = true;
+                for (a, b) in [(0, 1), (1, 0)] {
+                    let mut engine = Engine::default();
+                    engine.history.worldlines = vec![
+                        vec![before.clone(), ordinary.clone()].into(),
+                        vec![inv.clone()].into(),
+                    ];
+                    let pair = [engine.get_piv(0, 1).unwrap(), engine.get_piv(1, 0).unwrap()];
+                    let tracked = engine.track_collision(pair[a], pair[b]).unwrap();
+                    assert_eq!(
+                        collision_effects(tracked),
+                        vec![CollisionEffect::KillFrom(ShortPieceId { wid: 0, age: 1 })]
+                    );
+                }
+            }
+        }
+    }
 }
 
 #[test]

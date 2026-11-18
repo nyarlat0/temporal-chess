@@ -281,9 +281,6 @@ impl Engine {
         recorded: Option<Move>,
     ) -> Result<Vec<Move>, EngineErr> {
         let piece = self.get_piv(wid, age).ok_or(EngineErr::WrongPiece)?;
-        if self.history.worldlines[wid][age].is_loop_exit() {
-            return Ok(Vec::new());
-        }
 
         let source = self.board(piece.t).ok_or(EngineErr::AbsentBoard)?;
         let candidate = |sq, direction, effect| Move {

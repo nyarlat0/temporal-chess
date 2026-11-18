@@ -30,11 +30,7 @@ pub(super) fn collision_effects(collision: PieceCollision) -> Vec<CollisionEffec
             vec![CancelLastMove(collider)]
         }
     } else if oncoming {
-        if bf_collider.sq != collider.sq && bf_collider.knows_future() {
-            vec![kill(collided)]
-        } else {
-            vec![kill(collider)]
-        }
+        vec![kill(collider)]
     } else if matches!(bf_collider.kind, PieceKind::P { .. })
         && (bf_collider.sq.0.abs_diff(collider.sq.0) != 1
             || collider.sq.1 as isize - bf_collider.sq.1 as isize

@@ -1381,10 +1381,8 @@ impl GameUi {
 mod tests {
     #[test]
     fn cancellations_follow_spatial_travel_and_are_not_in_last_move_preview() {
-        let text =
-            include_str!("../../engine/tests/fixtures/castling_missing_rook_revalidation.nolan");
-        let (engine, record) =
-            GameRecord::load(&text.lines().take(33).collect::<Vec<_>>().join("\n")).unwrap();
+        let text = include_str!("../../engine/tests/fixtures/castling_inversion_cancel.nolan");
+        let (engine, record) = GameRecord::load(text).unwrap();
         let mut game = GameUi {
             engine,
             record,
@@ -1393,7 +1391,7 @@ mod tests {
         let king = game
             .engine
             .move_sources()
-            .find(|p| p.origin == 4 && p.t == 20)
+            .find(|p| p.origin == 4 && p.t == 8)
             .unwrap();
         let mv = game
             .engine
@@ -1402,16 +1400,12 @@ mod tests {
             .into_iter()
             .find(|m| m.to_past() && m.sq == Sq(7, 0))
             .unwrap();
-        game.apply_confirmed(Command::MoveAndWait {
-            mv,
-            from: king.sq,
-            until: 12,
-        })
-        .unwrap();
+        game.apply_confirmed(Command::Move { mv, from: king.sq })
+            .unwrap();
         assert!(!game.cancellation_show);
         assert_eq!(
             game.cancellations.iter().map(|a| a.t).collect::<Vec<_>>(),
-            [11, 19]
+            [7, 7]
         );
         let castle = &game.cancellations[0];
         assert!(
@@ -1431,13 +1425,13 @@ mod tests {
         game.transition = None;
         game.transition_queue.clear();
         game.move_focus_pending = false;
-        game.show_next_cancellation(12);
+        game.show_next_cancellation(0);
         assert!(game.playback_busy() && game.cancellation_show && game.cancellation_focus_pending);
-        assert_eq!(game.jump_to, Some(11));
+        assert_eq!(game.jump_to, Some(7));
         assert!(!game.returning_camera);
         game.cancellations.pop_front();
-        game.show_next_cancellation(11);
-        assert_eq!(game.jump_to, Some(19));
+        game.show_next_cancellation(7);
+        assert_eq!(game.jump_to, Some(7));
         let engine = game.engine.clone();
         let record = game.record.clone();
         game.reset_playback();

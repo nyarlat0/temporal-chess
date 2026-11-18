@@ -21,7 +21,7 @@ fn line(kind: PieceKind, side: Color, sq: Sq, inverted: bool) -> Vec<State> {
 }
 
 fn observed(inverted: bool) -> Engine {
-    Engine::from_worldlines(
+    Engine::from_worldlines_with_rules(
         vec![
             line(
                 PieceKind::R { moved: true },
@@ -32,6 +32,10 @@ fn observed(inverted: bool) -> Engine {
             line(PieceKind::N, Color::Black, Sq(0, 4), false),
         ],
         Color::White,
+        crate::model::GameRules {
+            chain_info_activation: false,
+            ..Default::default()
+        },
     )
     .unwrap()
 }

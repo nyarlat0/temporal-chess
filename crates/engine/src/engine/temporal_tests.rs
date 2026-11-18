@@ -60,6 +60,16 @@ fn play(
     mv
 }
 
+fn wait_to(engine: &mut Engine, until: BoardTime) {
+    engine.turn = Color::White;
+    let piece = engine
+        .get_piv(0, engine.history.worldlines[0].len() - 1)
+        .unwrap();
+    engine
+        .skip_ordinary(Engine::piece_at(piece), until)
+        .unwrap();
+}
+
 #[test]
 fn latest_board_departure_has_no_copy_on_the_new_future_board() {
     let mut engine = game(4);
@@ -88,6 +98,7 @@ fn inversion_discards_future_and_return_builds_a_new_continuation() {
     assert!(engine.history.worldlines[0].gaps().is_empty());
     assert!(engine.history.worldlines[0].iter().all(|s| s.t <= 4));
     play(&mut engine, 2, 1, TimeDirection::Future, Sq(4, 3));
+    wait_to(&mut engine, 6);
     assert_eq!(engine.history.worldlines[0][8].loop_turn, 2);
     let states = &engine.history.worldlines[0];
     assert_eq!(states.len(), 11);
@@ -121,6 +132,7 @@ fn nested_turns_repay_each_pivot_once() {
     play(&mut engine, 2, 1, TimeDirection::Future, Sq(5, 5));
     play(&mut engine, 4, 2, TimeDirection::Past, Sq(7, 4));
     play(&mut engine, 2, 3, TimeDirection::Future, Sq(5, 3));
+    wait_to(&mut engine, 8);
     let tip = engine.history.worldlines[0].last().unwrap();
     assert_eq!((tip.t, tip.loop_turn), (8, 0));
     assert!(
@@ -243,6 +255,7 @@ fn inversion_removes_preexisting_future_moves_without_restoring_them_on_return()
     play(&mut engine, 4, 0, TimeDirection::Past, Sq(2, 2));
     assert!(!engine.history.moves.contains_key(&future_move.id()));
     play(&mut engine, 2, 1, TimeDirection::Future, Sq(4, 3));
+    wait_to(&mut engine, 6);
     assert_eq!(engine.history.worldlines[0].last().unwrap().t, 6);
     assert!(!engine.history.moves.contains_key(&future_move.id()));
     assert!(engine.history.worldlines[0].gaps().is_empty());
@@ -257,6 +270,7 @@ fn a_completed_loop_can_be_replaced_without_leaving_stale_moves_or_states() {
     let mut engine = game(6);
     let root = play(&mut engine, 4, 0, TimeDirection::Past, Sq(2, 2));
     let returning = play(&mut engine, 2, 1, TimeDirection::Future, Sq(4, 3));
+    wait_to(&mut engine, 6);
     let closing = play(&mut engine, 6, 0, TimeDirection::Future, Sq(2, 4));
     let source = engine.projection.pieces[&root.source()];
     engine.history.worldlines[0][source.age].rights.ordinary = true;
@@ -285,6 +299,7 @@ fn replacing_an_inner_return_discards_its_tail_and_closes_without_gaps() {
     assert_eq!(engine.history.worldlines[0].len(), inner_source + 3);
     play(&mut engine, 2, 3, TimeDirection::Future, Sq(5, 3));
     assert!(engine.history.worldlines[0].gaps().is_empty());
+    wait_to(&mut engine, 8);
     assert_eq!(engine.history.worldlines[0].last().unwrap().t, 8);
     assert!(engine.history.worldlines[0].gaps().is_empty());
     assert_eq!(
@@ -348,6 +363,7 @@ fn a_frontier_loop_closes_without_duplicating_its_incarnation() {
     let mut engine = game(4);
     play(&mut engine, 4, 0, TimeDirection::Past, Sq(2, 2));
     play(&mut engine, 2, 1, TimeDirection::Future, Sq(4, 3));
+    play(&mut engine, 4, 2, TimeDirection::Future, Sq(2, 4));
     assert!(engine.history.worldlines[0].gaps().is_empty());
     assert_eq!(engine.board(5).unwrap().find_by_origin(0).len(), 1);
     assert_eq!(engine.history.worldlines[0].last().unwrap().loop_turn, 0);

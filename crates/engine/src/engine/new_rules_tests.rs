@@ -102,13 +102,15 @@ fn paid_and_free_standalone_waits_replay_and_paid_wait_is_undoable() {
         }
     }
     assert!(GameRules::default().global_reaction_reset);
+    assert!(GameRules::default().chain_info_activation);
     let text = GameRecord::default().to_text();
     assert!(text.contains("react_multiple off"));
+    assert!(text.contains("chain_info_activation on"));
     assert!(text.contains("free_wait off"));
 }
 
 #[test]
-fn loop_exit_always_waits_and_cannot_be_reactivated_for_a_spatial_move() {
+fn loop_exit_can_move_or_explicitly_wait_and_can_react_to_information() {
     for free in [false, true] {
         let mut knight = vec![State::new(PieceKind::N, Color::White, Sq(1, 0))];
         let mut enemy = vec![State::new(
@@ -149,19 +151,33 @@ fn loop_exit_always_waits_and_cannot_be_reactivated_for_a_spatial_move() {
         assert!(engine.possible_move_waits(returning).unwrap().contains(&6));
         let waited = engine.after_move_with_wait(returning, 6).unwrap();
         engine.apply_new_mv(returning).unwrap();
-        assert_eq!(waited, engine);
+        assert_eq!(waited.history.worldlines[0].last().unwrap().t, 6);
         let exit = engine.history.worldlines[0]
             .iter()
             .position(State::is_loop_exit)
             .unwrap();
-        assert_eq!(engine.history.worldlines[0][exit].t, 4);
-        assert!(!engine.history.worldlines[0][exit].rights.is_movable());
-        assert_eq!(engine.history.worldlines[0].last().unwrap().t, 6);
-        engine.history.worldlines[0][exit].rights.cancelled_move = true;
-        engine.history.worldlines[0][exit].rights.ordinary = true;
-        assert!(engine.possible_moves(0, exit).unwrap().is_empty());
-        engine.reconcile().unwrap();
-        assert!(!engine.history.worldlines[0][exit].rights.is_movable());
+        assert_eq!(engine.history.worldlines[0].last().unwrap().t, 4);
+        assert!(engine.history.worldlines[0][exit].rights.ordinary);
+        engine.turn = Color::White;
+        let moves = engine.possible_moves(0, exit).unwrap();
+        let next = moves
+            .into_iter()
+            .find(|m| !m.to_past() && m.sq == Sq(2, 6))
+            .unwrap();
+        engine.apply_new_mv(next).unwrap();
+        assert_eq!(engine.history.worldlines[0].last().unwrap().loop_turn, 0);
+        assert_eq!(
+            Engine::from_history(engine.history.clone(), engine.turn).unwrap(),
+            engine
+        );
+        let mut reactive = waited;
+        reactive.history.worldlines[1][4].x = 2;
+        reactive.history.worldlines[1][4].y = 6;
+        reactive.turn = Color::White;
+        reactive.reconcile().unwrap();
+        let state = &reactive.history.worldlines[0][exit];
+        assert!(state.rights.new_information);
+        assert!(!reactive.possible_moves(0, exit).unwrap().is_empty());
     }
 }
 
@@ -226,7 +242,7 @@ fn paid_wait_resets_reactions_according_to_react_multiple_and_free_wait_does_not
 }
 
 #[test]
-fn nested_loop_exits_wait_through_both_pivots_even_in_free_wait_mode() {
+fn nested_loop_exit_stays_active_without_forced_wait_in_free_wait_mode() {
     let mut exit = State::new(PieceKind::N, Color::White, Sq(1, 0));
     exit.t = 4;
     exit.fut_seen = 6;
@@ -246,11 +262,9 @@ fn nested_loop_exits_wait_through_both_pivots_even_in_free_wait_mode() {
     )
     .unwrap();
     let line = &engine.history.worldlines[0];
-    assert_eq!(line.last().unwrap().t, 8);
-    assert_eq!(line.last().unwrap().loop_turn, 0);
-    assert!(
-        line.iter()
-            .filter(|s| s.t == 4 || s.t == 6)
-            .all(|s| !s.rights.is_movable())
-    );
+    assert_eq!(line.len(), 1);
+    assert_eq!(line[0].t, 4);
+    assert_eq!(line[0].loop_turn, 4);
+    assert!(line[0].rights.ordinary);
+    assert!(!engine.possible_moves(0, 0).unwrap().is_empty());
 }
