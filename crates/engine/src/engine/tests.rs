@@ -556,7 +556,7 @@ fn castling_separates_source_participants_from_destination_occupancy() {
 }
 
 #[test]
-fn backward_castling_requires_two_inverted_participants_and_can_be_cancelled() {
+fn backward_castling_accepts_either_orientation_and_cancels_both_participants() {
     for color in [Color::White, Color::Black] {
         for side in [Castling::Short, Castling::Long] {
             for (king_inv, rook_inv) in [(false, false), (false, true), (true, false), (true, true)]
@@ -586,17 +586,26 @@ fn backward_castling_requires_two_inverted_participants_and_can_be_cancelled() {
                     .unwrap()
                     .into_iter()
                     .find(|mv| mv.castling() == Some(side) && mv.to_past());
-                assert_eq!(
+                assert!(
                     castle.is_some(),
-                    king_inv && rook_inv,
                     "{color:?} {side:?} king={king_inv} rook={rook_inv}"
                 );
                 if let Some(castle) = castle {
                     engine.apply_new_mv(castle).unwrap();
+                    assert!(
+                        engine
+                            .history
+                            .moves
+                            .values()
+                            .any(|mv| mv.t == castle.t && mv.castling() == Some(side)),
+                        "castling immediately cancelled: {color:?} {side:?} king={king_inv} rook={rook_inv}"
+                    );
                     let arrival = engine.history.worldlines[1]
                         .iter()
                         .enumerate()
-                        .find(|(_, s)| s.t == t - 1)
+                        .find(|(_, s)| {
+                            s.t == t - 1 && s.inverted && s.kind == (PieceKind::R { moved: true })
+                        })
                         .map(|(age, s)| PieceView::from_state(s, 1, age))
                         .unwrap();
                     assert_eq!(arrival.t, t - 1);
@@ -606,8 +615,25 @@ fn backward_castling_requires_two_inverted_participants_and_can_be_cancelled() {
                     );
                     engine.undo_last_mv(arrival).unwrap();
                     engine.reconcile().unwrap();
-                    assert!(!engine.history.moves.contains_key(&castle.id()));
-                    for (wid, x) in [(0, 4), (1, rook_x)] {
+                    assert!(
+                        !engine
+                            .history
+                            .moves
+                            .values()
+                            .any(|mv| mv.t == castle.t && mv.castling() == Some(side))
+                    );
+                    for (wid, x, inverted) in [(0, 4, king_inv), (1, rook_x, rook_inv)] {
+                        if !inverted {
+                            let line = &engine.history.worldlines[wid];
+                            assert_eq!(
+                                line.last().unwrap().t,
+                                t,
+                                "cancelled inversion left a phantom route: {line:?}"
+                            );
+                            assert!(line.iter().all(|s| !s.inverted && (s.x, s.y) == (x, y)));
+                            assert!(line.last().unwrap().rights.ordinary);
+                            continue;
+                        }
                         let restored = engine.history.worldlines[wid]
                             .iter()
                             .enumerate()

@@ -307,21 +307,10 @@ impl Engine {
             for square in piece.basic_moves(&board) {
                 directed.push(candidate(square, direction, MoveEffect::Normal));
             }
-            // Backward castling requires both participants to already be inverted.
-            if direction == TimeDirection::Future || piece.inverted {
-                for (square, castling) in
-                    piece.castling_moves_with_attacks(&board, source, |_| false)
-                {
-                    let rook_x = if castling == Castling::Long { 0 } else { 7 };
-                    if direction == TimeDirection::Past
-                        && !source
-                            .get_piece(rook_x, piece.sq.1)
-                            .is_some_and(|rook| rook.inverted)
-                    {
-                        continue;
-                    }
-                    directed.push(candidate(square, direction, MoveEffect::Castle(castling)));
-                }
+            // Castling is a joint temporal move: both participants take the
+            // chosen direction, turning if needed just like any other move.
+            for (square, castling) in piece.castling_moves_with_attacks(&board, source, |_| false) {
+                directed.push(candidate(square, direction, MoveEffect::Castle(castling)));
             }
             let previous_time = match direction {
                 TimeDirection::Future => piece.t.checked_sub(1),

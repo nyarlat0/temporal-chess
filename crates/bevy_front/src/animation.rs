@@ -118,6 +118,7 @@ pub struct BoardTransition {
     clock: AnimationClock,
 }
 
+#[derive(Clone)]
 pub struct CancellationAnimation {
     pub t: BoardTime,
     pub before: Vec<PieceView>,

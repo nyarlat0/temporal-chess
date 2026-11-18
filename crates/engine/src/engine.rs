@@ -28,6 +28,8 @@ use types::{PieceCollision, Projection, ValidRes};
 #[cfg(test)]
 mod calculation_tests;
 #[cfg(test)]
+mod castling_tests;
+#[cfg(test)]
 mod outcome_tests;
 #[cfg(test)]
 mod temporal_tests;

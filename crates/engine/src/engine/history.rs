@@ -31,18 +31,35 @@ impl Engine {
         let states = wl.get(start..piv.age).ok_or(EngineErr::WrongPiece)?;
         for (offset, state) in states.iter().enumerate().rev() {
             let id = MoveId::from_state(state);
-            let Some(&mv) = self.history.moves.get(&id) else {
-                continue;
-            };
-            if mv.pid.wid == piv.origin {
+            if self
+                .history
+                .moves
+                .get(&id)
+                .is_some_and(|mv| mv.pid.wid == piv.origin)
+            {
                 return self.undo_mv(id);
             }
             // Castling is one command recorded on the king, but also causes
             // a transition in the rook's worldline. A collision involving that
             // transition must cancel the whole castling, not search for a
             // nonexistent independent rook command (or cancel an older move).
-            if let Some(castling) = mv.castling()
-                && matches!(state.kind, PieceKind::R { .. })
+            // The rook need not share the king's fut_seen/loop_turn. Search
+            // compound commands by the actual participant, not its shared slot.
+            if !matches!(state.kind, PieceKind::R { .. }) || ![0, 7].contains(&state.x) {
+                continue;
+            }
+            for (mv, castling) in self
+                .history
+                .moves
+                .range(
+                    MoveId {
+                        t: state.t,
+                        fut_seen: state.t,
+                        loop_turn: 0,
+                    }..,
+                )
+                .take_while(|(id, _)| id.t == state.t)
+                .filter_map(|(_, &mv)| mv.castling().map(|side| (mv, side)))
             {
                 let king = self.occurrence(mv.source()).ok_or(EngineErr::WrongPiece)?;
                 let rook_x = match castling {
@@ -56,7 +73,7 @@ impl Engine {
                     .historical_castling_rook(mv, king)
                     .is_some_and(|rook| rook.origin == piv.origin && rook.age == start + offset)
                 {
-                    return self.undo_mv(id);
+                    return self.undo_mv(mv.id());
                 }
             }
         }
@@ -111,6 +128,18 @@ impl Engine {
                 .during(format!("cancelling {mv:?}"))
         })?;
         self.undo_castling_rook(mv, bf_piv)?;
+        self.undo_piece_transition(mv, bf_piv, true)
+    }
+
+    /// Restore a participant's spatial change and temporal turn together. Only
+    /// the command's mover receives an undo reaction; the castling rook shares
+    /// that command and must not acquire an independent extra turn.
+    fn undo_piece_transition(
+        &mut self,
+        mv: super::Move,
+        bf_piv: PieceView,
+        react: bool,
+    ) -> Result<(), EngineErr> {
         if mv.to_past() != bf_piv.inverted {
             if mv.to_past() {
                 self.cancel_past_route(bf_piv)?;
@@ -131,8 +160,10 @@ impl Engine {
                 let next = source.prolongate().ok_or(EngineErr::WrongMove)?;
                 self.advance_route(bf_piv.origin, bf_piv.age, next)?;
                 let source = &mut self.history.worldlines[bf_piv.origin][bf_piv.age];
-                source.rights.cancelled_move = true;
-                source.rights.new_information = false;
+                if react {
+                    source.rights.cancelled_move = true;
+                    source.rights.new_information = false;
+                }
                 self.update_bufs()?;
                 return Ok(());
             }
@@ -158,12 +189,11 @@ impl Engine {
                 let source = self.history.worldlines[bf_piv.origin][bf_piv.age].clone();
                 self.relocate_from(bf_piv.origin, bf_piv.age + 1, &source);
             }
-            self.history.worldlines[bf_piv.origin][bf_piv.age]
-                .rights
-                .cancelled_move = true;
-            self.history.worldlines[bf_piv.origin][bf_piv.age]
-                .rights
-                .new_information = false;
+            if react {
+                let source = &mut self.history.worldlines[bf_piv.origin][bf_piv.age];
+                source.rights.cancelled_move = true;
+                source.rights.new_information = false;
+            }
             self.update_bufs()?;
             return Ok(());
         }
@@ -181,7 +211,7 @@ impl Engine {
             .ok_or(EngineErr::WrongPiece)?;
 
         // Cancellation grants a reaction without granting an ordinary move.
-        {
+        if react {
             let mv_st = wl.get_mut(bf_piv.age).ok_or(EngineErr::WrongPiece)?;
             mv_st.rights.cancelled_move = true;
             mv_st.rights.new_information = false;
@@ -209,6 +239,11 @@ impl Engine {
         king: PieceView,
     ) -> Result<(), EngineErr> {
         if let Some(rook) = self.historical_castling_rook(mv, king) {
+            if mv.to_past() != rook.inverted {
+                // A turning rook owns its own loop, not just the king's spatial
+                // displacement. Cancel that route with the same rules as the king.
+                return self.undo_piece_transition(mv, rook, false);
+            }
             let line = &self.history.worldlines[rook.origin];
             if line.get(rook.age + 1).is_none() {
                 return Err(EngineErr::WrongPiece);

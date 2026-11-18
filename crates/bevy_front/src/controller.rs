@@ -134,6 +134,7 @@ enum ReplayKind {
 
 pub struct MovePlayback {
     transitions: std::collections::VecDeque<BoardTransition>,
+    cancellations: std::collections::VecDeque<CancellationAnimation>,
     destination: BoardTime,
 }
 
@@ -367,12 +368,14 @@ impl GameUi {
         self.reset_playback();
         let Some(clip) = &self.last_move else { return };
         self.transition_queue = clip.transitions.clone();
-        self.playback_destination = Some(clip.destination);
+        self.cancellations = clip.cancellations.clone();
+        let destination = clip.destination;
+        self.playback_destination = Some(destination);
         self.playback_turn = Some(self.engine.turn());
-        if !self.focus_move_source() {
-            return;
-        }
         self.replaying_move = true;
+        if !self.focus_move_source() {
+            self.show_next_cancellation(destination);
+        }
     }
 
     /// The first transition must wait until its source is on screen. In
@@ -386,7 +389,12 @@ impl GameUi {
         self.move_focus_pending
     }
 
-    fn move_clip(before: &Engine, after: &Engine, command: Command) -> Option<MovePlayback> {
+    fn move_clip(
+        before: &Engine,
+        after: &Engine,
+        command: Command,
+        cancellations: &std::collections::VecDeque<CancellationAnimation>,
+    ) -> Option<MovePlayback> {
         let path = BoardTransition::command_path(after, command);
         let mut transitions = path
             .windows(2)
@@ -405,12 +413,10 @@ impl GameUi {
         // the spatial arrival, which must play before showing its cancellation.
         if let Some(mv) = command.spatial_move()
             && after.history().moves().get(&mv.id()) != Some(&mv)
-            && let Some(undo) = CancellationAnimation::collect(before, after, Some(mv))
-                .into_iter()
-                .find(|a| {
-                    a.t == mv.direction.step(mv.t).unwrap_or(mv.t)
-                        && a.mover.is_some_and(|p| p.origin == mv.pid.wid)
-                })
+            && let Some(undo) = cancellations.iter().find(|a| {
+                a.t == mv.direction.step(mv.t).unwrap_or(mv.t)
+                    && a.mover.is_some_and(|p| p.origin == mv.pid.wid)
+            })
             && let Some(mover) = undo.mover
             && let Some(source) = before.preboard(mv.t).and_then(|b| {
                 b.space
@@ -443,7 +449,7 @@ impl GameUi {
                 fall_sign: 1.0,
             });
         }
-        (!transitions.is_empty()).then(|| MovePlayback {
+        (!transitions.is_empty() || !cancellations.is_empty()).then(|| MovePlayback {
             destination: command
                 .wait_until()
                 .or_else(|| {
@@ -454,6 +460,7 @@ impl GameUi {
                 .or_else(|| path.last().copied())
                 .unwrap_or(0),
             transitions,
+            cancellations: cancellations.clone(),
         })
     }
 
@@ -1045,7 +1052,8 @@ impl GameUi {
                     })
                 );
                 if !paradox && has_travel {
-                    self.last_move = Self::move_clip(&before, &self.engine, command);
+                    self.last_move =
+                        Self::move_clip(&before, &self.engine, command, &self.cancellations);
                     if let Some(clip) = &self.last_move {
                         self.transition_queue = clip.transitions.clone();
                     }
@@ -1198,7 +1206,9 @@ impl GameUi {
                     record
                         .apply(&mut engine, command)
                         .map_err(|error| error.to_string())?;
-                    Self::move_clip(&before, &engine, command)
+                    let cancellations =
+                        CancellationAnimation::collect(&before, &engine, command.spatial_move());
+                    Self::move_clip(&before, &engine, command, &cancellations)
                 } else {
                     None
                 };
@@ -1391,7 +1401,7 @@ impl GameUi {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn cancellations_follow_spatial_travel_and_are_not_in_last_move_preview() {
+    fn cancellations_follow_spatial_travel_and_repeat_in_last_move_preview() {
         let text = include_str!("../../engine/tests/fixtures/castling_inversion_cancel.nolan");
         let (engine, record) = GameRecord::load(text).unwrap();
         let mut game = GameUi {
@@ -1448,7 +1458,51 @@ mod tests {
         game.reset_playback();
         game.replay_last_move();
         assert!(game.replaying_move);
-        assert!(game.cancellations.is_empty() && !game.cancellation_show);
+        assert!(!game.cancellation_show, "travel must precede cancellations");
+        assert_eq!(
+            game.cancellations.iter().map(|a| a.t).collect::<Vec<_>>(),
+            [7, 7]
+        );
+        assert_eq!(game.cancellations[1].mover.unwrap().sq, Sq(7, 0));
+        assert!(game.cancellations.iter().all(|a| !a.started));
+        game.cancellations.front_mut().unwrap().start();
+        game.reset_playback();
+        game.replay_last_move();
+        assert_eq!(game.cancellations.len(), 2);
+        assert!(
+            game.cancellations.iter().all(|a| !a.started),
+            "each replay needs fresh cancellation clocks"
+        );
+        game.transition = None;
+        game.transition_queue.clear();
+        game.move_focus_pending = false;
+        game.show_next_cancellation(0);
+        assert!(game.cancellation_show && game.cancellation_focus_pending);
+        assert_eq!(game.jump_to, Some(7));
+        assert!(!game.returning_camera);
+        game.cancellations.pop_front();
+        game.show_next_cancellation(7);
+        assert!(game.cancellation_show);
+        game.cancellations.pop_front();
+        game.show_next_cancellation(7);
+        assert!(!game.cancellation_show && game.returning_camera);
+        assert_eq!(game.engine, engine);
+        assert_eq!(game.record, record);
+
+        // Imported/network-restored games reconstruct the same queue in the
+        // isolated preview worker, without applying anything to the live game.
+        game.reset_playback();
+        game.last_move = None;
+        game.replay_last_move();
+        finish_import(&mut game);
+        assert!(game.replaying_move && game.move_focus_pending);
+        assert!(!game.cancellation_show);
+        assert_eq!(
+            game.cancellations.iter().map(|a| a.t).collect::<Vec<_>>(),
+            [7, 7]
+        );
+        assert!(game.cancellations.iter().all(|a| !a.started));
+        assert_eq!(game.cancellations[1].mover.unwrap().sq, Sq(7, 0));
         assert_eq!(game.engine, engine);
         assert_eq!(game.record, record);
     }
