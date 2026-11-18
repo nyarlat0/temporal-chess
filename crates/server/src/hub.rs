@@ -6,8 +6,14 @@ use uuid::Uuid;
 
 #[derive(Clone, Debug)]
 pub(crate) enum Outbound {
-    Message(ServerMessage),
+    Message(Box<ServerMessage>),
     Close,
+}
+
+impl Outbound {
+    pub(crate) fn message(message: ServerMessage) -> Self {
+        Self::Message(Box::new(message))
+    }
 }
 
 #[derive(Clone)]
@@ -58,7 +64,7 @@ impl ConnectionHub {
         ) {
             let _ = previous
                 .sender
-                .try_send(Outbound::Message(ServerMessage::Error {
+                .try_send(Outbound::message(ServerMessage::Error {
                     code: "connection_replaced".to_owned(),
                     message: "This player reconnected from another client.".to_owned(),
                 }));
@@ -77,7 +83,7 @@ impl ConnectionHub {
             {
                 room.remove(&side);
                 if let Some(opponent) = room.get(&side.opposite()) {
-                    let _ = opponent.sender.try_send(Outbound::Message(
+                    let _ = opponent.sender.try_send(Outbound::message(
                         ServerMessage::OpponentConnection { connected: false },
                     ));
                 }
@@ -95,7 +101,7 @@ impl ConnectionHub {
             .get(game_id)
             .and_then(|room| room.get(&side.opposite()))
         {
-            let _ = opponent.sender.try_send(Outbound::Message(message));
+            let _ = opponent.sender.try_send(Outbound::message(message));
         }
     }
 
@@ -105,7 +111,7 @@ impl ConnectionHub {
             for connection in room.values() {
                 let _ = connection
                     .sender
-                    .try_send(Outbound::Message(message.clone()));
+                    .try_send(Outbound::message(message.clone()));
             }
         }
     }

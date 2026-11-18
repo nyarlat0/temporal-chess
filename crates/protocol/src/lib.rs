@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u16 = 7;
+pub const PROTOCOL_VERSION: u16 = 8;
 pub const MAX_GAME_ID_LEN: usize = 12;
 pub const MAX_COMMAND_LEN: usize = 192;
 
@@ -63,6 +63,15 @@ pub enum ClientMessage {
         accepted: bool,
         reason: Option<String>,
     },
+    RequestUndo {
+        revision: u64,
+        keep_commands: usize,
+    },
+    UndoVote {
+        proposal_id: String,
+        revision: u64,
+        accepted: bool,
+    },
     Resync {
         revision: u64,
     },
@@ -75,6 +84,15 @@ pub struct CommandProposal {
     pub revision: u64,
     pub side: Side,
     pub command: String,
+}
+
+/// A journal prefix requested by one player and awaiting the opponent's consent.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct UndoProposal {
+    pub id: String,
+    pub revision: u64,
+    pub side: Side,
+    pub keep_commands: usize,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -101,6 +119,7 @@ pub enum ServerMessage {
         history: Vec<String>,
         opponent_connected: bool,
         pending: Option<CommandProposal>,
+        pending_undo: Option<UndoProposal>,
     },
     CommandProposed {
         proposal: CommandProposal,
@@ -114,6 +133,17 @@ pub enum ServerMessage {
         revision: u64,
         command: String,
     },
+    UndoProposed {
+        proposal: UndoProposal,
+    },
+    UndoDeclined {
+        proposal_id: String,
+    },
+    UndoAccepted {
+        proposal_id: String,
+        revision: u64,
+        history: Vec<String>,
+    },
     OpponentConnection {
         connected: bool,
     },
@@ -122,6 +152,7 @@ pub enum ServerMessage {
         history: Vec<String>,
         reason: SyncReason,
         pending: Option<CommandProposal>,
+        pending_undo: Option<UndoProposal>,
     },
     Error {
         code: String,

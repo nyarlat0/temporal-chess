@@ -1,5 +1,5 @@
 //! Room transport is non-Send (browser sockets), separate from the game resource.
-//! Revisions count journal commands, including free temporal advances/calculation.
+//! Revisions identify commits and never decrease, including after agreed undo.
 use crate::controller::{GameUi, side_name};
 use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, TaskPool, futures::check_ready};
@@ -17,7 +17,7 @@ use temporal_chess_engine::{
 };
 use temporal_chess_protocol::{
     ClientMessage, CommandProposal, MAX_COMMAND_LEN, MAX_COMMANDS, MAX_REJECTION_LEN,
-    PROTOCOL_VERSION, ServerMessage, Side, SidePreference,
+    PROTOCOL_VERSION, ServerMessage, Side, SidePreference, UndoProposal,
 };
 use web_time::Instant;
 
@@ -33,6 +33,9 @@ pub struct OnlineState {
     pub revision: u64,
     pub outgoing: Option<Command>,
     pub status: crate::i18n::Message,
+    pub pending_undo: Option<UndoProposal>,
+    undo_answered: bool,
+    undo_notice: Option<crate::i18n::Message>,
     endpoint: String,
     room_input: String,
     room: Option<String>,
@@ -54,6 +57,9 @@ impl Default for OnlineState {
             revision: 0,
             outgoing: None,
             status: Default::default(),
+            pending_undo: None,
+            undo_answered: false,
+            undo_notice: None,
             endpoint: default_endpoint(),
             room_input: invite_room(),
             room: None,
@@ -67,12 +73,50 @@ impl OnlineState {
     pub fn opponent_connected(&self) -> bool {
         self.opponent
     }
+
+    pub fn request_undo(&mut self, keep_commands: usize) {
+        self.waiting = true;
+        self.undo_notice = None;
+        self.status = crate::message!("Запрашиваем отмену хода…", "Requesting undo…");
+        self.action = Some(Action::RequestUndo { keep_commands });
+    }
+
+    fn answer_undo(&mut self, accepted: bool) {
+        if let Some(proposal) = self.pending_undo.clone()
+            && !self.undo_answered
+            && self.side != Some(color(proposal.side))
+        {
+            self.undo_answered = true;
+            self.action = Some(Action::UndoVote { proposal, accepted });
+        }
+    }
+}
+
+fn color(side: Side) -> Color {
+    match side {
+        Side::White => Color::White,
+        Side::Black => Color::Black,
+    }
+}
+
+fn undo_prefix(record: &GameRecord) -> Option<usize> {
+    record
+        .commands()
+        .iter()
+        .rposition(|command| command.spends_turn(record.rules()))
 }
 enum Action {
     Create,
     Join,
     Retry,
     Leave,
+    RequestUndo {
+        keep_commands: usize,
+    },
+    UndoVote {
+        proposal: UndoProposal,
+        accepted: bool,
+    },
 }
 
 struct PreparedCommand {
@@ -89,8 +133,9 @@ fn validate_proposal(
     mut engine: Engine,
     mut record: GameRecord,
     proposal: &CommandProposal,
+    expected_revision: u64,
 ) -> Result<PreparedCommand, String> {
-    if record.commands().len() as u64 != proposal.revision {
+    if expected_revision != proposal.revision {
         return Err("Game revision mismatch.".into());
     }
     let side = match proposal.side {
@@ -198,6 +243,14 @@ impl MultiplayerClient {
     fn disconnected(&mut self, game: &mut GameUi) {
         self.close();
         game.online.ready = false;
+        game.online.pending_undo = None;
+        game.online.undo_answered = false;
+        if matches!(
+            game.online.action,
+            Some(Action::RequestUndo { .. } | Action::UndoVote { .. })
+        ) {
+            game.online.action = None;
+        }
         game.online.outgoing = None;
         game.pending_move = None;
         game.pending_square = None;
@@ -284,8 +337,9 @@ impl MultiplayerClient {
             let engine = game.engine.clone();
             let record = game.record.clone();
             let proposed = proposal.clone();
+            let revision = game.online.revision;
             let task = AsyncComputeTaskPool::get_or_init(TaskPool::new).spawn(async move {
-                std::panic::catch_unwind(|| validate_proposal(engine, record, &proposed))
+                std::panic::catch_unwind(|| validate_proposal(engine, record, &proposed, revision))
                     .map_err(|_| "Engine panicked while validating the command.".to_owned())?
             });
             self.validation = Some(ValidationJob {
@@ -307,6 +361,21 @@ pub fn poll(
     };
     if let Some(action) = game.online.action.take() {
         match action {
+            Action::RequestUndo { keep_commands } => {
+                client.send(&ClientMessage::RequestUndo {
+                    revision: game.online.revision,
+                    keep_commands,
+                });
+                client.deadline = Some(Instant::now() + Duration::from_secs(300));
+            }
+            Action::UndoVote { proposal, accepted } => {
+                client.send(&ClientMessage::UndoVote {
+                    proposal_id: proposal.id,
+                    revision: proposal.revision,
+                    accepted,
+                });
+                client.deadline = Some(Instant::now() + Duration::from_secs(30));
+            }
             Action::Leave => {
                 client.close();
                 client.retry_at = None;
@@ -371,6 +440,8 @@ pub fn poll(
                 game.online.synchronizing = true;
                 game.online.fatal = false;
                 game.online.outgoing = None;
+                game.online.pending_undo = None;
+                game.online.undo_answered = false;
                 game.online.status = crate::message!("Подключение…", "Connecting…");
                 game.pending_square = None;
                 game.pending_move = None;
@@ -493,9 +564,19 @@ pub fn poll(
             }
             game.online.revision = revision;
             if client.accepted.is_empty() {
-                game.online.waiting = client.proposal.is_some();
+                game.online.waiting =
+                    client.proposal.is_some() || game.online.pending_undo.is_some();
             }
         }
+    }
+    if let Some(proposal) = game.online.pending_undo.clone()
+        && proposal.revision == game.online.revision
+        && !game.online.undo_answered
+        && game.online.side != Some(color(proposal.side))
+        && undo_prefix(&game.record) != Some(proposal.keep_commands)
+    {
+        // A peer cannot use the consent dialog to truncate arbitrary history.
+        game.online.answer_undo(false);
     }
     if let Some(command) = game.online.outgoing.take() {
         let revision = game.online.revision;
@@ -513,6 +594,7 @@ fn receive(client: &mut MultiplayerClient, game: &mut GameUi, message: ServerMes
             time_war_separation,
             engine_revision,
             pending,
+            pending_undo,
             chain_info_activation,
             global_reaction_reset,
             wait_before_move,
@@ -562,15 +644,70 @@ fn receive(client: &mut MultiplayerClient, game: &mut GameUi, message: ServerMes
             game.online.ready = true;
             game.online.status.clear();
             client.retry_delay = 0;
-            snapshot(client, game, revision, history, pending);
+            snapshot(client, game, revision, history, pending, pending_undo);
         }
         ServerMessage::Sync {
             revision,
             history,
             pending,
+            pending_undo,
             ..
-        } => snapshot(client, game, revision, history, pending),
+        } => snapshot(client, game, revision, history, pending, pending_undo),
         ServerMessage::CommandProposed { proposal } => receive_proposal(client, game, proposal),
+        ServerMessage::UndoProposed { proposal } => receive_undo(client, game, proposal),
+        ServerMessage::UndoDeclined { proposal_id } => {
+            if game
+                .online
+                .pending_undo
+                .as_ref()
+                .is_some_and(|p| p.id == proposal_id)
+            {
+                let requested = game
+                    .online
+                    .pending_undo
+                    .as_ref()
+                    .is_some_and(|p| game.online.side == Some(color(p.side)));
+                game.online.pending_undo = None;
+                game.online.undo_answered = false;
+                if matches!(game.online.action, Some(Action::UndoVote { .. })) {
+                    game.online.action = None;
+                }
+                game.online.waiting = !client.accepted.is_empty() || client.proposal.is_some();
+                client.deadline = None;
+                if requested {
+                    let notice = crate::message!(
+                        "Соперник отказал в отмене хода.",
+                        "Your opponent declined the undo request."
+                    );
+                    game.online.status = notice.clone();
+                    game.online.undo_notice = Some(notice);
+                }
+            }
+        }
+        ServerMessage::UndoAccepted {
+            proposal_id,
+            revision,
+            history,
+        } => {
+            if client.awaiting_snapshot || revision <= client.received_revision {
+                return;
+            }
+            if revision != client.received_revision + 1
+                || !game
+                    .online
+                    .pending_undo
+                    .as_ref()
+                    .is_some_and(|p| p.id == proposal_id)
+            {
+                client.resync(game);
+                return;
+            }
+            snapshot(client, game, revision, history, None, None);
+            game.online.status = crate::message!(
+                "Ход отменён по согласию игроков.",
+                "Move undone by mutual agreement."
+            );
+        }
         ServerMessage::CommandRejected {
             proposal_id,
             reason,
@@ -607,7 +744,9 @@ fn receive(client: &mut MultiplayerClient, game: &mut GameUi, message: ServerMes
             if client.voted.as_ref() == Some(&proposal_id) {
                 client.voted = None;
             }
-            game.online.waiting = !client.accepted.is_empty() || client.proposal.is_some();
+            game.online.waiting = !client.accepted.is_empty()
+                || client.proposal.is_some()
+                || game.online.pending_undo.is_some();
             client.deadline = None;
             game.online.status = crate::i18n::Message::with_error(
                 "Команда отклонена клиентом: ",
@@ -643,9 +782,15 @@ fn receive(client: &mut MultiplayerClient, game: &mut GameUi, message: ServerMes
         }
         ServerMessage::OpponentConnection { connected } => game.online.opponent = connected,
         ServerMessage::Error { code, message } => {
+            if code == "proposal_pending" {
+                client.resync(game);
+                return;
+            }
             game.online.outgoing = None;
-            game.online.waiting = !client.accepted.is_empty() || client.proposal.is_some();
-            if client.proposal.is_none() {
+            game.online.waiting = !client.accepted.is_empty()
+                || client.proposal.is_some()
+                || game.online.pending_undo.is_some();
+            if client.proposal.is_none() && game.online.pending_undo.is_none() {
                 client.deadline = None;
             }
             game.online.status = crate::i18n::server_error(&code, &message);
@@ -712,14 +857,47 @@ fn receive_proposal(client: &mut MultiplayerClient, game: &mut GameUi, proposal:
     client.deadline = Some(Instant::now() + Duration::from_secs(300));
 }
 
+fn receive_undo(client: &mut MultiplayerClient, game: &mut GameUi, proposal: UndoProposal) {
+    if client.awaiting_snapshot || proposal.revision < client.received_revision {
+        return;
+    }
+    if proposal.revision != client.received_revision
+        || proposal.id.len() != 32
+        || !proposal.id.bytes().all(|b| b.is_ascii_hexdigit())
+        || proposal.keep_commands >= MAX_COMMANDS
+        || client.proposal.is_some()
+    {
+        client.resync(game);
+        return;
+    }
+    if game
+        .online
+        .pending_undo
+        .as_ref()
+        .is_some_and(|p| p.id == proposal.id)
+    {
+        return;
+    }
+    game.online.pending_undo = Some(proposal);
+    game.online.undo_answered = false;
+    game.online.undo_notice = None;
+    game.online.status.clear();
+    game.online.waiting = true;
+    game.online.outgoing = None;
+    game.clear_selection();
+    client.deadline = Some(Instant::now() + Duration::from_secs(300));
+}
+
 fn snapshot(
     client: &mut MultiplayerClient,
     game: &mut GameUi,
     revision: u64,
     history: Vec<String>,
     pending: Option<CommandProposal>,
+    pending_undo: Option<UndoProposal>,
 ) {
-    if revision != history.len() as u64
+    if revision < history.len() as u64
+        || (pending.is_some() && pending_undo.is_some())
         || history.len() > MAX_COMMANDS
         || history
             .iter()
@@ -743,11 +921,92 @@ fn snapshot(
     client.awaiting_snapshot = false;
     game.online.revision = revision;
     game.online.waiting = false;
+    game.online.pending_undo = None;
+    game.online.undo_answered = false;
+    game.online.undo_notice = None;
+    if matches!(
+        game.online.action,
+        Some(Action::RequestUndo { .. } | Action::UndoVote { .. })
+    ) {
+        game.online.action = None;
+    }
     game.online.outgoing = None;
     game.online.synchronizing = true;
     game.begin_network_replay(&history);
     if let Some(proposal) = pending {
         receive_proposal(client, game, proposal);
+    }
+    if let Some(proposal) = pending_undo {
+        receive_undo(client, game, proposal);
+    }
+}
+
+/// Outside the collapsible sidebar, so incoming requests remain visible on phones.
+pub fn undo_notification(ctx: &egui::Context, game: &mut GameUi) {
+    if !game.online.enabled || !game.online.ready || game.online.fatal {
+        return;
+    }
+    let width = 340.0_f32.min((ctx.viewport_rect().width() - 32.0).max(120.0));
+    if let Some(proposal) = game.online.pending_undo.clone() {
+        let incoming = game.online.side != Some(color(proposal.side));
+        let ready = game.online.revision == proposal.revision
+            && !game.online.synchronizing
+            && game.replay_job.is_none()
+            && !game.playback_busy()
+            && !game.online.undo_answered
+            && undo_prefix(&game.record) == Some(proposal.keep_commands);
+        egui::Window::new(crate::tr!("Отмена хода", "Undo move"))
+            .id("online_undo_request".into())
+            .collapsible(false)
+            .resizable(false)
+            .default_width(width)
+            .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 28.0))
+            .show(ctx, |ui| {
+                ui.set_max_width(width);
+                ui.label(if incoming {
+                    crate::tr!(
+                        "Соперник просит отменить последний ход. Отменить его для обоих игроков?",
+                        "Your opponent requests undoing the last move. Undo it for both players?"
+                    )
+                } else {
+                    crate::tr!(
+                        "Запрос отмены отправлен. Ожидаем решения соперника…",
+                        "Undo requested. Waiting for your opponent…"
+                    )
+                });
+                if incoming {
+                    ui.add_enabled_ui(ready, |ui| {
+                        ui.horizontal(|ui| {
+                            if ui.button(crate::tr!("Согласиться", "Accept")).clicked() {
+                                game.online.answer_undo(true);
+                            }
+                            if ui.button(crate::tr!("Отказать", "Decline")).clicked() {
+                                game.online.answer_undo(false);
+                            }
+                        });
+                    });
+                }
+                if !game.online.opponent_connected() {
+                    ui.label(crate::tr!(
+                        "Соперник отключился. Ожидаем подключения…",
+                        "Opponent disconnected. Waiting for reconnection…"
+                    ));
+                }
+            });
+    } else if let Some(notice) = game.online.undo_notice.clone() {
+        egui::Window::new(crate::tr!("Отмена хода", "Undo move"))
+            .id("online_undo_notice".into())
+            .collapsible(false)
+            .resizable(false)
+            .default_width(width)
+            .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 28.0))
+            .show(ctx, |ui| {
+                ui.set_max_width(width);
+                ui.label(notice.text());
+                if ui.button("OK").clicked() {
+                    game.online.undo_notice = None;
+                }
+            });
     }
 }
 
@@ -809,8 +1068,8 @@ pub fn panel(ui: &mut egui::Ui, game: &mut GameUi) {
             }
         });
         ui.small(crate::tr!(
-            "Отмена и импорт доступны в локальном режиме.",
-            "Undo and import are available in local mode."
+            "Отмена хода требует согласия соперника.",
+            "Undo requires your opponent’s consent."
         ));
     } else {
         egui::CollapsingHeader::new(crate::tr!("Играть по сети", "Play online"))
@@ -983,19 +1242,201 @@ mod tests {
         }
     }
 
+    fn online_after_opening(side: Color) -> (GameUi, MultiplayerClient) {
+        let mut game = GameUi::default();
+        let prepared =
+            validate_proposal(game.engine.clone(), game.record.clone(), &opening(), 0).unwrap();
+        game.engine = prepared.engine;
+        game.record = prepared.record;
+        game.online.enabled = true;
+        game.online.ready = true;
+        game.online.opponent = true;
+        game.online.side = Some(side);
+        game.online.revision = 1;
+        (
+            game,
+            MultiplayerClient {
+                received_revision: 1,
+                ..Default::default()
+            },
+        )
+    }
+
+    fn undo_request() -> UndoProposal {
+        UndoProposal {
+            id: "c".repeat(32),
+            revision: 1,
+            side: Side::White,
+            keep_commands: 0,
+        }
+    }
+
+    fn finish_network_replay(game: &mut GameUi) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while game.replay_job.is_some() {
+            game.poll_replay();
+            assert!(
+                std::time::Instant::now() < deadline,
+                "network replay timed out"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(!game.online.fatal, "{}", game.online.status.text());
+    }
+
+    #[test]
+    fn online_undo_requests_consent_without_changing_the_position() {
+        for side in [Color::White, Color::Black] {
+            let (mut game, _) = online_after_opening(side);
+            let before = game.engine.clone();
+            assert!(game.can_undo(), "either player may request undo");
+            game.undo_last_move();
+            assert_eq!(game.engine, before);
+            assert_eq!(game.record.commands().len(), 1);
+            assert!(game.replay_job.is_none());
+            assert!(matches!(
+                game.online.action,
+                Some(Action::RequestUndo { keep_commands: 0 })
+            ));
+            assert!(!game.can_undo());
+            assert!(!game.can_submit());
+        }
+    }
+
+    #[test]
+    fn undo_is_not_an_automatic_command_vote_and_decline_preserves_the_game() {
+        let (mut game, mut client) = online_after_opening(Color::Black);
+        let before = game.engine.clone();
+        let request = undo_request();
+        receive_undo(&mut client, &mut game, request.clone());
+        client.poll_validation(&mut game);
+        assert!(client.validation.is_none());
+        assert!(
+            game.online.action.is_none(),
+            "consent requires a user action"
+        );
+        assert!(!game.can_submit());
+        game.online.answer_undo(false);
+        assert!(matches!(
+            game.online.action,
+            Some(Action::UndoVote {
+                accepted: false,
+                ..
+            })
+        ));
+        receive_undo(&mut client, &mut game, request.clone());
+        assert!(
+            game.online.undo_answered,
+            "a retransmit must not reopen voting"
+        );
+        receive(
+            &mut client,
+            &mut game,
+            ServerMessage::UndoDeclined {
+                proposal_id: request.id,
+            },
+        );
+        assert_eq!(game.engine, before);
+        assert!(game.online.pending_undo.is_none());
+        assert!(!game.online.waiting);
+        assert!(game.can_submit());
+
+        let (mut requester, mut client) = online_after_opening(Color::White);
+        let request = undo_request();
+        receive_undo(&mut client, &mut requester, request.clone());
+        requester.online.answer_undo(true);
+        assert!(
+            requester.online.action.is_none(),
+            "requesters cannot approve their own requests"
+        );
+        receive(
+            &mut client,
+            &mut requester,
+            ServerMessage::UndoDeclined {
+                proposal_id: request.id,
+            },
+        );
+        assert!(requester.online.undo_notice.is_some());
+    }
+
+    #[test]
+    fn undo_replays_both_clients_and_subsequent_moves_use_network_revision() {
+        let mut clients = [
+            online_after_opening(Color::White),
+            online_after_opening(Color::Black),
+        ];
+        for (game, client) in &mut clients {
+            let request = undo_request();
+            receive_undo(client, game, request.clone());
+            let message = ServerMessage::UndoAccepted {
+                proposal_id: request.id,
+                revision: 2,
+                history: vec![],
+            };
+            receive(client, game, message.clone());
+            receive(client, game, message); // Duplicate must not restart or repeat undo.
+            assert!(game.online.synchronizing);
+            assert_eq!(game.online.revision, 2);
+            finish_network_replay(game);
+            assert!(!game.online.synchronizing);
+            assert!(game.record.commands().is_empty());
+            assert!(game.online.pending_undo.is_none());
+            assert_eq!(game.engine.turn(), Color::White);
+            let mut next = opening();
+            next.revision = 2;
+            let prepared = validate_proposal(
+                game.engine.clone(),
+                game.record.clone(),
+                &next,
+                game.online.revision,
+            )
+            .unwrap();
+            assert_eq!(prepared.record.commands().len(), 1);
+        }
+        assert_eq!(clients[0].0.engine, clients[1].0.engine);
+        assert_eq!(clients[0].0.record, clients[1].0.record);
+    }
+
+    #[test]
+    fn reconnect_restores_undo_and_expired_requests_clear_on_sync() {
+        let (mut game, mut client) = online_after_opening(Color::Black);
+        let request = undo_request();
+        let history = vec![opening().command];
+        snapshot(
+            &mut client,
+            &mut game,
+            7,
+            history.clone(),
+            None,
+            Some(UndoProposal {
+                revision: 7,
+                ..request.clone()
+            }),
+        );
+        finish_network_replay(&mut game);
+        assert!(game.online.pending_undo.is_some());
+        assert!(game.online.waiting);
+        assert_eq!(undo_prefix(&game.record), Some(0));
+        snapshot(&mut client, &mut game, 7, history, None, None);
+        finish_network_replay(&mut game);
+        assert!(game.online.pending_undo.is_none());
+        assert!(!game.online.waiting);
+        assert!(game.can_submit());
+    }
+
     #[test]
     fn consensus_validation_is_isolated_and_prepared_state_matches_replay() {
         let mut game = GameUi::default();
         let initial = game.record.to_text();
         let proposal = opening();
         let prepared =
-            validate_proposal(game.engine.clone(), game.record.clone(), &proposal).unwrap();
+            validate_proposal(game.engine.clone(), game.record.clone(), &proposal, 0).unwrap();
         assert_eq!(game.record.to_text(), initial);
         assert_eq!(game.engine.history().horizon(), 0);
         assert_eq!(game.engine.turn(), Color::White);
         assert_eq!(prepared.record.commands().len(), 1);
         let second_client =
-            validate_proposal(game.engine.clone(), game.record.clone(), &proposal).unwrap();
+            validate_proposal(game.engine.clone(), game.record.clone(), &proposal, 0).unwrap();
         assert_eq!(prepared.record.to_text(), second_client.record.to_text());
         let (replayed, _) = GameRecord::load(&prepared.record.to_text()).unwrap();
         assert_eq!(
@@ -1022,7 +1463,7 @@ mod tests {
                 side,
                 command: command.into(),
             };
-            let prepared = validate_proposal(engine, record, &proposal).unwrap();
+            let prepared = validate_proposal(engine, record, &proposal, revision).unwrap();
             engine = prepared.engine;
             record = prepared.record;
             assert_eq!(GameRecord::load(&record.to_text()).unwrap().0, engine);
@@ -1043,7 +1484,7 @@ mod tests {
         malformed.command = "opaque command".into();
         for proposal in [wrong_actor, wrong_revision, illegal, malformed] {
             assert!(
-                validate_proposal(game.engine.clone(), game.record.clone(), &proposal).is_err()
+                validate_proposal(game.engine.clone(), game.record.clone(), &proposal, 0).is_err()
             );
         }
         assert!(game.record.commands().is_empty());
@@ -1056,7 +1497,7 @@ mod tests {
         let proposal = opening();
         receive_proposal(&mut client, &mut game, proposal.clone());
         let prepared =
-            validate_proposal(game.engine.clone(), game.record.clone(), &proposal).unwrap();
+            validate_proposal(game.engine.clone(), game.record.clone(), &proposal, 0).unwrap();
         client.voted = Some(proposal.id.clone());
         client.prepared = Some((proposal.clone(), prepared));
         receive_proposal(&mut client, &mut game, proposal.clone());
@@ -1087,7 +1528,7 @@ mod tests {
         receive_proposal(&mut client, &mut game, proposal.clone());
         client.prepared = Some((
             proposal.clone(),
-            validate_proposal(game.engine.clone(), game.record.clone(), &proposal).unwrap(),
+            validate_proposal(game.engine.clone(), game.record.clone(), &proposal, 0).unwrap(),
         ));
         let accepted = ServerMessage::CommandAccepted {
             revision: 1,

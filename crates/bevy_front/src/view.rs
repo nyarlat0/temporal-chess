@@ -220,6 +220,7 @@ pub fn draw(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState, art:
         );
     }
     crate::dialogs::draw(ctx, game, shell, art);
+    crate::multiplayer::undo_notification(ctx, game);
     if game.replay_job.is_some() {
         ctx.request_repaint_after(std::time::Duration::from_millis(80));
     }
@@ -759,7 +760,11 @@ fn sidebar(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState) {
         if icon_button(
             ui,
             Icon::Undo,
-            crate::tr!("Отменить последний ход · Ctrl+Z", "Undo last move · Ctrl+Z"),
+            if game.online.enabled {
+                crate::tr!("Запросить отмену хода · Ctrl+Z", "Request undo · Ctrl+Z")
+            } else {
+                crate::tr!("Отменить последний ход · Ctrl+Z", "Undo last move · Ctrl+Z")
+            },
             false,
             game.can_undo(),
         )

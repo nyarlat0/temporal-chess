@@ -1132,7 +1132,14 @@ impl GameUi {
     }
 
     pub fn can_undo(&self) -> bool {
-        !self.online.enabled
+        (!self.online.enabled
+            || (self.online.ready
+                && !self.online.fatal
+                && !self.online.waiting
+                && !self.online.synchronizing
+                && self.online.opponent_connected()
+                && self.online.pending_undo.is_none()
+                && self.online.outgoing.is_none()))
             && !self.facing.animating()
             && self.replay_job.is_none()
             && !self.playback_busy()
@@ -1153,6 +1160,10 @@ impl GameUi {
             return;
         };
         self.clear_selection();
+        if self.online.enabled {
+            self.online.request_undo(prefix.commands().len());
+            return;
+        }
         // Do not immediately replay the just-undone bot move.
         if self.bot.settings.enabled {
             self.bot.paused = true;

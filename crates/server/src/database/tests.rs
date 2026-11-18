@@ -7,6 +7,167 @@ fn proposed(result: CommandResult) -> CommandProposal {
     }
 }
 
+fn undo_proposed(result: CommandResult) -> UndoProposal {
+    match result {
+        CommandResult::UndoProposed(proposal) => proposal,
+        other => panic!("expected undo proposal, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires an isolated PostgreSQL database in NOLAN_TEST_DATABASE_URL"]
+async fn undo_requires_opponent_consent_and_keeps_revisions_monotonic() {
+    let pool = sqlx::PgPool::connect(&std::env::var("NOLAN_TEST_DATABASE_URL").unwrap())
+        .await
+        .unwrap();
+    sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+    let repo = Repository::new(pool.clone());
+    let hash = "d".repeat(64);
+    let white = repo
+        .create_game(SidePreference::White, true, true, false, &hash, None)
+        .await
+        .unwrap()
+        .auth;
+    let black = repo
+        .join_game(&white.game_id, None, &hash, false)
+        .await
+        .unwrap()
+        .auth;
+    // Opaque strings demonstrate that undo never runs chess code on the server.
+    for (revision, command) in ["first", "second", "free continuation"]
+        .into_iter()
+        .enumerate()
+    {
+        let p = proposed(
+            repo.propose_command(&white, revision as u64, command)
+                .await
+                .unwrap(),
+        );
+        repo.vote_command(&white, &p.id, p.revision, true, None)
+            .await
+            .unwrap();
+        assert!(matches!(
+            repo.vote_command(&black, &p.id, p.revision, true, None)
+                .await
+                .unwrap(),
+            CommandResult::Accepted { .. }
+        ));
+    }
+    assert!(repo.request_undo(&white, 3, 3).await.is_err());
+    let request = undo_proposed(repo.request_undo(&white, 3, 1).await.unwrap());
+    assert_eq!(
+        request,
+        undo_proposed(repo.request_undo(&white, 3, 1).await.unwrap())
+    );
+    let resumed = repo
+        .join_game(&black.game_id, Some(&black.player_token), &hash, false)
+        .await
+        .unwrap();
+    assert_eq!(resumed.pending_undo, Some(request.clone()));
+    assert!(resumed.pending.is_none());
+    assert_eq!(resumed.history, ["first", "second", "free continuation"]);
+    assert!(matches!(
+        repo.vote_undo(&white, &request.id, 3, true).await,
+        Err(RepositoryError::Client {
+            code: "invalid_undo_vote",
+            ..
+        })
+    ));
+    let mut forged = black.clone();
+    forged.player_token = white.player_token.clone();
+    assert!(matches!(
+        repo.vote_undo(&forged, &request.id, 3, true).await,
+        Err(RepositoryError::Client {
+            code: "invalid_player_token",
+            ..
+        })
+    ));
+    // The automatic command-validation channel cannot approve an undo.
+    assert!(matches!(
+        repo.vote_command(&black, &request.id, 3, true, None)
+            .await
+            .unwrap(),
+        CommandResult::Unchanged
+    ));
+    assert!(matches!(
+        repo.propose_command(&black, 3, "blocked").await,
+        Err(RepositoryError::Client {
+            code: "proposal_pending",
+            ..
+        })
+    ));
+    assert!(matches!(
+        repo.vote_undo(&black, &request.id, 3, false).await.unwrap(),
+        CommandResult::UndoDeclined { .. }
+    ));
+    assert!(matches!(repo.resync(&white).await.unwrap(),
+        CommandResult::Sync { revision: 3, history, pending_undo: None, .. } if history.len() == 3));
+
+    let next = undo_proposed(repo.request_undo(&black, 3, 1).await.unwrap());
+    assert_ne!(request.id, next.id);
+    assert!(
+        matches!(repo.vote_undo(&black, &request.id, 3, true).await.unwrap(),
+        CommandResult::Sync { pending_undo: Some(p), .. } if p == next)
+    );
+    assert!(matches!(
+        repo.vote_undo(&white, &next.id, 2, true).await.unwrap(),
+        CommandResult::Sync { revision: 3, .. }
+    ));
+    let (a, b) = tokio::join!(
+        repo.vote_undo(&white, &next.id, 3, true),
+        repo.vote_undo(&white, &next.id, 3, true),
+    );
+    let results = [a.unwrap(), b.unwrap()];
+    assert_eq!(results.iter().filter(|r| matches!(r, CommandResult::UndoAccepted { revision: 4, history, .. } if history == &["first"])).count(), 1);
+    assert_eq!(
+        results
+            .iter()
+            .filter(|r| matches!(r, CommandResult::Sync { revision: 4, .. }))
+            .count(),
+        1
+    );
+    let resumed = repo
+        .join_game(&white.game_id, Some(&white.player_token), &hash, false)
+        .await
+        .unwrap();
+    assert_eq!(resumed.revision, 4);
+    assert_eq!(resumed.history, ["first"]);
+    assert!(resumed.pending_undo.is_none());
+    assert!(matches!(
+        repo.propose_command(&white, 3, "stale").await.unwrap(),
+        CommandResult::Sync { revision: 4, .. }
+    ));
+    let new_move = proposed(
+        repo.propose_command(&white, 4, "replacement")
+            .await
+            .unwrap(),
+    );
+    repo.vote_command(&white, &new_move.id, 4, true, None)
+        .await
+        .unwrap();
+    assert!(matches!(
+        repo.vote_command(&black, &new_move.id, 4, true, None)
+            .await
+            .unwrap(),
+        CommandResult::Accepted { revision: 5, .. }
+    ));
+    assert!(
+        matches!(repo.resync(&black).await.unwrap(), CommandResult::Sync { revision: 5, history, .. } if history == ["first", "replacement"])
+    );
+    let undo_again = undo_proposed(repo.request_undo(&white, 5, 0).await.unwrap());
+    assert!(
+        matches!(repo.vote_undo(&black, &undo_again.id, 5, true).await.unwrap(), CommandResult::UndoAccepted { revision: 6, history, .. } if history.is_empty())
+    );
+    assert!(repo.request_undo(&white, 6, 0).await.is_err());
+
+    sqlx::query("DELETE FROM games WHERE game_id = $1")
+        .bind(&white.game_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    pool.close().await;
+}
+
 #[tokio::test]
 #[ignore = "requires an isolated PostgreSQL database in NOLAN_TEST_DATABASE_URL"]
 async fn two_client_consensus_persists_and_commits_exactly_once() {

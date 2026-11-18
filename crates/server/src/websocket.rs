@@ -211,6 +211,7 @@ async fn handle_client_message(
                         ServerMessage::GameReady {
                             engine_revision: ready.engine_revision,
                             pending: ready.pending,
+                            pending_undo: ready.pending_undo,
                             chain_info_activation: ready.chain_info_activation,
                             global_reaction_reset: ready.global_reaction_reset,
                             wait_before_move: ready.wait_before_move,
@@ -271,6 +272,7 @@ async fn handle_client_message(
                         ServerMessage::GameReady {
                             engine_revision: ready.engine_revision,
                             pending: ready.pending,
+                            pending_undo: ready.pending_undo,
                             chain_info_activation: ready.chain_info_activation,
                             global_reaction_reset: ready.global_reaction_reset,
                             wait_before_move: ready.wait_before_move,
@@ -316,6 +318,35 @@ async fn handle_client_message(
                 .await;
             send_command_result(state, &auth.game_id, sender, result).await;
         }
+        ClientMessage::RequestUndo {
+            revision,
+            keep_commands,
+        } => {
+            let Some(auth) = authenticated.as_ref() else {
+                send_error(sender, "not_authenticated", "Create or join a game first.");
+                return;
+            };
+            let result = state
+                .repository
+                .request_undo(auth, revision, keep_commands)
+                .await;
+            send_command_result(state, &auth.game_id, sender, result).await;
+        }
+        ClientMessage::UndoVote {
+            proposal_id,
+            revision,
+            accepted,
+        } => {
+            let Some(auth) = authenticated.as_ref() else {
+                send_error(sender, "not_authenticated", "Create or join a game first.");
+                return;
+            };
+            let result = state
+                .repository
+                .vote_undo(auth, &proposal_id, revision, accepted)
+                .await;
+            send_command_result(state, &auth.game_id, sender, result).await;
+        }
         ClientMessage::Resync { revision: _ } => {
             let Some(auth) = authenticated.as_ref() else {
                 send_error(sender, "not_authenticated", "Create or join a game first.");
@@ -347,12 +378,26 @@ async fn send_command_result(
             side,
             reason,
         },
+        Ok(CommandResult::UndoProposed(proposal)) => ServerMessage::UndoProposed { proposal },
+        Ok(CommandResult::UndoDeclined { proposal_id }) => {
+            ServerMessage::UndoDeclined { proposal_id }
+        }
+        Ok(CommandResult::UndoAccepted {
+            proposal_id,
+            revision,
+            history,
+        }) => ServerMessage::UndoAccepted {
+            proposal_id,
+            revision,
+            history,
+        },
         Ok(CommandResult::Unchanged) => return,
         Ok(CommandResult::Sync {
             revision,
             history,
             reason,
             pending,
+            pending_undo,
         }) => {
             send_local(
                 sender,
@@ -361,6 +406,7 @@ async fn send_command_result(
                     history,
                     reason,
                     pending,
+                    pending_undo,
                 },
             );
             return;
@@ -422,7 +468,7 @@ fn send_error(sender: &mpsc::Sender<Outbound>, code: &str, message: &str) {
 }
 
 fn send_local(sender: &mpsc::Sender<Outbound>, message: ServerMessage) {
-    let _ = sender.try_send(Outbound::Message(message));
+    let _ = sender.try_send(Outbound::message(message));
 }
 
 async fn send_message(
@@ -455,11 +501,14 @@ mod tests {
             }
         }
         async fn send(&mut self, state: &AppState, message: ClientMessage) {
+            let message = serde_json::from_str(&serde_json::to_string(&message).unwrap()).unwrap();
             handle_client_message(state, self.id, &self.sender, &mut self.auth, message).await;
         }
         fn next(&mut self) -> ServerMessage {
             match self.receiver.try_recv().unwrap() {
-                Outbound::Message(message) => message,
+                Outbound::Message(message) => {
+                    serde_json::from_str(&serde_json::to_string(&message).unwrap()).unwrap()
+                }
                 Outbound::Close => panic!("unexpected close"),
             }
         }
@@ -627,6 +676,97 @@ mod tests {
             .await;
         assert!(
             matches!(resumed.next(), ServerMessage::Sync { revision: 1, history, pending: None, .. } if history == ["opaque client command"])
+        );
+        resumed
+            .send(
+                &state,
+                ClientMessage::RequestUndo {
+                    revision: 1,
+                    keep_commands: 0,
+                },
+            )
+            .await;
+        let request = match resumed.next() {
+            ServerMessage::UndoProposed { proposal } => proposal,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            black.next(),
+            ServerMessage::UndoProposed {
+                proposal: request.clone()
+            }
+        );
+        // The original requester cannot authorize its own rollback.
+        resumed
+            .send(
+                &state,
+                ClientMessage::UndoVote {
+                    proposal_id: request.id.clone(),
+                    revision: 1,
+                    accepted: true,
+                },
+            )
+            .await;
+        assert!(
+            matches!(resumed.next(), ServerMessage::Error { code, .. } if code == "invalid_undo_vote")
+        );
+        black
+            .send(
+                &state,
+                ClientMessage::UndoVote {
+                    proposal_id: request.id.clone(),
+                    revision: 1,
+                    accepted: false,
+                },
+            )
+            .await;
+        let declined = ServerMessage::UndoDeclined {
+            proposal_id: request.id,
+        };
+        assert_eq!(resumed.next(), declined);
+        assert_eq!(black.next(), declined);
+
+        black
+            .send(
+                &state,
+                ClientMessage::RequestUndo {
+                    revision: 1,
+                    keep_commands: 0,
+                },
+            )
+            .await;
+        let request = match black.next() {
+            ServerMessage::UndoProposed { proposal } => proposal,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            resumed.next(),
+            ServerMessage::UndoProposed {
+                proposal: request.clone()
+            }
+        );
+        resumed
+            .send(
+                &state,
+                ClientMessage::UndoVote {
+                    proposal_id: request.id.clone(),
+                    revision: 1,
+                    accepted: true,
+                },
+            )
+            .await;
+        let accepted = ServerMessage::UndoAccepted {
+            proposal_id: request.id,
+            revision: 2,
+            history: vec![],
+        };
+        assert_eq!(resumed.next(), accepted);
+        assert_eq!(black.next(), accepted);
+        black
+            .send(&state, ClientMessage::Resync { revision: 2 })
+            .await;
+        assert!(
+            matches!(black.next(), ServerMessage::Sync { revision: 2, history, pending_undo: None, .. } if history.is_empty())
         );
         sqlx::query("DELETE FROM games WHERE game_id = $1")
             .bind(room)

@@ -273,6 +273,14 @@ pub fn server_error(code: &str, detail: &str) -> Message {
             "Invalid engine revision. Update the client.",
         ),
         "opponent_missing" => ("Ожидание второго игрока.", "Waiting for the other player."),
+        "invalid_undo" => (
+            "Не удалось запросить отмену: история уже изменилась.",
+            "Cannot request undo: the game record has changed.",
+        ),
+        "invalid_undo_vote" => (
+            "На запрос отмены должен ответить соперник.",
+            "The opponent must answer the undo request.",
+        ),
         "proposal_pending" => (
             "Предыдущая команда ещё ожидает подтверждения.",
             "The previous command is still awaiting confirmation.",

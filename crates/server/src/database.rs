@@ -2,7 +2,7 @@ use sha2::{Digest, Sha256};
 use sqlx::{FromRow, PgPool};
 use temporal_chess_protocol::{
     CommandProposal, MAX_COMMAND_LEN, MAX_COMMANDS, MAX_GAME_ID_LEN, MAX_REJECTION_LEN, Side,
-    SidePreference, SyncReason,
+    SidePreference, SyncReason, UndoProposal,
 };
 use thiserror::Error;
 use uuid::Uuid;
@@ -30,6 +30,7 @@ pub(crate) struct AuthenticatedPlayer {
 pub(crate) struct ReadyGame {
     pub(crate) engine_revision: String,
     pub(crate) pending: Option<CommandProposal>,
+    pub(crate) pending_undo: Option<UndoProposal>,
     pub(crate) chain_info_activation: bool,
     pub(crate) global_reaction_reset: bool,
     pub(crate) wait_before_move: bool,
@@ -42,6 +43,15 @@ pub(crate) struct ReadyGame {
 #[derive(Debug)]
 pub(crate) enum CommandResult {
     Proposed(CommandProposal),
+    UndoProposed(UndoProposal),
+    UndoDeclined {
+        proposal_id: String,
+    },
+    UndoAccepted {
+        proposal_id: String,
+        revision: u64,
+        history: Vec<String>,
+    },
     Rejected {
         proposal_id: String,
         side: Side,
@@ -57,6 +67,7 @@ pub(crate) enum CommandResult {
         history: Vec<String>,
         reason: SyncReason,
         pending: Option<CommandProposal>,
+        pending_undo: Option<UndoProposal>,
     },
 }
 
@@ -82,6 +93,7 @@ struct RoomRow {
     white_token_hash: Option<Vec<u8>>,
     black_token_hash: Option<Vec<u8>>,
     revision: i64,
+    command_count: i32,
 }
 
 impl Repository {
@@ -135,6 +147,7 @@ impl Repository {
                 return Ok(ReadyGame {
                     engine_revision: engine_revision.to_owned(),
                     pending: None,
+                    pending_undo: None,
                     chain_info_activation,
                     global_reaction_reset,
                     wait_before_move,
@@ -175,7 +188,7 @@ impl Repository {
         let game_id = normalize_game_id(game_id)?;
         let mut transaction = self.pool.begin().await?;
         let mut room = sqlx::query_as::<_, RoomRow>(
-            "SELECT game_id, white_token_hash, black_token_hash, revision, causal_gaps, chain_info_activation, global_reaction_reset, engine_revision, time_war_separation, wait_before_move
+            "SELECT game_id, white_token_hash, black_token_hash, revision, command_count, causal_gaps, chain_info_activation, global_reaction_reset, engine_revision, time_war_separation, wait_before_move
              FROM games WHERE game_id = $1 FOR UPDATE",
         )
         .bind(&game_id)
@@ -262,14 +275,12 @@ impl Repository {
         let history = fetch_history(&mut transaction, &room.game_id).await?;
         verify_revision(&room, &history)?;
         let revision = revision_to_u64(room.revision, &room.game_id)?;
-        let pending = fetch_proposal(&mut transaction, &room.game_id)
-            .await?
-            .map(ProposalRow::proposal)
-            .transpose()?;
+        let (pending, pending_undo) = pending_proposals(&mut transaction, &room.game_id).await?;
         transaction.commit().await?;
         Ok(ReadyGame {
             engine_revision: engine_revision.to_owned(),
             pending,
+            pending_undo,
             chain_info_activation: room.chain_info_activation,
             global_reaction_reset: room.global_reaction_reset,
             wait_before_move: room.wait_before_move,
@@ -305,7 +316,7 @@ impl Repository {
         if revision != client_revision {
             return sync_result(&mut transaction, &room).await;
         }
-        if revision >= MAX_COMMANDS as u64 {
+        if room.command_count as usize >= MAX_COMMANDS {
             return Err(client_error(
                 "history_limit",
                 "Limit reached: 10000 commands.",
@@ -320,6 +331,12 @@ impl Repository {
         sqlx::query("DELETE FROM command_proposals WHERE game_id = $1 AND created_at <= now() - interval '5 minutes'")
             .bind(&room.game_id).execute(&mut *transaction).await?;
         if let Some(existing) = fetch_proposal(&mut transaction, &room.game_id).await? {
+            if existing.undo_keep_commands.is_some() {
+                return Err(client_error(
+                    "proposal_pending",
+                    "An undo request is awaiting confirmation.",
+                ));
+            }
             let proposal = existing.proposal()?;
             if proposal.side == auth.side && proposal.command == command {
                 transaction.commit().await?;
@@ -359,7 +376,7 @@ impl Repository {
         let Some(mut row) = fetch_proposal(&mut transaction, &room.game_id).await? else {
             return Ok(CommandResult::Unchanged);
         };
-        if row.proposal_id != proposal_id {
+        if row.proposal_id != proposal_id || row.undo_keep_commands.is_some() {
             return Ok(CommandResult::Unchanged);
         }
         if row.revision != room.revision
@@ -404,7 +421,7 @@ impl Repository {
             .bind(&row.command)
             .execute(&mut *transaction)
             .await?;
-        sqlx::query("UPDATE games SET revision = $2, updated_at = now() WHERE game_id = $1")
+        sqlx::query("UPDATE games SET revision = $2, command_count = command_count + 1, updated_at = now() WHERE game_id = $1")
             .bind(&room.game_id)
             .bind(next_revision)
             .execute(&mut *transaction)
@@ -417,6 +434,124 @@ impl Repository {
         Ok(CommandResult::Accepted {
             revision: next_revision as u64,
             command: row.command,
+        })
+    }
+
+    /// Only the clients interpret the prefix as a chess turn; the server stores
+    /// the request under the same row lock and pending slot as ordinary commands.
+    pub(crate) async fn request_undo(
+        &self,
+        auth: &AuthenticatedPlayer,
+        client_revision: u64,
+        keep_commands: usize,
+    ) -> Result<CommandResult, RepositoryError> {
+        let mut transaction = self.pool.begin().await?;
+        let room = locked_room(&mut transaction, &auth.game_id).await?;
+        authenticate_as(&room, auth.side, &auth.player_token)?;
+        let revision = revision_to_u64(room.revision, &room.game_id)?;
+        if revision != client_revision {
+            return sync_result(&mut transaction, &room).await;
+        }
+        if room.white_token_hash.is_none() || room.black_token_hash.is_none() {
+            return Err(client_error(
+                "opponent_missing",
+                "Waiting for the other player.",
+            ));
+        }
+        let count = room.command_count as usize;
+        if keep_commands >= MAX_COMMANDS || keep_commands >= count {
+            return Err(client_error("invalid_undo", "Invalid undo prefix."));
+        }
+        sqlx::query("DELETE FROM command_proposals WHERE game_id = $1 AND created_at <= now() - interval '5 minutes'")
+            .bind(&room.game_id).execute(&mut *transaction).await?;
+        if let Some(row) = fetch_proposal(&mut transaction, &room.game_id).await? {
+            if row.undo_keep_commands == Some(keep_commands as i32) {
+                let proposal = row.undo_proposal()?;
+                if proposal.side == auth.side {
+                    transaction.commit().await?;
+                    return Ok(CommandResult::UndoProposed(proposal));
+                }
+            }
+            return Err(client_error(
+                "proposal_pending",
+                "Another request is awaiting confirmation.",
+            ));
+        }
+        let proposal = UndoProposal {
+            id: Uuid::new_v4().simple().to_string(),
+            revision,
+            side: auth.side,
+            keep_commands,
+        };
+        sqlx::query("INSERT INTO command_proposals (game_id, proposal_id, revision, side, command, undo_keep_commands) VALUES ($1, $2, $3, $4, '', $5)")
+            .bind(&room.game_id).bind(&proposal.id).bind(room.revision)
+            .bind(side_text(auth.side)).bind(keep_commands as i32)
+            .execute(&mut *transaction).await?;
+        transaction.commit().await?;
+        Ok(CommandResult::UndoProposed(proposal))
+    }
+
+    pub(crate) async fn vote_undo(
+        &self,
+        auth: &AuthenticatedPlayer,
+        proposal_id: &str,
+        client_revision: u64,
+        accepted: bool,
+    ) -> Result<CommandResult, RepositoryError> {
+        let mut transaction = self.pool.begin().await?;
+        let room = locked_room(&mut transaction, &auth.game_id).await?;
+        authenticate_as(&room, auth.side, &auth.player_token)?;
+        let Some(row) = fetch_proposal(&mut transaction, &room.game_id).await? else {
+            return sync_result(&mut transaction, &room).await;
+        };
+        if row.proposal_id != proposal_id || row.undo_keep_commands.is_none() {
+            return sync_result(&mut transaction, &room).await;
+        }
+        let proposal = row.undo_proposal()?;
+        if proposal.revision != client_revision
+            || revision_to_u64(room.revision, &room.game_id)? != client_revision
+        {
+            return sync_result(&mut transaction, &room).await;
+        }
+        // Requesting already represents consent. Only the other authenticated
+        // seat can answer, regardless of whose turn it currently is.
+        if proposal.side == auth.side {
+            return Err(client_error(
+                "invalid_undo_vote",
+                "Only the opponent can answer an undo request.",
+            ));
+        }
+        sqlx::query("DELETE FROM command_proposals WHERE game_id = $1")
+            .bind(&room.game_id)
+            .execute(&mut *transaction)
+            .await?;
+        if !accepted {
+            transaction.commit().await?;
+            return Ok(CommandResult::UndoDeclined {
+                proposal_id: proposal.id,
+            });
+        }
+        let next_revision = room
+            .revision
+            .checked_add(1)
+            .ok_or_else(|| client_error("revision_overflow", "Game revision overflow."))?;
+        // Journal revisions may have gaps after undo. Network revisions never
+        // decrease, so pre-undo votes cannot commit against a later position.
+        sqlx::query("DELETE FROM game_commands WHERE game_id = $1 AND revision IN (SELECT revision FROM game_commands WHERE game_id = $1 ORDER BY revision OFFSET $2)")
+            .bind(&room.game_id).bind(proposal.keep_commands as i64)
+            .execute(&mut *transaction).await?;
+        sqlx::query("UPDATE games SET revision = $2, command_count = $3, updated_at = now() WHERE game_id = $1")
+            .bind(&room.game_id)
+            .bind(next_revision)
+            .bind(proposal.keep_commands as i32)
+            .execute(&mut *transaction)
+            .await?;
+        let history = fetch_history(&mut transaction, &room.game_id).await?;
+        transaction.commit().await?;
+        Ok(CommandResult::UndoAccepted {
+            proposal_id: proposal.id,
+            revision: next_revision as u64,
+            history,
         })
     }
 
@@ -444,8 +579,23 @@ struct ProposalRow {
     command: String,
     white_accepted: bool,
     black_accepted: bool,
+    undo_keep_commands: Option<i32>,
 }
 impl ProposalRow {
+    fn undo_proposal(self) -> Result<UndoProposal, RepositoryError> {
+        let keep_commands = self
+            .undo_keep_commands
+            .ok_or_else(|| client_error("invalid_undo", "Not an undo proposal."))?
+            as usize;
+        let proposal = self.proposal()?;
+        Ok(UndoProposal {
+            id: proposal.id,
+            revision: proposal.revision,
+            side: proposal.side,
+            keep_commands,
+        })
+    }
+
     fn proposal(self) -> Result<CommandProposal, RepositoryError> {
         let side = match self.side.as_str() {
             "white" => Side::White,
@@ -466,11 +616,22 @@ impl ProposalRow {
     }
 }
 
+async fn pending_proposals(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    game_id: &str,
+) -> Result<(Option<CommandProposal>, Option<UndoProposal>), RepositoryError> {
+    match fetch_proposal(transaction, game_id).await? {
+        Some(row) if row.undo_keep_commands.is_some() => Ok((None, Some(row.undo_proposal()?))),
+        Some(row) => Ok((Some(row.proposal()?), None)),
+        None => Ok((None, None)),
+    }
+}
+
 async fn fetch_proposal(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     game_id: &str,
 ) -> Result<Option<ProposalRow>, sqlx::Error> {
-    sqlx::query_as::<_, ProposalRow>("SELECT proposal_id, revision, side, command, white_accepted, black_accepted FROM command_proposals WHERE game_id = $1 AND created_at > now() - interval '5 minutes'")
+    sqlx::query_as::<_, ProposalRow>("SELECT proposal_id, revision, side, command, white_accepted, black_accepted, undo_keep_commands FROM command_proposals WHERE game_id = $1 AND created_at > now() - interval '5 minutes'")
         .bind(game_id).fetch_optional(&mut **transaction).await
 }
 
@@ -480,14 +641,12 @@ async fn sync_result(
 ) -> Result<CommandResult, RepositoryError> {
     let history = fetch_history(transaction, &room.game_id).await?;
     verify_revision(room, &history)?;
-    let pending = fetch_proposal(transaction, &room.game_id)
-        .await?
-        .map(ProposalRow::proposal)
-        .transpose()?;
+    let (pending, pending_undo) = pending_proposals(transaction, &room.game_id).await?;
     Ok(CommandResult::Sync {
         revision: revision_to_u64(room.revision, &room.game_id)?,
         history,
         pending,
+        pending_undo,
         reason: SyncReason::RevisionMismatch,
     })
 }
@@ -517,7 +676,7 @@ async fn locked_room(
     game_id: &str,
 ) -> Result<RoomRow, RepositoryError> {
     sqlx::query_as::<_, RoomRow>(
-        "SELECT game_id, white_token_hash, black_token_hash, revision, causal_gaps, chain_info_activation, global_reaction_reset, engine_revision, time_war_separation, wait_before_move
+        "SELECT game_id, white_token_hash, black_token_hash, revision, command_count, causal_gaps, chain_info_activation, global_reaction_reset, engine_revision, time_war_separation, wait_before_move
          FROM games WHERE game_id = $1 FOR UPDATE",
     )
     .bind(game_id)
@@ -540,7 +699,7 @@ async fn fetch_history(
 
 fn verify_revision(room: &RoomRow, history: &[String]) -> Result<(), RepositoryError> {
     let revision = revision_to_u64(room.revision, &room.game_id)?;
-    if usize::try_from(revision).ok() != Some(history.len()) {
+    if history.len() != room.command_count as usize || (history.len() as u64) > revision {
         return Err(RepositoryError::Corrupt {
             game_id: room.game_id.clone(),
             detail: format!(
