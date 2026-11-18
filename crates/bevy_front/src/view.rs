@@ -19,6 +19,8 @@ pub struct ShellState {
     pub suppress_wheel: bool,
     pub ribbon_rect: egui::Rect,
     copied_until: f64,
+    initialized: bool,
+    pub touch: crate::input::TouchNavigation,
 }
 
 impl Default for ShellState {
@@ -32,11 +34,75 @@ impl Default for ShellState {
             suppress_wheel: false,
             ribbon_rect: egui::Rect::NOTHING,
             copied_until: 0.0,
+            initialized: false,
+            touch: Default::default(),
         }
     }
 }
 
+fn initial_sidebar(saved: Option<&str>, mobile: bool) -> bool {
+    match saved {
+        Some("open") => true,
+        Some("closed") => false,
+        _ => !mobile,
+    }
+}
+
+fn saved_sidebar() -> Option<String> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        web_sys::window()?
+            .local_storage()
+            .ok()??
+            .get_item("temporal-chess.sidebar")
+            .ok()?
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        None
+    }
+}
+
+fn save_sidebar(open: bool) {
+    #[cfg(target_arch = "wasm32")]
+    if let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
+        let _ = storage.set_item(
+            "temporal-chess.sidebar",
+            if open { "open" } else { "closed" },
+        );
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    let _ = open;
+}
+
+fn mobile_browser() -> bool {
+    #[cfg(target_arch = "wasm32")]
+    {
+        web_sys::window()
+            .and_then(|w| w.document())
+            .and_then(|d| d.document_element())
+            .is_some_and(|e| e.get_attribute("data-touch-device").as_deref() == Some("true"))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        false
+    }
+}
+
+pub fn mobile_layout(ctx: &egui::Context) -> bool {
+    mobile_browser() || ctx.viewport_rect().width() < 760.0
+}
+
 pub fn draw(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState, art: &PieceArt) {
+    if !shell.initialized {
+        shell.sidebar_open = initial_sidebar(
+            saved_sidebar().as_deref(),
+            mobile_browser() || ctx.viewport_rect().width() < 760.0,
+        );
+        shell.initialized = true;
+    }
+    let previous_sidebar = shell.sidebar_open;
+    let compact = mobile_layout(ctx);
     crate::input::handle(ctx, game, shell);
     let drawer_duration = 0.45 / (crate::animation::BASE_ANIMATION_SPEED * game.animation_speed);
     if ctx.style_of(egui::Theme::Dark).animation_time != drawer_duration {
@@ -60,10 +126,29 @@ pub fn draw(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState, art:
     if modal {
         root.disable();
     }
+    if compact {
+        egui::Panel::top("mobile_turn_header")
+            .resizable(false)
+            .frame(egui::Frame::new().fill(BACKGROUND).inner_margin(12))
+            .show(&mut root, |ui| {
+                let mut rect = ui.available_rect_before_wrap();
+                rect.max.x -= 50.0;
+                let height = game_hud(ui, game, art, rect, modal);
+                ui.allocate_space(Vec2::new(0.0, height));
+            });
+    }
     let mut sidebar_open = shell.sidebar_open;
     egui::Panel::right("game_sidebar")
-        .default_size(340.0)
-        .min_size(300.0)
+        .default_size(if compact {
+            ctx.viewport_rect().width().min(400.0)
+        } else {
+            340.0
+        })
+        .min_size(if compact {
+            ctx.viewport_rect().width().min(300.0)
+        } else {
+            300.0
+        })
         .max_size(400.0)
         .frame(egui::Frame::new().fill(PANEL).inner_margin(18))
         .show_collapsible(&mut root, &mut sidebar_open, |ui| {
@@ -83,11 +168,20 @@ pub fn draw(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState, art:
     egui::CentralPanel::default()
         .frame(egui::Frame::new().fill(BACKGROUND).inner_margin(12))
         .show(&mut root, |ui| {
+            if compact && shell.sidebar_open {
+                shell.ribbon_rect = egui::Rect::NOTHING;
+                return;
+            }
             shell.ribbon_rect = ui.available_rect_before_wrap();
-            let rect = crate::board_view::ribbon(ui, game, art);
-            game_hud(ui, game, art, rect, modal);
+            let rect = crate::board_view::ribbon(ui, game, art, &shell.touch);
+            if !compact {
+                game_hud(ui, game, art, rect, modal);
+            }
         });
     menu_button(ctx, shell, modal);
+    if previous_sidebar != shell.sidebar_open {
+        save_sidebar(shell.sidebar_open);
+    }
     crate::dialogs::draw(ctx, game, shell, art);
     if game.replay_job.is_some() {
         ctx.request_repaint_after(std::time::Duration::from_millis(80));
@@ -133,8 +227,8 @@ fn game_hud(
     art: &PieceArt,
     rect: egui::Rect,
     modal: bool,
-) {
-    let idle = game.replay_job.is_none() && !game.playback_busy() && !game.facing.animating();
+) -> f32 {
+    let compact = mobile_layout(parent.ctx());
     let mut child = parent.new_child(
         egui::UiBuilder::new()
             .id_salt("game_status_hud")
@@ -150,142 +244,199 @@ fn game_hud(
         .corner_radius(12)
         .inner_margin(12)
         .show(ui, |ui| {
-            ui.set_max_width((rect.width() - 24.0).clamp(132.0, 172.0));
-            ui.spacing_mut().item_spacing.x = 6.0;
-            ui.horizontal(|ui| {
-                let side = game.displayed_turn();
-                let checked = !game.checked_times_for(side).is_empty();
-                let (king, response) =
-                    ui.allocate_exact_size(Vec2::splat(45.0), egui::Sense::click());
-                art.paint_styled(
-                    ui.painter(),
-                    PieceKind::K { moved: false },
-                    side,
-                    king,
-                    1.0,
-                    crate::piece_art::PieceStyle {
-                        outline: if checked {
-                            crate::piece_art::Outline::Check
-                        } else {
-                            crate::piece_art::Outline::None
-                        },
-                        ..Default::default()
-                    },
-                );
-                if crate::input::clicked(&response) && idle {
-                    game.navigate_check();
-                }
-                response.on_hover_text(crate::tr!("Перейти к шаху", "Go to check"));
-                #[cfg(test)]
-                ui.ctx()
-                    .data_mut(|d| d.insert_temp(egui::Id::new("hud_king"), king));
-                ui.allocate_exact_size(Vec2::new(8.0, 32.0), egui::Sense::hover());
-                let (badge, _) = ui.allocate_exact_size(Vec2::splat(32.0), egui::Sense::hover());
-                crate::board_view::paint_board_badge(ui.painter(), badge, game.displayed_turn());
-                ui.painter()
-                    .circle_filled(king.center().lerp(badge.center(), 0.5), 2.0, TEXT);
-                ui.label(
-                    egui::RichText::new(format!(
-                        "x {}",
-                        game.active_times_for(game.displayed_turn()).len()
-                    ))
-                    .size(18.0),
-                );
+            ui.set_max_width(if compact {
+                (rect.width() - 24.0).max(132.0)
+            } else {
+                (rect.width() - 24.0).clamp(132.0, 172.0)
             });
-            if icon_button(
+            ui.spacing_mut().item_spacing.x = if compact { 4.0 } else { 6.0 };
+            if compact && game.selected.is_some() {
+                ui.columns(2, |columns| {
+                    hud_turn(&mut columns[0], game, art, true);
+                    hud_selection(&mut columns[1], game, art, true);
+                    let left = columns[0].min_rect();
+                    let right = columns[1].min_rect();
+                    let x = (columns[0].max_rect().right() + columns[1].max_rect().left()) * 0.5;
+                    columns[0].painter().line_segment(
+                        [
+                            egui::pos2(x, left.top()),
+                            egui::pos2(x, left.bottom().max(right.bottom())),
+                        ],
+                        columns[0].visuals().widgets.noninteractive.bg_stroke,
+                    );
+                });
+            } else {
+                hud_turn(ui, game, art, compact);
+                if game.selected.is_some() {
+                    ui.separator();
+                }
+                hud_selection(ui, game, art, compact);
+            }
+        });
+    child.min_rect().height()
+}
+
+fn hud_turn(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt, compact: bool) {
+    let idle = game.replay_job.is_none() && !game.playback_busy() && !game.facing.animating();
+    ui.horizontal(|ui| {
+        let side = game.displayed_turn();
+        let checked = !game.checked_times_for(side).is_empty();
+        let (king, response) = ui.allocate_exact_size(
+            Vec2::splat(if compact { 28.0 } else { 45.0 }),
+            egui::Sense::click(),
+        );
+        art.paint_styled(
+            ui.painter(),
+            PieceKind::K { moved: false },
+            side,
+            king,
+            1.0,
+            crate::piece_art::PieceStyle {
+                outline: if checked {
+                    crate::piece_art::Outline::Check
+                } else {
+                    crate::piece_art::Outline::None
+                },
+                ..Default::default()
+            },
+        );
+        if crate::input::clicked(&response) && idle {
+            game.navigate_check();
+        }
+        response.on_hover_text(crate::tr!("Перейти к шаху", "Go to check"));
+        #[cfg(test)]
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(egui::Id::new("hud_king"), king));
+        ui.allocate_exact_size(
+            Vec2::new(if compact { 5.0 } else { 8.0 }, 28.0),
+            egui::Sense::hover(),
+        );
+        let (badge, _) = ui.allocate_exact_size(
+            Vec2::splat(if compact { 24.0 } else { 32.0 }),
+            egui::Sense::hover(),
+        );
+        crate::board_view::paint_board_badge(ui.painter(), badge, game.displayed_turn());
+        ui.painter()
+            .circle_filled(king.center().lerp(badge.center(), 0.5), 2.0, TEXT);
+        ui.label(
+            egui::RichText::new(format!(
+                "x {}",
+                game.active_times_for(game.displayed_turn()).len()
+            ))
+            .size(if compact { 16.0 } else { 18.0 }),
+        );
+    });
+    // Columns justify direct children across their width. A button row keeps
+    // the replay control square instead of stretching it with the column.
+    if ui
+        .horizontal(|ui| {
+            icon_button(
                 ui,
                 Icon::Replay,
                 crate::tr!("Повторить предыдущий ход", "Replay previous move"),
                 game.replaying_move,
                 game.can_replay_move(),
             )
+        })
+        .inner
+        .clicked()
+    {
+        game.replay_last_move();
+    }
+    if game.engine.can_decline_reactions()
+        && ui
+            .add_enabled(
+                idle && game.can_submit(),
+                egui::Button::new(crate::tr!("Не реагировать", "Decline reactions")),
+            )
+            .on_hover_text(crate::tr!(
+                "Деактивировать все свои реакции и передать ход сопернику.",
+                "Deactivate all your reactions and hand the turn to your opponent."
+            ))
+            .clicked()
+    {
+        game.decline_reactions();
+    }
+    if let CalculationStatus::Paused { t, .. } = game.engine.calculation_status() {
+        ui.horizontal_wrapped(|ui| {
+            if icon_button(
+                ui,
+                Icon::Continue,
+                crate::tr!("Продолжить просчёт · C", "Continue calculation · C"),
+                false,
+                idle && game.can_submit(),
+            )
             .clicked()
             {
-                game.replay_last_move();
+                game.continue_calculation();
             }
-            if game.engine.can_decline_reactions()
-                && ui
-                    .add_enabled(
-                        idle && game.can_submit(),
-                        egui::Button::new(crate::tr!("Не реагировать", "Decline reactions")),
-                    )
-                    .on_hover_text(crate::tr!(
-                        "Деактивировать все свои реакции и передать ход сопернику.",
-                        "Deactivate all your reactions and hand the turn to your opponent."
-                    ))
-                    .clicked()
-            {
-                game.decline_reactions();
-            }
-            if let CalculationStatus::Paused { t, .. } = game.engine.calculation_status() {
-                ui.horizontal_wrapped(|ui| {
-                    if icon_button(
-                        ui,
-                        Icon::Continue,
-                        crate::tr!("Продолжить просчёт · C", "Continue calculation · C"),
-                        false,
-                        idle && game.can_submit(),
-                    )
-                    .clicked()
-                    {
-                        game.continue_calculation();
-                    }
-                    ui.colored_label(REACTION, crate::tr_format!("Доска {t}", "Board {t}"));
-                });
-            }
-            if !matches!(
-                game.engine.status(),
-                temporal_chess_engine::engine::GameStatus::Ongoing
-            ) {
-                ui.label(game.status_text());
-            }
-            if let Some(selection) = &game.selected {
-                let piece = selection.piece;
-                let direction = selection.direction;
-                ui.separator();
-                ui.horizontal(|ui| {
-                    let (rect, _) = ui.allocate_exact_size(Vec2::splat(36.0), egui::Sense::hover());
-                    art.paint_styled(
-                        ui.painter(),
-                        piece.kind,
-                        piece.color,
-                        rect,
-                        1.0,
-                        crate::piece_art::PieceStyle {
-                            inverted: piece.inverted,
-                            ..Default::default()
-                        },
-                    );
-                    ui.label(format!(
-                        "{} · ({}, {})",
-                        piece_name(piece.kind),
-                        square_name(piece.sq),
-                        piece.t
-                    ));
-                });
-                ui.horizontal(|ui| {
-                    if icon_button(
-                        ui,
-                        if direction == temporal_chess_engine::model::TimeDirection::Future {
-                            Icon::Future
-                        } else {
-                            Icon::Past
-                        },
-                        crate::tr!(
-                            "Сменить направление · СКМ",
-                            "Change direction · middle mouse button"
-                        ),
-                        false,
-                        !game.playback_busy(),
-                    )
-                    .clicked()
-                    {
-                        game.toggle_direction();
-                    }
-                    ui.label(crate::controller::direction_name(direction));
-                });
-            }
+            ui.colored_label(REACTION, crate::tr_format!("Доска {t}", "Board {t}"));
         });
+    }
+    if !matches!(
+        game.engine.status(),
+        temporal_chess_engine::engine::GameStatus::Ongoing
+    ) {
+        ui.label(game.status_text());
+    }
+}
+
+fn hud_selection(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt, compact: bool) {
+    if let Some(selection) = &game.selected {
+        let piece = selection.piece;
+        let direction = selection.direction;
+        ui.horizontal(|ui| {
+            let (rect, _) = ui.allocate_exact_size(
+                Vec2::splat(if compact { 28.0 } else { 36.0 }),
+                egui::Sense::hover(),
+            );
+            #[cfg(test)]
+            ui.ctx()
+                .data_mut(|d| d.insert_temp(egui::Id::new("hud_selected_piece"), rect));
+            art.paint_styled(
+                ui.painter(),
+                piece.kind,
+                piece.color,
+                rect,
+                1.0,
+                crate::piece_art::PieceStyle {
+                    inverted: piece.inverted,
+                    ..Default::default()
+                },
+            );
+            ui.label(if compact {
+                format!("({}, {})", square_name(piece.sq), piece.t)
+            } else {
+                format!(
+                    "{} · ({}, {})",
+                    piece_name(piece.kind),
+                    square_name(piece.sq),
+                    piece.t
+                )
+            });
+        });
+        ui.horizontal(|ui| {
+            if icon_button(
+                ui,
+                if direction == temporal_chess_engine::model::TimeDirection::Future {
+                    Icon::Future
+                } else {
+                    Icon::Past
+                },
+                crate::tr!(
+                    "Сменить направление · СКМ",
+                    "Change direction · middle mouse button"
+                ),
+                false,
+                !game.playback_busy(),
+            )
+            .clicked()
+            {
+                game.toggle_direction();
+            }
+            ui.label(crate::controller::direction_name(direction));
+        });
+    }
 }
 
 fn language_header(ui: &mut egui::Ui) {
@@ -805,6 +956,121 @@ mod tests {
                 .is_empty()
         );
         output
+    }
+
+    #[test]
+    fn sidebar_preference_overrides_device_default() {
+        assert!(!initial_sidebar(None, true));
+        assert!(initial_sidebar(None, false));
+        for mobile in [false, true] {
+            assert!(initial_sidebar(Some("open"), mobile));
+            assert!(!initial_sidebar(Some("closed"), mobile));
+        }
+    }
+
+    #[test]
+    fn phone_hud_places_selection_beside_turn_and_desktop_keeps_it_below() {
+        for width in [320.0, 375.0, 430.0, 1260.0] {
+            let ctx = egui::Context::default();
+            crate::theme::configure(&ctx);
+            let art = PieceArt::new(&ctx);
+            let mut shell = ShellState::default();
+            let mut game = GameUi::default();
+            game.click_square(0, Sq(4, 1));
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(width, 812.0))),
+                    ..Default::default()
+                },
+                |ui| draw(ui.ctx(), &mut game, &mut shell, &art),
+            );
+            output.textures_delta.clear();
+            let (king, piece) = ctx.data(|d| {
+                (
+                    d.get_temp::<Rect>(egui::Id::new("hud_king")).unwrap(),
+                    d.get_temp::<Rect>(egui::Id::new("hud_selected_piece"))
+                        .unwrap(),
+                )
+            });
+            let replay = ctx
+                .data(|d| {
+                    d.get_temp::<Rect>(egui::Id::new((
+                        "icon",
+                        crate::tr!("Повторить предыдущий ход", "Replay previous move"),
+                    )))
+                })
+                .unwrap();
+            assert_eq!(
+                replay.size(),
+                Vec2::splat(38.0),
+                "replay must stay square at width {width}"
+            );
+            if width < 760.0 {
+                assert!(piece.left() > king.right());
+                assert!((piece.top() - king.top()).abs() < 1.0);
+                assert!(piece.right() < width - 50.0);
+            } else {
+                assert!(piece.top() > king.bottom());
+                assert!((piece.left() - king.left()).abs() < 1.0);
+            }
+        }
+    }
+
+    #[test]
+    fn phone_layout_keeps_ribbon_inside_screen_with_closed_sidebar() {
+        let ctx = egui::Context::default();
+        crate::theme::configure(&ctx);
+        let art = PieceArt::new(&ctx);
+        let mut shell = ShellState::default();
+        let mut game = GameUi::with_start(
+            Default::default(),
+            temporal_chess_engine::model::StartingPosition::TimeWar { separation: 9 },
+        );
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(375.0, 812.0))),
+                ..Default::default()
+            },
+            |ui| draw(ui.ctx(), &mut game, &mut shell, &art),
+        );
+        output.textures_delta.clear();
+        assert!(!shell.sidebar_open);
+        assert!(shell.ribbon_rect.width() > 300.0);
+        assert!(shell.ribbon_rect.top() < 300.0);
+        assert!(game.viewport.stride < 400.0);
+        let king = ctx
+            .data(|d| d.get_temp::<Rect>(egui::Id::new("hud_king")))
+            .unwrap();
+        assert!(king.top() < 40.0, "turn status lives at the screen top");
+        assert!(shell.ribbon_rect.top() > king.bottom());
+        let pos = shell.ribbon_rect.center();
+        let offset = game.viewport.offset;
+        let touch = |phase, x, y| egui::Event::Touch {
+            device_id: egui::TouchDeviceId(0),
+            id: egui::TouchId(0),
+            phase,
+            pos: egui::pos2(x, y),
+            force: None,
+        };
+        for event in [
+            touch(egui::TouchPhase::Start, pos.x, pos.y),
+            touch(egui::TouchPhase::Move, pos.x, pos.y + 40.0),
+        ] {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(375.0, 812.0))),
+                    events: vec![event],
+                    ..Default::default()
+                },
+                |ui| draw(ui.ctx(), &mut game, &mut shell, &art),
+            );
+            output.textures_delta.clear();
+        }
+        assert!(
+            game.viewport.offset < offset - 40.0,
+            "fast swipes accelerate"
+        );
+        assert!(game.pending_square.is_none());
     }
 
     #[test]

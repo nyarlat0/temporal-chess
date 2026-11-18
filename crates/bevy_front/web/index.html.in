@@ -18,11 +18,13 @@
     try { savedLanguage = localStorage.getItem('temporal-chess.language'); } catch (_) {}
     document.documentElement.lang = resolveLanguage(savedLanguage, navigator.languages?.length ? navigator.languages : [navigator.language]);
     function pageText(ru, en) { return document.documentElement.lang === 'ru' ? ru : en; }
+    document.documentElement.dataset.touchDevice = String(navigator.maxTouchPoints > 0 && matchMedia('(pointer: coarse)').matches);
   </script>
   <link rel="icon" type="image/svg+xml" sizes="any" href="./releases/__NOLAN_RELEASE__/favicon.svg">
   <style>
     html, body { width:100%; height:100%; margin:0; overflow:hidden; background:#16181d; color:#e7eaf1; font:16px system-ui,sans-serif; }
     canvas { display:block; width:100%; height:100%; outline:none; touch-action:none; }
+    body { overscroll-behavior:none; height:100dvh; }
     #loading { position:fixed; inset:0; display:grid; place-content:center; text-align:center; gap:12px; background:#16181d; z-index:2; padding:24px; }
     #loading small { color:#9ba3b4; max-width:480px; }
     #loading[hidden] { display:none; }

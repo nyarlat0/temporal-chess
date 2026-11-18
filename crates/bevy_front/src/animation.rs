@@ -536,6 +536,52 @@ impl BoardTransition {
     }
 }
 
+/// Direct finger movement followed by a bounded, exponentially damped coast.
+#[derive(Default)]
+pub struct TouchInertia {
+    velocity: f32,
+}
+
+impl TouchInertia {
+    pub fn stop(&mut self) {
+        self.velocity = 0.0;
+    }
+    pub fn active(&self) -> bool {
+        self.velocity != 0.0
+    }
+
+    pub fn update(&mut self, offset: f32, delta: f32, down: bool, dt: f32, maximum: f32) -> f32 {
+        let dt = dt.clamp(0.001, 0.05);
+        let next = if down {
+            if delta != 0.0 {
+                if self.velocity * delta < 0.0 {
+                    self.stop();
+                }
+                // Fast swipes cover more distance; slow drags remain precise.
+                let speed = delta.abs() / dt;
+                let gain = 1.0 + ((speed - 350.0) / 2500.0).clamp(0.0, 0.35);
+                let movement = delta * gain;
+                self.velocity += (movement / dt - self.velocity) * (1.0 - (-20.0 * dt).exp());
+                offset + movement
+            } else {
+                // Holding the finger still brakes the eventual release.
+                self.velocity *= (-18.0 * dt).exp();
+                offset
+            }
+        } else {
+            // Integrate exponential drag exactly, independent of frame rate.
+            let decay = (-5.5 * dt).exp();
+            let next = offset + self.velocity * (1.0 - decay) / 5.5;
+            self.velocity *= decay;
+            next
+        };
+        if self.velocity.abs() < 3.0 || next <= 0.0 || next >= maximum {
+            self.stop();
+        }
+        next.clamp(0.0, maximum)
+    }
+}
+
 /// A short critically damped coast for mouse-wheel navigation.
 #[derive(Default)]
 pub struct WheelInertia {
@@ -688,6 +734,41 @@ fn fall_sign() -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn touch_swipe_accelerates_coasts_and_stops_without_snapping() {
+        let mut scroll = TouchInertia::default();
+        let after_drag = scroll.update(500.0, 40.0, true, 1.0 / 60.0, 5000.0);
+        assert!(after_drag > 540.0);
+        let mut offset = after_drag;
+        for _ in 0..300 {
+            let next = scroll.update(offset, 0.0, false, 1.0 / 60.0, 5000.0);
+            assert!(next >= offset);
+            offset = next;
+        }
+        assert!(offset > after_drag + 30.0);
+        assert!(!scroll.active());
+        assert_eq!(scroll.update(offset, 0.0, false, 0.016, 5000.0), offset);
+        scroll.update(offset, -30.0, true, 0.016, 5000.0);
+        scroll.stop();
+        assert_eq!(scroll.update(offset, 0.0, false, 0.016, 5000.0), offset);
+        assert_eq!(scroll.update(1.0, -40.0, true, 0.016, 5000.0), 0.0);
+        assert!(!scroll.active());
+    }
+
+    #[test]
+    fn touch_coasting_is_independent_of_refresh_rate_and_holding_brakes() {
+        let coast = |fps: usize, hold: bool| {
+            let mut scroll = TouchInertia::default();
+            let mut offset = scroll.update(500.0, 40.0, true, 0.016, 5000.0);
+            for _ in 0..fps {
+                offset = scroll.update(offset, 0.0, hold, 1.0 / fps as f32, 5000.0);
+            }
+            (offset, scroll.velocity)
+        };
+        assert!((coast(30, false).0 - coast(120, false).0).abs() < 0.01);
+        assert!(coast(60, true).1.abs() < 0.01);
+    }
+
     use temporal_chess_engine::{
         model::{Color, GameRules, Sq, StartingPosition, State},
         record::{Command, GameRecord},

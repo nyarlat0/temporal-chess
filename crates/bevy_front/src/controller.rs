@@ -147,6 +147,7 @@ pub struct TimelineViewport {
     pub stride: f32,
     pub scroll: Option<SmoothScroll>,
     pub wheel: WheelInertia,
+    pub touch_inertia: crate::animation::TouchInertia,
     pub frame: Option<u64>,
     pub motion_progress: f32,
     pub cancellation_progress: f32,

@@ -4,6 +4,90 @@ use crate::{controller::GameUi, view::ShellState};
 use bevy_egui::egui::{self, Key, PointerButton};
 use temporal_chess_engine::engine::CalculationStatus;
 
+#[derive(Clone, Default)]
+pub struct TouchNavigation {
+    fingers: std::collections::BTreeMap<egui::TouchId, egui::Pos2>,
+    origin: Option<egui::Pos2>,
+    captured: bool,
+    moved: bool,
+    pub suppress_click: bool,
+    pub scroll: f32,
+    pub zoom: f32,
+    pub down: bool,
+    pub cancel_coast: bool,
+    pinched: bool,
+}
+
+impl TouchNavigation {
+    fn update(&mut self, events: &[egui::Event], rect: egui::Rect, enabled: bool) {
+        self.scroll = 0.0;
+        self.zoom = 1.0;
+        self.suppress_click = self.moved;
+        self.cancel_coast = !enabled || self.pinched;
+        for event in events {
+            let egui::Event::Touch { id, phase, pos, .. } = event else {
+                continue;
+            };
+            let before = self.geometry();
+            if self.fingers.is_empty() && *phase == egui::TouchPhase::Start {
+                self.captured = enabled && rect.contains(*pos);
+                self.origin = Some(*pos);
+                self.moved = false;
+                self.suppress_click = false;
+                self.pinched = false;
+                self.cancel_coast = !enabled;
+            }
+            match phase {
+                egui::TouchPhase::Start | egui::TouchPhase::Move => {
+                    self.fingers.insert(*id, *pos);
+                }
+                egui::TouchPhase::End | egui::TouchPhase::Cancel => {
+                    self.fingers.remove(id);
+                }
+            }
+            if !enabled {
+                self.captured = false;
+            }
+            if self.captured && *phase == egui::TouchPhase::Move {
+                if self.fingers.len() >= 2 || self.origin.is_some_and(|p| p.distance(*pos) > 8.0) {
+                    self.moved = true;
+                }
+                if self.moved
+                    && let (Some((center, distance)), Some((old, old_distance))) =
+                        (self.geometry(), before)
+                {
+                    self.scroll += center.y - old.y;
+                    if self.fingers.len() >= 2 && old_distance > 1.0 {
+                        self.zoom *= distance / old_distance;
+                    }
+                }
+            }
+            if self.captured && self.fingers.len() >= 2 {
+                self.moved = true;
+                self.pinched = true;
+            }
+            self.cancel_coast |= *phase == egui::TouchPhase::Cancel || self.pinched;
+            self.suppress_click |= self.moved;
+        }
+        // Retain suppression through the release frame to prevent a drag becoming a move.
+        if self.fingers.is_empty() {
+            self.moved = false;
+            self.origin = None;
+        }
+        self.down = self.captured && !self.fingers.is_empty();
+    }
+
+    fn geometry(&self) -> Option<(egui::Pos2, f32)> {
+        let mut points = self.fingers.values();
+        let a = *points.next()?;
+        Some(
+            points
+                .next()
+                .map_or((a, 0.0), |b| (a.lerp(*b, 0.5), a.distance(*b))),
+        )
+    }
+}
+
 pub fn handle(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState) {
     let frame = ctx.cumulative_frame_nr();
     if shell.input_frame == Some(frame) {
@@ -12,6 +96,7 @@ pub fn handle(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState) {
     shell.input_frame = Some(frame);
     if ctx.input(|i| i.pointer.any_pressed()) {
         game.viewport.wheel.stop();
+        game.viewport.touch_inertia.stop();
     }
     let modal = game.import_open
         || game.confirm_restart
@@ -19,6 +104,33 @@ pub fn handle(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState) {
         || !game.promotion.is_empty()
         || !game.overlapping.is_empty()
         || shell.help_open;
+    let touch_enabled = !modal && !game.playback_busy() && !game.facing.animating();
+    if !ctx.input(|i| i.focused) {
+        shell.touch = TouchNavigation::default();
+        game.viewport.touch_inertia.stop();
+    }
+    ctx.input(|i| {
+        shell
+            .touch
+            .update(&i.events, shell.ribbon_rect, touch_enabled)
+    });
+    ctx.data_mut(|d| {
+        d.insert_temp(
+            egui::Id::new("touch_navigation_drag"),
+            shell.touch.suppress_click,
+        )
+    });
+    if touch_enabled && shell.touch.zoom != 1.0 {
+        let (visible_cell, _, _) = crate::board_view::ribbon_layout(
+            shell.ribbon_rect.width(),
+            game.cell_size,
+            crate::view::mobile_layout(ctx),
+        );
+        game.cell_size = (visible_cell * shell.touch.zoom).clamp(9.6, 90.0);
+        game.viewport.wheel.stop();
+        game.viewport.scroll = None;
+        game.jump_to = None;
+    }
     let (pressed, released, down, right_click, escape, toggle) = ctx.input(|i| {
         (
             i.pointer.button_pressed(PointerButton::Secondary),
@@ -131,6 +243,12 @@ pub fn clicked(response: &egui::Response) -> bool {
 }
 
 pub fn clicked_by(response: &egui::Response, button: PointerButton) -> bool {
+    if response.ctx.data(|d| {
+        d.get_temp::<bool>(egui::Id::new("touch_navigation_drag"))
+            .unwrap_or(false)
+    }) {
+        return false;
+    }
     if !response.clicked_by(button) {
         return false;
     }
@@ -168,6 +286,57 @@ pub fn wheel_delta(i: &egui::InputState) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn touch(id: u64, phase: egui::TouchPhase, x: f32, y: f32) -> egui::Event {
+        egui::Event::Touch {
+            device_id: egui::TouchDeviceId(0),
+            id: egui::TouchId(id),
+            phase,
+            pos: egui::pos2(x, y),
+            force: None,
+        }
+    }
+
+    #[test]
+    fn touch_pan_pinch_release_and_ui_boundaries() {
+        use egui::TouchPhase::*;
+        let rect = egui::Rect::from_min_max(egui::pos2(0.0, 100.0), egui::pos2(375.0, 800.0));
+        let mut nav = TouchNavigation::default();
+        nav.update(&[touch(0, Start, 100.0, 200.0)], rect, true);
+        nav.update(&[touch(0, End, 100.0, 200.0)], rect, true);
+        assert!(!nav.suppress_click, "tapping must still select pieces");
+        nav.update(&[touch(0, Start, 100.0, 300.0)], rect, true);
+        nav.update(&[touch(0, Move, 100.0, 200.0)], rect, true);
+        assert_eq!(nav.scroll, -100.0);
+        assert!(nav.suppress_click);
+        nav.update(&[touch(1, Start, 200.0, 200.0)], rect, true);
+        nav.update(&[touch(1, Move, 300.0, 200.0)], rect, true);
+        assert_eq!(nav.zoom, 2.0);
+        nav.update(
+            &[touch(1, Cancel, 300.0, 200.0), touch(0, End, 100.0, 200.0)],
+            rect,
+            true,
+        );
+        assert!(nav.suppress_click, "pinch release must not execute a move");
+        nav.update(&[], rect, true);
+        assert!(!nav.suppress_click);
+        nav.update(
+            &[touch(0, Start, 100.0, 40.0), touch(0, Move, 100.0, 150.0)],
+            rect,
+            true,
+        );
+        assert_eq!(nav.scroll, 0.0, "a gesture starting in UI stays in UI");
+        nav.update(
+            &[
+                touch(0, End, 100.0, 150.0),
+                touch(0, Start, 100.0, 200.0),
+                touch(0, Move, 100.0, 300.0),
+            ],
+            rect,
+            false,
+        );
+        assert_eq!(nav.scroll, 0.0);
+    }
 
     #[test]
     fn shift_wheel_reaches_fifteen_percent_and_right_press_exits_worldline() {

@@ -16,13 +16,32 @@ use temporal_chess_engine::{
 const LIGHT: Color32 = Color32::from_rgb(240, 217, 181);
 const DARK: Color32 = Color32::from_rgb(181, 136, 99);
 
-pub fn ribbon(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt) -> Rect {
+/// Cell size, board origin and rail origin, including the largest active frame.
+pub(crate) fn ribbon_layout(width: f32, requested: f32, compact: bool) -> (f32, f32, f32) {
+    if compact {
+        let cell = requested.min(((width - 92.0) / 9.04).max(9.6));
+        let padding = board_frame_padding(cell, 1.0);
+        let spare = (width - (84.0 + 8.0 + 8.0 * cell + 2.0 * padding)).max(0.0);
+        let left = 84.0 + padding + spare * 0.5;
+        (cell, left, left - padding - 12.0)
+    } else {
+        let cell = requested.min(((width - 484.0) / 8.0).max(9.6));
+        let left = 200.0 + (width - 484.0 - cell * 8.0).max(0.0) * 0.5;
+        (cell, left, left - (cell * 0.62 + 24.0).max(39.0))
+    }
+}
+
+pub fn ribbon(
+    ui: &mut egui::Ui,
+    game: &mut GameUi,
+    art: &PieceArt,
+    touch: &crate::input::TouchNavigation,
+) -> Rect {
     // Own the viewport rather than combining two independent scroll animators.
     // Content height contains real boards only: no blank padding rows.
     let (viewport, _) = ui.allocate_exact_size(ui.available_size(), Sense::hover());
-    let cell = game
-        .cell_size
-        .min(((viewport.width() - 484.0) / 8.0).max(18.0));
+    let compact = crate::view::mobile_layout(ui.ctx());
+    let (cell, board_x, rail) = ribbon_layout(viewport.width(), game.cell_size, compact);
     let gap = 1.04 * cell + 24.0;
     let height = 8.0 * cell + gap;
     let times = game.times();
@@ -54,6 +73,7 @@ pub fn ribbon(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt) -> Rect {
             })
         {
             game.viewport.wheel.stop();
+            game.viewport.touch_inertia.stop();
         }
         let mut raw = game
             .transition
@@ -113,7 +133,10 @@ pub fn ribbon(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt) -> Rect {
             } else {
                 0.0
             };
-            if wheel != 0.0 {
+            if touch.scroll != 0.0 {
+                game.viewport.wheel.stop();
+            }
+            if wheel != 0.0 || touch.down {
                 game.viewport.scroll = None;
                 game.jump_to = None;
                 game.viewport.focused = None;
@@ -124,6 +147,21 @@ pub fn ribbon(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt) -> Rect {
                 ui.ctx().input(|i| i.stable_dt),
                 max_offset,
             );
+            if wheel != 0.0 || touch.cancel_coast {
+                game.viewport.touch_inertia.stop();
+            }
+            if ui.is_enabled() && !game.playback_busy() && !game.facing.animating() {
+                offset = game.viewport.touch_inertia.update(
+                    offset,
+                    -touch.scroll,
+                    touch.down,
+                    ui.ctx().input(|i| i.stable_dt),
+                    max_offset,
+                );
+                if touch.cancel_coast {
+                    game.viewport.touch_inertia.stop();
+                }
+            }
             if let Some(target) = game.jump_to.take()
                 && let Some(row) = times.iter().position(|&t| t == target)
             {
@@ -201,9 +239,8 @@ pub fn ribbon(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt) -> Rect {
     let painter = ui
         .painter()
         .with_clip_rect(viewport.intersect(ui.clip_rect()));
-    let spare = (viewport.width() - 484.0 - cell * 8.0).max(0.0);
-    let board_left = viewport.left() + 200.0 + spare * 0.5;
-    let rail_x = board_left - (cell * 0.62 + 24.0).max(39.0);
+    let board_left = viewport.left() + board_x;
+    let rail_x = viewport.left() + rail;
     let board_at = |index: usize| {
         let left = board_left;
         Rect::from_min_size(
@@ -276,6 +313,7 @@ pub fn ribbon(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt) -> Rect {
         }
         let reverse = crate::input::clicked_by(&response, egui::PointerButton::Middle);
         if !moving
+            && !touch.suppress_click
             && game.viewport.scroll.is_none()
             && (crate::input::clicked(&response) || reverse)
             && let Some(pos) = response.interact_pointer_pos()
@@ -306,13 +344,21 @@ pub fn ribbon(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt) -> Rect {
     // Pinned beside the rail, independent of board scroll and zoom.
     let controls = Rect::from_min_size(
         Pos2::new(
-            (rail_x - 87.0).max(viewport.left() + 52.0),
+            if compact {
+                viewport.left()
+            } else {
+                (rail_x - 87.0).max(viewport.left() + 52.0)
+            },
             viewport.center().y - 46.0,
         ),
         Vec2::new(46.0, 92.0),
     );
     let tool_rect = Rect::from_center_size(
-        Pos2::new(controls.left() - 26.0, viewport.center().y),
+        if compact {
+            Pos2::new(controls.center().x, controls.top() - 30.0)
+        } else {
+            Pos2::new(controls.left() - 26.0, viewport.center().y)
+        },
         Vec2::splat(46.0),
     );
     painter.rect_filled(tool_rect, 8.0, BACKGROUND);
@@ -378,6 +424,7 @@ pub fn ribbon(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt) -> Rect {
         || game.facing.animating()
         || game.viewport.scroll.is_some()
         || game.viewport.wheel.active()
+        || game.viewport.touch_inertia.active()
         || game.jump_to.is_some()
     {
         ui.ctx().request_repaint();
@@ -1307,6 +1354,18 @@ fn piece_style(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn phone_layout_reserves_the_whole_active_frame_and_rail_gap() {
+        for width in [296.0, 351.0, 406.0, 820.0] {
+            for requested in [9.6, 32.0, 64.0, 90.0] {
+                let (cell, left, rail) = ribbon_layout(width, requested, true);
+                let padding = board_frame_padding(cell, 1.0);
+                assert!(left - padding - rail >= 11.99);
+                assert!(left + 8.0 * cell + padding <= width - 7.99);
+            }
+        }
+    }
+
     #[test]
     fn inverted_en_passant_hides_a_dead_sources_retained_arrow() {
         use temporal_chess_engine::{
