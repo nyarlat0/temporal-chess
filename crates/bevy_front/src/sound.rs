@@ -157,9 +157,31 @@ fn refresh_waiting(engine: &Engine, mut waiting: u8, started: bool) -> u8 {
     waiting
 }
 
+fn background_music(
+    outcome: Option<GameOutcome>,
+    viewer: Option<Color>,
+    direction: TimeDirection,
+    waiting: u8,
+    disabled_waiting: bool,
+) -> Music {
+    if let Some(outcome) = outcome {
+        let direction = if outcome == GameOutcome::Stalemate {
+            TimeDirection::Future
+        } else {
+            direction
+        };
+        Music::Finale(finale(outcome, viewer, direction))
+    } else if waiting != 0 && !disabled_waiting {
+        Music::Waiting(waiting)
+    } else {
+        Music::Silent
+    }
+}
+
 pub fn update(
     #[cfg(not(target_arch = "wasm32"))] mut commands: Commands,
     mut game: ResMut<GameUi>,
+    shell: Res<crate::view::ShellState>,
     mut audio: ResMut<Director>,
     #[cfg(not(target_arch = "wasm32"))] sinks: Query<&AudioSink>,
     #[cfg(not(target_arch = "wasm32"))] mut contexts: bevy_egui::EguiContexts,
@@ -230,19 +252,13 @@ pub fn update(
     } else {
         audible_waiting(audio.waiting, viewer)
     };
-    let desired = if let Some(outcome) = game.engine.outcome() {
-        // Draws use the regular defeat track; local/self-play victories use victory.
-        let direction = if outcome == GameOutcome::Stalemate {
-            TimeDirection::Future
-        } else {
-            audio.direction
-        };
-        Music::Finale(finale(outcome, viewer, direction))
-    } else if waiting != 0 {
-        Music::Waiting(waiting)
-    } else {
-        Music::Silent
-    };
+    let desired = background_music(
+        game.engine.outcome(),
+        viewer,
+        audio.direction,
+        waiting,
+        shell.disable_waiting_music,
+    );
     if desired != audio.music {
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -320,6 +336,33 @@ fn stop(audio: &mut Director, commands: &mut Commands, sinks: &Query<&AudioSink>
 mod tests {
     use super::*;
     use temporal_chess_engine::engine::WinReason;
+    #[test]
+    fn waiting_music_can_be_muted_without_muting_the_game_result() {
+        for muted in [false, true] {
+            assert_eq!(
+                background_music(None, None, TimeDirection::Past, 0, muted),
+                Music::Silent
+            );
+            assert_eq!(
+                background_music(None, None, TimeDirection::Past, 1, muted),
+                if muted {
+                    Music::Silent
+                } else {
+                    Music::Waiting(1)
+                }
+            );
+            assert_eq!(
+                background_music(
+                    Some(GameOutcome::Stalemate),
+                    Some(Color::White),
+                    TimeDirection::Past,
+                    1,
+                    muted
+                ),
+                Music::Finale("defeat")
+            );
+        }
+    }
     #[test]
     fn waiting_music_is_only_audible_to_the_waiting_player() {
         assert_eq!(audible_waiting(1, Some(Color::White)), 1);

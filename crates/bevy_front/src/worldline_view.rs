@@ -451,6 +451,21 @@ mod tests {
         game.navigate_active(false, false);
         game.update_worldline_transition(&ctx);
         assert_eq!(game.jump_to, Some(-3));
+        game.navigate_boundary(false);
+        assert!(game.worldline_transition.is_some());
+        assert_eq!(game.worldline_state, Some(original));
+        game.update_worldline_transition(&ctx);
+        assert_eq!(game.jump_to, Some(-2));
+        game.navigate_boundary(true);
+        game.update_worldline_transition(&ctx);
+        assert_eq!(game.jump_to, Some(-3));
+        assert!(
+            !game
+                .engine
+                .piece_state(game.worldline_state.unwrap())
+                .unwrap()
+                .alive
+        );
         game.click_square(-2, Sq(7, 7));
         assert!(game.worldline_mode);
         assert!(game.worldline_selected.is_none() && game.worldline_state.is_none());

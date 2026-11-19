@@ -72,6 +72,14 @@ impl Default for OnlineState {
     }
 }
 impl OnlineState {
+    pub fn restart_local(
+        &mut self,
+        rules: GameRules,
+        start: StartingPosition,
+        bot: crate::tempfish::Settings,
+    ) {
+        self.action = Some(Action::LocalGame { rules, start, bot });
+    }
     pub fn initial_record(&self) -> GameRecord {
         if self.starting_position == StartingPosition::Lab
             && let Some(setup) = &self.lab_setup
@@ -124,6 +132,11 @@ fn undo_prefix(record: &GameRecord) -> Option<usize> {
         .rposition(|command| command.spends_turn(record.rules()))
 }
 enum Action {
+    LocalGame {
+        rules: GameRules,
+        start: StartingPosition,
+        bot: crate::tempfish::Settings,
+    },
     Create,
     Join,
     Retry,
@@ -179,7 +192,8 @@ fn validate_proposal(
         source.t < engine.history().beginning()
             || source.t > engine.history().horizon()
             || source.piece.wid >= engine.history().worldlines().len()
-            || source.piece.fut_seen > engine.history().horizon()
+            || (source.piece.fut_seen > engine.history().horizon()
+                && engine.history().starting_position() != StartingPosition::Lab)
             || source.piece.loop_turn > MAX_COMMANDS
     }) {
         return Err("piece occurrence is absent or cannot act".into());
@@ -380,6 +394,13 @@ pub fn poll(
     };
     if let Some(action) = game.online.action.take() {
         match action {
+            Action::LocalGame { rules, start, bot } => {
+                client.close();
+                client.retry_at = None;
+                client.accepted.clear();
+                game.start_new_local(rules, start, bot);
+                return;
+            }
             Action::RequestUndo { keep_commands } => {
                 client.send(&ClientMessage::RequestUndo {
                     revision: game.online.revision,
@@ -1076,10 +1097,7 @@ pub fn lab_controls(ui: &mut egui::Ui, online: &mut OnlineState) {
     });
 }
 
-pub fn panel(ui: &mut egui::Ui, game: &mut GameUi) {
-    if game.lab.is_some() {
-        return;
-    }
+pub fn creation_panel(ui: &mut egui::Ui, game: &mut GameUi) {
     let idle = game.replay_job.is_none() && !game.playback_busy();
     ui.add_space(8.0);
     if game.online.enabled {
@@ -1134,6 +1152,8 @@ pub fn panel(ui: &mut egui::Ui, game: &mut GameUi) {
                 .clicked()
             {
                 game.online.action = Some(Action::Leave);
+                game.confirm_restart = false;
+                game.new_game_online = false;
             }
         });
         ui.small(crate::tr!(
@@ -1141,70 +1161,70 @@ pub fn panel(ui: &mut egui::Ui, game: &mut GameUi) {
             "Undo requires your opponent’s consent."
         ));
     } else {
-        egui::CollapsingHeader::new(crate::tr!("Играть по сети", "Play online"))
-            .default_open(!game.online.room_input.is_empty())
-            .show(ui, |ui| {
-                ui.add_enabled_ui(idle, |ui| {
-                    ui.label(crate::tr!("Создать новую комнату", "Create a new room"));
-                    crate::view::starting_position_controls(ui, &mut game.online.starting_position);
-                    crate::view::rule_controls(ui, &mut game.online.rules);
-                    ui.horizontal(|ui| {
-                        ui.selectable_value(
-                            &mut game.online.preference,
-                            SidePreference::Random,
-                            crate::tr!("Случайно", "Random"),
-                        );
-                        ui.selectable_value(
-                            &mut game.online.preference,
-                            SidePreference::White,
-                            crate::tr!("Белые", "White"),
-                        );
-                        ui.selectable_value(
-                            &mut game.online.preference,
-                            SidePreference::Black,
-                            crate::tr!("Чёрные", "Black"),
-                        );
-                    });
-                    if ui
-                        .add_enabled(
-                            game.online.starting_position.is_valid(),
-                            egui::Button::new(crate::tr!("Создать комнату", "Create room")),
-                        )
-                        .clicked()
-                    {
-                        if game.online.starting_position == StartingPosition::Lab {
-                            game.open_network_lab();
-                        } else {
-                            game.online.action = Some(Action::Create);
-                        }
-                    }
-                    ui.separator();
-                    ui.add(
-                        egui::TextEdit::singleline(&mut game.online.room_input)
-                            .hint_text(crate::tr!("Код комнаты", "Room code"))
-                            .char_limit(12),
+        ui.push_id("new_online_game", |ui| {
+            ui.add_enabled_ui(idle, |ui| {
+                ui.label(crate::tr!("Создать новую комнату", "Create a new room"));
+                crate::view::starting_position_controls(ui, &mut game.new_game_start);
+                crate::view::rule_controls(ui, &mut game.new_game_rules);
+                ui.horizontal(|ui| {
+                    ui.selectable_value(
+                        &mut game.online.preference,
+                        SidePreference::Random,
+                        crate::tr!("Случайно", "Random"),
                     );
-                    if ui
-                        .add_enabled(
-                            !game.online.room_input.trim().is_empty(),
-                            egui::Button::new(crate::tr!("Присоединиться", "Join")),
-                        )
-                        .clicked()
-                    {
-                        game.online.action = Some(Action::Join);
-                    }
-                    egui::CollapsingHeader::new(crate::tr!("Сервер", "Server")).show(ui, |ui| {
-                        ui.add(
-                            egui::TextEdit::singleline(&mut game.online.endpoint)
-                                .hint_text("wss://example.com/ws"),
-                        );
-                    });
-                    ui.small(crate::tr!(
-                        "При подключении текущую позицию заменит сетевая партия.",
-                        "Connecting will replace the current position with the online game."
-                    ));
+                    ui.selectable_value(
+                        &mut game.online.preference,
+                        SidePreference::White,
+                        crate::tr!("Белые", "White"),
+                    );
+                    ui.selectable_value(
+                        &mut game.online.preference,
+                        SidePreference::Black,
+                        crate::tr!("Чёрные", "Black"),
+                    );
                 });
+                if ui
+                    .add_enabled(
+                        game.new_game_start.is_valid(),
+                        egui::Button::new(crate::tr!("Создать комнату", "Create room")),
+                    )
+                    .clicked()
+                {
+                    game.online.rules = game.new_game_rules;
+                    game.online.starting_position = game.new_game_start;
+                    if game.online.starting_position == StartingPosition::Lab {
+                        game.open_network_lab();
+                    } else {
+                        game.online.action = Some(Action::Create);
+                    }
+                }
+                ui.separator();
+                ui.add(
+                    egui::TextEdit::singleline(&mut game.online.room_input)
+                        .hint_text(crate::tr!("Код комнаты", "Room code"))
+                        .char_limit(12),
+                );
+                if ui
+                    .add_enabled(
+                        !game.online.room_input.trim().is_empty(),
+                        egui::Button::new(crate::tr!("Присоединиться", "Join")),
+                    )
+                    .clicked()
+                {
+                    game.online.action = Some(Action::Join);
+                }
+                egui::CollapsingHeader::new(crate::tr!("Сервер", "Server")).show(ui, |ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut game.online.endpoint)
+                            .hint_text("wss://example.com/ws"),
+                    );
+                });
+                ui.small(crate::tr!(
+                    "При подключении текущую позицию заменит сетевая партия.",
+                    "Connecting will replace the current position with the online game."
+                ));
             });
+        });
     }
     ui.separator();
 }
@@ -1635,6 +1655,63 @@ mod tests {
             );
         }
         assert!(game.record.commands().is_empty());
+    }
+
+    #[test]
+    fn lab_moves_with_retained_knowledge_of_trimmed_future_are_accepted() {
+        use temporal_chess_engine::{
+            engine::LabEdit,
+            model::{PieceKind, Sq},
+        };
+        let mut engine = Engine::new_lab(Default::default())
+            .unwrap()
+            .with_interactive_calculation()
+            .unwrap();
+        engine
+            .edit_lab(LabEdit::Boards {
+                beginning: -3,
+                horizon: 1,
+            })
+            .unwrap();
+        engine
+            .edit_lab(LabEdit::Place {
+                t: 1,
+                square: Sq(1, 7),
+                kind: PieceKind::N,
+                color: Color::Black,
+                inverted: true,
+            })
+            .unwrap();
+        engine.edit_lab(LabEdit::Turn(Color::Black)).unwrap();
+        let piece = engine.move_sources().next().unwrap();
+        let mv = engine
+            .possible_moves(0, piece.age)
+            .unwrap()
+            .into_iter()
+            .find(|m| m.to_past() && m.sq == Sq(2, 5))
+            .unwrap();
+        engine.apply_new_mv(mv).unwrap();
+        engine
+            .edit_lab(LabEdit::Boards {
+                beginning: -3,
+                horizon: 3,
+            })
+            .unwrap();
+        engine.edit_lab(LabEdit::RemoveBoard { t: 3 }).unwrap();
+        engine.edit_lab(LabEdit::Turn(Color::Black)).unwrap();
+        let proposal = CommandProposal {
+            id: "f".repeat(32),
+            revision: 17,
+            side: Side::Black,
+            command: "move -1 0:3:0 c6 e5 + normal".into(),
+        };
+        let prepared =
+            validate_proposal(engine.clone(), GameRecord::from_lab(&engine), &proposal, 17)
+                .unwrap();
+        assert_eq!(
+            GameRecord::load(&prepared.record.to_text()).unwrap().0,
+            prepared.engine
+        );
     }
 
     #[test]

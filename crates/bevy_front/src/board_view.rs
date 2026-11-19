@@ -13,8 +13,8 @@ use temporal_chess_engine::{
     record::Command,
 };
 
-const LIGHT: Color32 = Color32::from_rgb(240, 217, 181);
-const DARK: Color32 = Color32::from_rgb(181, 136, 99);
+pub(super) const LIGHT: Color32 = Color32::from_rgb(240, 217, 181);
+pub(super) const DARK: Color32 = Color32::from_rgb(181, 136, 99);
 
 /// Cell size, board origin and rail origin, including the largest active frame.
 pub(crate) fn ribbon_layout(width: f32, requested: f32, compact: bool) -> (f32, f32, f32) {
@@ -399,9 +399,11 @@ pub fn ribbon(
     let following_line = game.worldline_mode && game.worldline_selected.is_some();
     nav.style_mut().visuals.selection.bg_fill = Color32::from_rgb(100, 35, 70);
     nav.style_mut().visuals.selection.stroke.color = Color32::from_rgb(255, 110, 180);
+    let boundary = nav.input(|i| i.modifiers.shift);
     let enabled = !moving
         && game.replay_job.is_none()
-        && (following_line
+        && (boundary
+            || following_line
             || !game.active_times().is_empty()
             || !game
                 .active_times_for(game.engine.turn().opposite())
@@ -411,27 +413,30 @@ pub fn ribbon(
             Icon::Up,
             false,
             crate::tr!(
-                "Предыдущая активная доска · ПКМ: противника",
-                "Previous active board · Right click: opponent"
+                "Предыдущая активная доска · ПКМ: противника · Shift: последняя доска",
+                "Previous active board · Right click: opponent · Shift: latest board"
             ),
         ),
         (
             Icon::Down,
             true,
             crate::tr!(
-                "Следующая активная доска · ПКМ: противника",
-                "Next active board · Right click: opponent"
+                "Следующая активная доска · ПКМ: противника · Shift: начало истории",
+                "Next active board · Right click: opponent · Shift: beginning of history"
             ),
         ),
     ] {
         let next = if following_line { !next } else { next };
         let hint = if following_line {
             if next {
-                crate::tr!("Следующее состояние мировой линии", "Next worldline state")
+                crate::tr!(
+                    "Следующее состояние мировой линии · Shift: последнее",
+                    "Next worldline state · Shift: last"
+                )
             } else {
                 crate::tr!(
-                    "Предыдущее состояние мировой линии",
-                    "Previous worldline state"
+                    "Предыдущее состояние мировой линии · Shift: первое",
+                    "Previous worldline state · Shift: first"
                 )
             }
         } else {
@@ -440,7 +445,11 @@ pub fn ribbon(
         let response = icon_button(&mut nav, icon, hint, following_line, enabled);
         let opponent = response.secondary_clicked();
         if response.clicked() || opponent {
-            game.navigate_active(next, opponent);
+            if boundary {
+                game.navigate_boundary(matches!(icon, Icon::Up));
+            } else {
+                game.navigate_active(next, opponent);
+            }
         }
     }
     if game.playback_busy()
@@ -511,7 +520,7 @@ pub(super) fn paint_board_badge(painter: &egui::Painter, rect: Rect, side: Color
 
 // Rounded double frame; its extent always fits inside the row gap.
 // Dimensions scale with the squares rather than fixed UI pixels.
-fn paint_frame(
+pub(super) fn paint_frame(
     painter: &egui::Painter,
     board: Rect,
     cell: f32,
@@ -1198,7 +1207,7 @@ fn visible_moves(game: &GameUi, t: BoardTime) -> Vec<(temporal_chess_engine::mod
 }
 
 /// A single filled shape avoids darker overlaps at translucent rounded caps.
-fn paint_round_line(
+pub(super) fn paint_round_line(
     painter: &egui::Painter,
     from: Pos2,
     to: Pos2,
@@ -1227,7 +1236,7 @@ fn paint_round_line(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn paint_move_arrow(
+pub(super) fn paint_move_arrow(
     painter: &egui::Painter,
     board: Rect,
     cell: f32,
@@ -1358,7 +1367,7 @@ fn paint_reactions(
     }
 }
 
-fn paint_skull(painter: &egui::Painter, piece_rect: Rect, alpha: f32, hovered: bool) {
+pub(super) fn paint_skull(painter: &egui::Painter, piece_rect: Rect, alpha: f32, hovered: bool) {
     let size = (piece_rect.width() * if hovered { 0.36 } else { 0.31 }).clamp(13.0, 28.0);
     let rect = Rect::from_min_size(
         piece_rect.right_top() + Vec2::new(-size, 1.0),

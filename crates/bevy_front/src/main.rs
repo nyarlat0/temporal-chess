@@ -4,6 +4,7 @@ mod board_view;
 mod controller;
 mod dialogs;
 mod frontend;
+mod help;
 mod i18n;
 mod icons;
 mod input;

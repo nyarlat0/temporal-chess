@@ -103,7 +103,8 @@ pub fn handle(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState) {
         || game.replay_job.is_some()
         || !game.promotion.is_empty()
         || !game.overlapping.is_empty()
-        || shell.help_open;
+        || shell.help_open
+        || shell.settings_open;
     let touch_enabled = !modal && !game.playback_busy() && !game.facing.animating();
     if !ctx.input(|i| i.focused) {
         shell.touch = TouchNavigation::default();

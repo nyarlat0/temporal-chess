@@ -460,7 +460,15 @@ fn budget_control(ui: &mut egui::Ui, budget: &mut usize, label: &str) {
     ));
 }
 pub fn settings(ui: &mut egui::Ui, config: &mut Settings) {
-    let mut mode = if !config.enabled {
+    settings_inner(ui, config, None);
+}
+pub fn creation_settings(ui: &mut egui::Ui, config: &mut Settings, online: &mut bool) {
+    settings_inner(ui, config, Some(online));
+}
+fn settings_inner(ui: &mut egui::Ui, config: &mut Settings, mut online: Option<&mut bool>) {
+    let mut mode = if online.as_deref().is_some_and(|v| *v) {
+        3
+    } else if !config.enabled {
         0
     } else if config.self_play {
         2
@@ -468,18 +476,27 @@ pub fn settings(ui: &mut egui::Ui, config: &mut Settings) {
         1
     };
     let names = [
-        crate::tr!("Без бота", "No bot"),
+        crate::tr!("Локальный", "Local"),
         crate::tr!("Против TempFish", "Against TempFish"),
         "TempFish vs TempFish",
+        crate::tr!("Мультиплеер", "Multiplayer"),
     ];
     egui::ComboBox::from_label(crate::tr!("Режим игры", "Game mode"))
         .selected_text(names[mode])
         .show_ui(ui, |ui| {
-            for (value, label) in names.into_iter().enumerate() {
+            for (value, label) in
+                names
+                    .into_iter()
+                    .enumerate()
+                    .take(if online.is_some() { 4 } else { 3 })
+            {
                 ui.selectable_value(&mut mode, value, label);
             }
         });
-    config.enabled = mode != 0;
+    if let Some(online) = &mut online {
+        **online = mode == 3;
+    }
+    config.enabled = mode == 1 || mode == 2;
     config.self_play = mode == 2;
     if !config.enabled {
         return;

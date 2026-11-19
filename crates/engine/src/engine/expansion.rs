@@ -20,6 +20,20 @@ impl Engine {
             self.history.horizon.max(own)
         };
 
+        self.extend_timeline(lower, upper, Some(mv.pid.wid))?;
+        mv = self.history.remap_move(mv);
+        self.update_bufs()?;
+        Ok(mv)
+    }
+
+    /// Shared by spatial expansion and Lab board creation. Passive suffixes
+    /// follow their orientation; causal ancestors are prepended on the other end.
+    pub(super) fn extend_timeline(
+        &mut self,
+        lower: BoardTime,
+        upper: BoardTime,
+        departing: Option<usize>,
+    ) -> Result<(), EngineErr> {
         while self.history.beginning > lower {
             let t = self
                 .history
@@ -28,14 +42,9 @@ impl Engine {
                 .ok_or(EngineErr::WrongMove)?;
             for (wid, line) in self.history.worldlines.iter_mut().enumerate() {
                 if line.first().is_some_and(|s| !s.inverted && s.t == t + 1) {
-                    let mut prefix = line[0].clone();
-                    prefix.t = t;
-                    // This is an ancestor, not an occurrence arriving from
-                    // the future. It has only seen its own board so far.
-                    prefix.fut_seen = t;
-                    prefix.rights = MoveRights::default();
+                    let prefix = Self::ancestral_state(&line[0], t);
                     line.states.insert(0, prefix);
-                } else if wid != mv.pid.wid
+                } else if Some(wid) != departing
                     && line.last().is_some_and(|s| s.inverted && s.t == t + 1)
                 {
                     let next = line
@@ -57,13 +66,10 @@ impl Engine {
             let mut raised = Vec::new();
             for (wid, line) in self.history.worldlines.iter_mut().enumerate() {
                 if line.first().is_some_and(|s| s.inverted && s.t == t - 1) {
-                    let mut prefix = line[0].clone();
-                    prefix.t = t;
-                    prefix.fut_seen = prefix.fut_seen.max(t);
-                    prefix.rights = MoveRights::default();
+                    let prefix = Self::ancestral_state(&line[0], t);
                     line.states.insert(0, prefix);
                     raised.push(wid);
-                } else if wid != mv.pid.wid
+                } else if Some(wid) != departing
                     && line.last().is_some_and(|s| !s.inverted && s.t == t - 1)
                 {
                     let next = line
@@ -75,18 +81,31 @@ impl Engine {
                 }
             }
             self.raise_ancestral_knowledge(&raised, t);
-            if raised.contains(&mv.pid.wid) {
-                mv.pid.fut_seen = mv.pid.fut_seen.max(t);
-            }
             self.history.horizon = t;
         }
-        self.update_bufs()?;
-        Ok(mv)
+        Ok(())
+    }
+
+    pub(super) fn ancestral_state(
+        source: &crate::model::State,
+        t: BoardTime,
+    ) -> crate::model::State {
+        let mut prefix = source.clone();
+        prefix.t = t;
+        prefix.fut_seen = if source.inverted {
+            source.fut_seen.max(t)
+        } else if source.fut_seen > source.t {
+            source.fut_seen
+        } else {
+            t
+        };
+        prefix.rights = MoveRights::default();
+        prefix
     }
 
     /// An inverted ancestral prefix has really seen the newly exposed future.
     /// Rewrite every persistent reference together; ages are rebuilt separately.
-    fn raise_ancestral_knowledge(&mut self, affected: &[usize], t: BoardTime) {
+    pub(super) fn raise_ancestral_knowledge(&mut self, affected: &[usize], t: BoardTime) {
         let pid = |mut id: PieceId| {
             if affected.contains(&id.wid) {
                 id.fut_seen = id.fut_seen.max(t);

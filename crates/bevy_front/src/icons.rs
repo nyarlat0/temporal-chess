@@ -5,6 +5,7 @@ use bevy_egui::egui::{self, Pos2, Rect, Response, Stroke, StrokeKind, Vec2};
 #[derive(Clone, Copy)]
 pub enum Icon {
     Menu,
+    Settings,
     Worldline,
     New,
     Undo,
@@ -34,6 +35,10 @@ pub enum Icon {
 
 pub struct IconResponse(Response);
 impl IconResponse {
+    pub fn response(&self) -> &Response {
+        &self.0
+    }
+
     pub fn secondary_clicked(&self) -> bool {
         crate::input::clicked_by(&self.0, egui::PointerButton::Secondary)
     }
@@ -123,7 +128,7 @@ pub fn paint(painter: &egui::Painter, icon: Icon, rect: Rect, stroke: Stroke) {
         painter.rect_stroke(Rect::from_min_max(a, b), 2.0, stroke, StrokeKind::Inside);
     };
     match icon {
-        Icon::Inspect | Icon::Memory | Icon::Information => {
+        Icon::Inspect | Icon::Memory | Icon::Information | Icon::Settings => {
             for outline in lucide_outline(icon) {
                 let points: Vec<_> = outline
                     .iter()
@@ -306,7 +311,10 @@ fn lucide_outline(icon: Icon) -> &'static [Vec<[f32; 2]>] {
     static INFO: std::sync::OnceLock<Vec<Vec<[f32; 2]>>> = std::sync::OnceLock::new();
     static BRAIN: std::sync::OnceLock<Vec<Vec<[f32; 2]>>> = std::sync::OnceLock::new();
     static EYE: std::sync::OnceLock<Vec<Vec<[f32; 2]>>> = std::sync::OnceLock::new();
+    static SETTINGS: std::sync::OnceLock<Vec<Vec<[f32; 2]>>> = std::sync::OnceLock::new();
     match icon {
+        Icon::Settings => SETTINGS
+            .get_or_init(|| svg_outlines(include_str!("../assets/icons/lucide/settings.svg"))),
         Icon::Information => {
             EYE.get_or_init(|| svg_outlines(include_str!("../assets/icons/lucide/eye.svg")))
         }

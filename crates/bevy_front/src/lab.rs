@@ -2,7 +2,7 @@ use crate::controller::GameUi;
 use bevy_egui::egui;
 use temporal_chess_engine::{
     engine::{Engine, LabEdit},
-    model::{BoardTime, Color, PieceKind, Sq},
+    model::{BoardTime, Color, PieceAt, PieceId, PieceKind, Sq, TimeDirection},
     record::GameRecord,
 };
 
@@ -11,6 +11,7 @@ pub enum Tool {
     #[default]
     Place,
     Remove,
+    RemoveState,
     Play,
 }
 
@@ -20,6 +21,8 @@ pub struct Editor {
     pub color: Color,
     pub inverted: bool,
     pub boards: i64,
+    pub board_to_remove: BoardTime,
+    pub prolong_steps: usize,
     pub online: bool,
     pub undo: Vec<(Engine, GameRecord)>,
 }
@@ -31,6 +34,8 @@ impl Default for Editor {
             color: Color::White,
             inverted: false,
             boards: 1,
+            board_to_remove: 0,
+            prolong_steps: 1,
             online: false,
             undo: Vec::new(),
         }
@@ -91,11 +96,17 @@ impl GameUi {
                 color: lab.color,
                 inverted: lab.inverted,
             },
-            Tool::Remove => {
+            Tool::Remove | Tool::RemoveState => {
                 let Some(piece) = self.pieces(t).into_iter().find(|p| p.sq == square) else {
                     return true;
                 };
-                LabEdit::Remove { wid: piece.origin }
+                if lab.tool == Tool::RemoveState {
+                    LabEdit::RemoveState {
+                        state: crate::controller::identity(piece),
+                    }
+                } else {
+                    LabEdit::Remove { wid: piece.origin }
+                }
             }
         };
         self.lab_edit(edit);
@@ -161,7 +172,16 @@ pub fn panel(ui: &mut egui::Ui, game: &mut GameUi, art: &crate::piece_art::Piece
     ui.add_enabled_ui(idle, |ui| {
         ui.horizontal_wrapped(|ui| {
             ui.selectable_value(&mut lab.tool, Tool::Place, crate::tr!("Ставить", "Place"));
-            ui.selectable_value(&mut lab.tool, Tool::Remove, crate::tr!("Удалять", "Erase"));
+            ui.selectable_value(
+                &mut lab.tool,
+                Tool::Remove,
+                crate::tr!("Убрать фигуру", "Erase piece"),
+            );
+            ui.selectable_value(
+                &mut lab.tool,
+                Tool::RemoveState,
+                crate::tr!("Убрать состояние", "Erase state"),
+            );
             ui.selectable_value(&mut lab.tool, Tool::Play, crate::tr!("Ходить", "Play"));
         });
         if lab.tool == Tool::Place {
@@ -213,6 +233,10 @@ pub fn panel(ui: &mut egui::Ui, game: &mut GameUi, art: &crate::piece_art::Piece
                 "Нажмите на фигуру, чтобы удалить всю её мировую линию.",
                 "Click a piece to erase its entire worldline."
             ),
+            Tool::RemoveState => crate::tr!(
+                "Нажмите на состояние: оно и его причинное продолжение удалятся.",
+                "Click a state to erase it and its causal continuation."
+            ),
             Tool::Play => crate::tr!(
                 "Выбирайте фигуры любой стороны. Ходы и ожидание проверяются движком.",
                 "Select either side's pieces. Moves and waits follow the engine rules."
@@ -248,6 +272,42 @@ pub fn panel(ui: &mut egui::Ui, game: &mut GameUi, art: &crate::piece_art::Piece
             }
         });
         ui.horizontal(|ui| {
+            ui.label(crate::tr!("Удалить от доски", "Delete from board"));
+            lab.board_to_remove = lab.board_to_remove.clamp(
+                game.engine.history().beginning(),
+                game.engine.history().horizon(),
+            );
+            ui.add(
+                egui::DragValue::new(&mut lab.board_to_remove)
+                    .range(game.engine.history().beginning()..=game.engine.history().horizon()),
+            );
+        });
+        let delete_label = if lab.board_to_remove < 0 {
+            crate::tr!("Удалить эту и более старые", "Delete this and older boards")
+        } else {
+            crate::tr!("Удалить эту и более новые", "Delete this and newer boards")
+        };
+        if ui
+            .add_enabled(lab.board_to_remove != 0, egui::Button::new(delete_label))
+            .on_hover_text(crate::tr!(
+                "Нулевая доска остаётся. Время остальных досок не меняется.",
+                "Board zero stays. Surviving board times do not change."
+            ))
+            .clicked()
+        {
+            edit = Some(LabEdit::RemoveBoard {
+                t: lab.board_to_remove,
+            });
+            game.jump_to = Some(0);
+        }
+        ui.horizontal(|ui| {
+            ui.label(crate::tr!(
+                "Шагов продления линии",
+                "Worldline extension steps"
+            ));
+            ui.add(egui::DragValue::new(&mut lab.prolong_steps).range(1..=usize::MAX));
+        });
+        ui.horizontal(|ui| {
             ui.label(crate::tr!("Первый ход", "Side to move"));
             for side in [Color::White, Color::Black] {
                 if ui
@@ -272,19 +332,77 @@ pub fn panel(ui: &mut egui::Ui, game: &mut GameUi, art: &crate::piece_art::Piece
                             crate::view::piece_name(line[0].kind),
                             line.len()
                         ));
-                        if ui.small_button("×").clicked() {
+                        for (direction, label) in
+                            [(TimeDirection::Past, "−t"), (TimeDirection::Future, "+t")]
+                        {
+                            let available = game
+                                .engine
+                                .lab_prolongation_source(wid, direction)
+                                .is_some();
+                            if ui
+                                .add_enabled(available, egui::Button::new(label))
+                                .on_hover_text(if direction == TimeDirection::Past {
+                                    crate::tr!("Пролонгировать в прошлое", "Prolong into the past")
+                                } else {
+                                    crate::tr!(
+                                        "Пролонгировать в будущее",
+                                        "Prolong into the future"
+                                    )
+                                })
+                                .clicked()
+                            {
+                                edit = Some(LabEdit::Prolong {
+                                    wid,
+                                    direction,
+                                    count: lab.prolong_steps,
+                                });
+                            }
+                        }
+                        if ui
+                            .small_button("×")
+                            .on_hover_text(crate::tr!("Удалить мировую линию", "Delete worldline"))
+                            .clicked()
+                        {
                             edit = Some(LabEdit::Remove { wid });
                         }
                     });
+                    egui::CollapsingHeader::new(crate::tr!("Состояния", "States"))
+                        .id_salt(("lab_states", wid))
+                        .show(ui, |ui| {
+                            for state in line.iter() {
+                                ui.horizontal(|ui| {
+                                    ui.label(format!(
+                                        "{} · {}{}{}",
+                                        state.t,
+                                        (b'a' + state.x as u8) as char,
+                                        state.y + 1,
+                                        if state.alive { "" } else { " · ×" }
+                                    ));
+                                    if ui
+                                        .small_button("×")
+                                        .on_hover_text(crate::tr!(
+                                            "Удалить отсюда до причинного конца линии",
+                                            "Delete from here to the causal end of the line"
+                                        ))
+                                        .clicked()
+                                    {
+                                        edit = Some(LabEdit::RemoveState {
+                                            state: PieceAt {
+                                                piece: PieceId::from_state(state, wid),
+                                                t: state.t,
+                                            },
+                                        });
+                                    }
+                                });
+                            }
+                        });
                 }
             },
         );
         ui.separator();
-        ui.checkbox(&mut lab.online, crate::tr!("Мультиплеер", "Multiplayer"));
+        crate::tempfish::creation_settings(ui, &mut game.new_game_bot, &mut lab.online);
         if lab.online {
             crate::multiplayer::lab_controls(ui, &mut game.online);
-        } else {
-            crate::tempfish::settings(ui, &mut game.new_game_bot);
         }
         start = ui
             .button(crate::tr!("Начать партию", "Start game"))
@@ -336,6 +454,37 @@ mod tests {
         assert!(game.bot.settings.enabled && game.bot.settings.self_play);
         assert!(game.record.commands().is_empty());
         assert_eq!(game.engine.history().moves().len(), 1);
+        assert_eq!(
+            GameRecord::load(&game.record.to_text()).unwrap().0,
+            game.engine
+        );
+    }
+
+    #[test]
+    fn editor_can_prolong_cut_a_state_and_cut_boards_with_undo() {
+        let mut game = GameUi::with_start(Default::default(), StartingPosition::Lab);
+        assert!(game.lab_edit(LabEdit::Boards {
+            beginning: -2,
+            horizon: 6
+        }));
+        game.lab.as_mut().unwrap().kind = PieceKind::N;
+        game.click_square(0, Sq(1, 0));
+        assert!(game.lab_edit(LabEdit::Prolong {
+            wid: 0,
+            direction: TimeDirection::Future,
+            count: 4
+        }));
+        let before = game.engine.clone();
+        game.lab.as_mut().unwrap().tool = Tool::RemoveState;
+        game.click_square(2, Sq(1, 0));
+        assert_eq!(game.engine.history().worldlines()[0].len(), 2);
+        game.undo_last_move();
+        assert_eq!(game.engine, before);
+        assert!(game.lab_edit(LabEdit::RemoveBoard { t: 2 }));
+        assert_eq!(game.engine.history().horizon(), 1);
+        game.undo_last_move();
+        assert_eq!(game.engine, before);
+        assert!(!game.lab_edit(LabEdit::RemoveBoard { t: 0 }));
         assert_eq!(
             GameRecord::load(&game.record.to_text()).unwrap().0,
             game.engine

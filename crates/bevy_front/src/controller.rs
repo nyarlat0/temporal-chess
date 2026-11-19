@@ -78,6 +78,7 @@ pub struct GameUi {
     pub online: crate::multiplayer::OnlineState,
     pub bot: crate::tempfish::BotState,
     pub new_game_bot: crate::tempfish::Settings,
+    pub new_game_online: bool,
     pub engine: Engine,
     pub checks: CheckStatus,
     pub selected: Option<Selection>,
@@ -191,6 +192,7 @@ impl Default for GameUi {
             online: Default::default(),
             bot: Default::default(),
             new_game_bot: Default::default(),
+            new_game_online: false,
             engine: Engine::default()
                 .with_interactive_calculation()
                 .expect("valid initial game"),
@@ -489,6 +491,37 @@ impl GameUi {
             ..Self::default()
         }
     }
+    pub fn start_new_local(
+        &mut self,
+        rules: GameRules,
+        start: StartingPosition,
+        bot: crate::tempfish::Settings,
+    ) {
+        *self = GameUi {
+            cell_size: self.cell_size,
+            animation_speed: self.animation_speed,
+            local_auto_flip: self.local_auto_flip,
+            bot: crate::tempfish::BotState {
+                settings: if start == StartingPosition::Lab {
+                    Default::default()
+                } else {
+                    bot
+                },
+                ..Default::default()
+            },
+            new_game_bot: bot,
+            ..GameUi::with_start(rules, start)
+        };
+    }
+    pub fn request_new_local(&mut self) {
+        let (rules, start, bot) = (self.new_game_rules, self.new_game_start, self.new_game_bot);
+        if self.online.enabled {
+            self.online.restart_local(rules, start, bot);
+            self.confirm_restart = false;
+        } else {
+            self.start_new_local(rules, start, bot);
+        }
+    }
     pub fn clear_selection(&mut self) {
         self.selected = None;
         self.promotion.clear();
@@ -548,6 +581,38 @@ impl GameUi {
         self.navigate_times(&active, next);
     }
 
+    /// Up goes to the newest board or causal tail; down to the beginning.
+    /// Unlike active-board cycling, this includes inactive boundary boards.
+    pub fn navigate_boundary(&mut self, last: bool) {
+        if self.playback_busy() {
+            return;
+        }
+        if self.worldline_mode
+            && let Some(wid) = self.worldline_selected
+        {
+            let Some(line) = self.engine.history().worldlines().get(wid) else {
+                return;
+            };
+            let Some(state) = (if last { line.last() } else { line.first() }) else {
+                return;
+            };
+            let target = PieceAt {
+                piece: PieceId::from_state(state, wid),
+                t: state.t,
+            };
+            self.navigate_to_state(target);
+        } else {
+            self.viewport.wheel.stop();
+            self.viewport.touch_inertia.stop();
+            self.viewport.scroll = None;
+            self.jump_to = Some(if last {
+                self.engine.history().horizon()
+            } else {
+                self.engine.history().beginning()
+            });
+        }
+    }
+
     /// Follow subjective worldline order, including reversed and dead states.
     pub fn navigate_worldline(&mut self, next: bool) {
         let Some(wid) = self.worldline_selected else {
@@ -579,6 +644,10 @@ impl GameUi {
             piece: PieceId::from_state(state, wid),
             t: state.t,
         };
+        self.navigate_to_state(target);
+    }
+
+    fn navigate_to_state(&mut self, target: PieceAt) {
         self.focus_worldline(target, true);
         self.viewport.wheel.stop();
         self.viewport.touch_inertia.stop();
@@ -1688,6 +1757,30 @@ mod tests {
         assert_eq!(game.jump_to, Some(1));
         game.navigate_active(true, false);
         assert_eq!(game.jump_to, Some(0));
+        assert_eq!(game.engine, before);
+    }
+
+    #[test]
+    fn boundary_navigation_includes_inactive_and_negative_boards() {
+        use temporal_chess_engine::engine::LabEdit;
+        let mut engine = Engine::new_lab(Default::default()).unwrap();
+        engine
+            .edit_lab(LabEdit::Boards {
+                beginning: -4,
+                horizon: 6,
+            })
+            .unwrap();
+        let before = engine.clone();
+        let mut game = GameUi {
+            engine,
+            ..Default::default()
+        };
+        assert!(game.active_times().is_empty());
+        game.jump_to = Some(0);
+        game.navigate_boundary(true);
+        assert_eq!(game.jump_to, Some(6));
+        game.navigate_boundary(false);
+        assert_eq!(game.jump_to, Some(-4));
         assert_eq!(game.engine, before);
     }
     use super::*;

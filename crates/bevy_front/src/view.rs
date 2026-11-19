@@ -11,9 +11,10 @@ use temporal_chess_engine::{engine::CalculationStatus, model::PieceKind};
 
 #[derive(Resource, Clone)]
 pub struct ShellState {
-    pub history_open: bool,
     pub sidebar_open: bool,
     pub help_open: bool,
+    pub settings_open: bool,
+    pub disable_waiting_music: bool,
     pub input_frame: Option<u64>,
     pub zoom_gesture: bool,
     pub suppress_wheel: bool,
@@ -26,9 +27,10 @@ pub struct ShellState {
 impl Default for ShellState {
     fn default() -> Self {
         Self {
-            history_open: true,
             sidebar_open: true,
             help_open: false,
+            settings_open: false,
+            disable_waiting_music: false,
             input_frame: None,
             zoom_gesture: false,
             suppress_wheel: false,
@@ -115,11 +117,15 @@ pub fn draw(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState, art:
         {
             game.animation_speed = speed;
         }
+        shell.disable_waiting_music = stored_setting("temporal-chess.disable-waiting-music")
+            .and_then(|v| v.parse::<bool>().ok())
+            .unwrap_or(false);
         shell.initialized = true;
     }
     let previous_sidebar = shell.sidebar_open;
     let previous_flip = game.local_auto_flip;
     let previous_speed = game.animation_speed;
+    let previous_mute = shell.disable_waiting_music;
     let compact = mobile_layout(ctx);
     crate::input::handle(ctx, game, shell);
     let drawer_duration = 0.45 / (crate::animation::BASE_ANIMATION_SPEED * game.animation_speed);
@@ -149,13 +155,22 @@ pub fn draw(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState, art:
             .resizable(false)
             .frame(egui::Frame::new().fill(BACKGROUND).inner_margin(12))
             .show(&mut root, |ui| {
-                let mut rect = ui.available_rect_before_wrap();
-                rect.max.x -= 50.0;
+                if shell.settings_open {
+                    ui.disable();
+                }
+                // The collapsed toolbar has three buttons. Keep the phone HUD
+                // below it so its two columns retain the full screen width.
+                if !shell.sidebar_open {
+                    ui.add_space(46.0);
+                }
+                let rect = ui.available_rect_before_wrap();
                 let height = game_hud(ui, game, art, rect, modal);
                 ui.allocate_space(Vec2::new(0.0, height));
             });
     }
     let mut sidebar_open = shell.sidebar_open;
+    let mut header_drawn = false;
+    let mut collapse_requested = false;
     egui::Panel::right("game_sidebar")
         .default_size(if compact {
             ctx.viewport_rect().width().min(400.0)
@@ -170,9 +185,10 @@ pub fn draw(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState, art:
         .max_size(400.0)
         .frame(egui::Frame::new().fill(PANEL).inner_margin(18))
         .show_collapsible(&mut root, &mut sidebar_open, |ui| {
-            language_header(ui);
+            header_drawn = true;
+            collapse_requested = sidebar_header(ui, game, shell, modal, true);
             let history_height =
-                (ctx.viewport_rect().height() * 0.5).min((ui.available_height() - 90.0).max(100.0));
+                (ctx.viewport_rect().height() / 3.0).min((ui.available_height() - 90.0).max(100.0));
             let controls_height = (ui.available_height() - history_height - 16.0).max(60.0);
             egui::ScrollArea::vertical()
                 .id_salt("sidebar_scroll")
@@ -180,12 +196,18 @@ pub fn draw(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState, art:
                 .auto_shrink([false, false])
                 .show(ui, |ui| sidebar(ui, game, shell, art));
             ui.separator();
-            details_panel(ui, game, shell, art, history_height);
+            details_panel(ui, game, art, history_height);
         });
+    if collapse_requested {
+        sidebar_open = false;
+    }
     shell.sidebar_open = sidebar_open;
     egui::CentralPanel::default()
         .frame(egui::Frame::new().fill(BACKGROUND).inner_margin(12))
         .show(&mut root, |ui| {
+            if shell.settings_open {
+                ui.disable();
+            }
             if compact && shell.sidebar_open {
                 shell.ribbon_rect = egui::Rect::NOTHING;
                 return;
@@ -196,7 +218,9 @@ pub fn draw(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState, art:
                 game_hud(ui, game, art, rect, modal);
             }
         });
-    menu_button(ctx, shell, modal);
+    if !header_drawn {
+        menu_button(ctx, game, shell, modal);
+    }
     if previous_sidebar != shell.sidebar_open {
         store_setting(
             "temporal-chess.sidebar",
@@ -219,6 +243,16 @@ pub fn draw(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState, art:
             &game.animation_speed.to_string(),
         );
     }
+    if previous_mute != shell.disable_waiting_music {
+        store_setting(
+            "temporal-chess.disable-waiting-music",
+            if shell.disable_waiting_music {
+                "true"
+            } else {
+                "false"
+            },
+        );
+    }
     crate::dialogs::draw(ctx, game, shell, art);
     crate::multiplayer::undo_notification(ctx, game);
     if game.replay_job.is_some() {
@@ -234,7 +268,7 @@ pub fn draw(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState, art:
     }
 }
 
-fn menu_button(ctx: &egui::Context, shell: &mut ShellState, modal: bool) {
+fn menu_button(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState, modal: bool) {
     egui::Area::new("sidebar_menu".into())
         .order(egui::Order::Foreground)
         .anchor(egui::Align2::RIGHT_TOP, Vec2::new(-18.0, 18.0))
@@ -244,19 +278,94 @@ fn menu_button(ctx: &egui::Context, shell: &mut ShellState, modal: bool) {
             }
             ui.visuals_mut().widgets.inactive.weak_bg_fill = PANEL.gamma_multiply(0.55);
             ui.visuals_mut().widgets.inactive.bg_fill = PANEL.gamma_multiply(0.55);
-            if icon_button(
-                ui,
-                Icon::Menu,
-                crate::tr!("Показать или скрыть панель", "Toggle sidebar"),
-                false,
-                true,
-            )
-            .clicked()
-            {
-                shell.sidebar_open = !shell.sidebar_open;
+            if sidebar_header(ui, game, shell, modal, false) {
+                shell.sidebar_open = true;
                 ctx.request_repaint();
             }
         });
+}
+
+fn sidebar_header(
+    ui: &mut egui::Ui,
+    game: &mut GameUi,
+    shell: &mut ShellState,
+    modal: bool,
+    title: bool,
+) -> bool {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        ui.set_min_height(38.0);
+        if title {
+            let width = (ui.available_width() - 3.0 * 38.0 - 12.0).max(0.0);
+            ui.add_sized(
+                Vec2::new(width, 38.0),
+                egui::Label::new(egui::RichText::new("Temporal Chess").size(18.0).strong())
+                    .truncate(),
+            );
+        }
+        if icon_button(
+            ui,
+            Icon::Help,
+            crate::tr!("Управление и обозначения", "Controls and legend"),
+            shell.help_open,
+            !modal,
+        )
+        .clicked()
+        {
+            shell.help_open = true;
+            shell.settings_open = false;
+        }
+        let settings = icon_button(
+            ui,
+            Icon::Settings,
+            crate::tr!("Настройки", "Settings"),
+            shell.settings_open,
+            !modal,
+        );
+        if settings.clicked() {
+            shell.settings_open = !shell.settings_open;
+        }
+        let mut open = shell.settings_open;
+        egui::Popup::from_response(settings.response())
+            .id("game_settings_popup".into())
+            .open_bool(&mut open)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .width(280.0_f32.min(ui.ctx().viewport_rect().width() - 32.0))
+            .show(|ui| {
+                ui.strong(crate::tr!("Настройки", "Settings"));
+                ui.separator();
+                language_header(ui);
+                ui.checkbox(
+                    &mut game.local_auto_flip,
+                    crate::tr!("Переворачивать доски", "Flip boards"),
+                )
+                .on_hover_text(crate::tr!(
+                    "Автоматический поворот при смене хода в локальной игре.",
+                    "Automatically flip boards between turns in local play."
+                ));
+                ui.add(
+                    egui::Slider::new(&mut game.animation_speed, 0.25..=3.0)
+                        .step_by(0.05)
+                        .max_decimals(2)
+                        .suffix("×")
+                        .text(crate::tr!("Скорость анимаций", "Animation speed")),
+                );
+                ui.checkbox(
+                    &mut shell.disable_waiting_music,
+                    crate::tr!("Выключить музыку ожидания", "Disable waiting music"),
+                );
+            });
+        shell.settings_open = open;
+        icon_button(
+            ui,
+            Icon::Menu,
+            crate::tr!("Показать или скрыть панель", "Toggle sidebar"),
+            false,
+            !modal,
+        )
+        .clicked()
+    })
+    .inner
 }
 
 fn game_hud(
@@ -725,22 +834,6 @@ fn language_header(ui: &mut egui::Ui) {
 
 fn sidebar(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, art: &PieceArt) {
     let idle = game.replay_job.is_none() && !game.playback_busy() && !game.facing.animating();
-    ui.horizontal(|ui| {
-        ui.heading("Temporal Chess");
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if icon_button(
-                ui,
-                Icon::Help,
-                crate::tr!("Управление и обозначения", "Controls and legend"),
-                shell.help_open,
-                true,
-            )
-            .clicked()
-            {
-                shell.help_open = true;
-            }
-        });
-    });
     let rules = game.engine.history().rules();
     if rules.wait_before_move {
         ui.small(crate::tr!("Свободное ожидание", "Free wait"));
@@ -758,7 +851,6 @@ fn sidebar(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, art: &P
     if game.lab.is_none() {
         crate::tempfish::panel(ui, game);
     }
-    crate::multiplayer::panel(ui, game);
     ui.horizontal(|ui| {
         if icon_button(
             ui,
@@ -808,11 +900,12 @@ fn sidebar(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, art: &P
             Icon::New,
             crate::tr!("Новая партия", "New game"),
             false,
-            idle && !game.online.enabled,
+            idle,
         )
         .clicked()
         {
             game.new_game_bot = game.bot.settings;
+            game.new_game_online = game.online.enabled;
             game.confirm_restart = true;
         }
     });
@@ -918,13 +1011,6 @@ fn sidebar(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, art: &P
         }
         ui.label(format!("{:.0}%", game.cell_size / 64.0 * 100.0));
     });
-    ui.add(
-        egui::Slider::new(&mut game.animation_speed, 0.25..=3.0)
-            .step_by(0.05)
-            .max_decimals(2)
-            .suffix("×")
-            .text(crate::tr!("Скорость анимаций", "Animation speed")),
-    );
     ui.colored_label(
         SUBTLE,
         egui::RichText::new(crate::tr!(
@@ -933,60 +1019,11 @@ fn sidebar(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, art: &P
         ))
         .small(),
     );
-    if !game.online.enabled && game.bot.settings.human_side().is_none() {
-        ui.add_enabled(
-            idle,
-            egui::Checkbox::new(
-                &mut game.local_auto_flip,
-                crate::tr!("Переворачивать доски", "Flip boards"),
-            ),
-        )
-        .on_hover_text(crate::tr!(
-            "Если выключено, доски сохраняют текущую ориентацию.",
-            "When disabled, boards keep their current orientation."
-        ));
-    }
 }
 
-fn details_panel(
-    ui: &mut egui::Ui,
-    game: &mut GameUi,
-    shell: &mut ShellState,
-    art: &PieceArt,
-    height: f32,
-) {
-    ui.horizontal(|ui| {
-        let history = ui.selectable_label(
-            !game.inspect_mode,
-            crate::tr!("Ходы партии", "Move history"),
-        );
-        if crate::input::clicked(&history) {
-            game.inspect_mode = false;
-            shell.history_open = true;
-        }
-        let inspect = ui
-            .selectable_label(game.inspect_mode, crate::tr!("Инспекция", "Inspect"))
-            .on_hover_text(crate::tr!(
-                "I · вся информация движка о фигуре",
-                "I · all engine data for a piece"
-            ));
-        if crate::input::clicked(&inspect) && !game.playback_busy() {
-            game.clear_selection();
-            game.inspect_mode = true;
-            game.worldline_mode = false;
-            game.worldline_selected = None;
-            game.worldline_state = None;
-            game.worldline_transition = None;
-        }
-    });
-    if game.inspect_mode {
-        egui::ScrollArea::both()
-            .id_salt("inspector_scroll")
-            .max_height((height - 34.0).max(80.0))
-            .min_scrolled_height((height - 34.0).max(80.0))
-            .auto_shrink([false, false])
-            .show(ui, |ui| crate::dialogs::inspector(ui, game));
-    } else if game.record.commands().is_empty() {
+fn details_panel(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt, height: f32) {
+    ui.strong(crate::tr!("Ходы партии", "Move history"));
+    if game.record.commands().is_empty() {
         ui.allocate_ui(
             Vec2::new(ui.available_width(), (height - 34.0).max(80.0)),
             |ui| {
@@ -1486,7 +1523,19 @@ mod tests {
         let king = ctx
             .data(|d| d.get_temp::<Rect>(egui::Id::new("hud_king")))
             .unwrap();
-        assert!(king.top() < 40.0, "turn status lives at the screen top");
+        let help = ctx
+            .data(|d| {
+                d.get_temp::<Rect>(egui::Id::new((
+                    "icon",
+                    crate::tr!("Управление и обозначения", "Controls and legend"),
+                )))
+            })
+            .unwrap();
+        assert!(king.top() < 90.0, "turn status lives at the screen top");
+        assert!(
+            king.top() >= help.bottom(),
+            "phone toolbar must not overlap the turn status"
+        );
         assert!(shell.ribbon_rect.top() > king.bottom());
         let pos = shell.ribbon_rect.center();
         let offset = game.viewport.offset;
@@ -1638,6 +1687,115 @@ mod tests {
                 .unwrap()
                 .sidebar_open
         );
+    }
+
+    #[test]
+    fn settings_popup_works_with_the_sidebar_open_and_closed() {
+        let ctx = egui::Context::default();
+        let mut game = GameUi::default();
+        game.click_square(0, Sq(4, 1));
+        let engine = game.engine.clone();
+        let key = egui::Id::new("test_shell");
+        for expanded in [true, false] {
+            let mut shell = ShellState {
+                sidebar_open: expanded,
+                initialized: true,
+                ..Default::default()
+            };
+            ctx.data_mut(|d| d.insert_temp(key, shell.clone()));
+            for _ in 0..40 {
+                frame(&ctx, &mut game, vec![]);
+            }
+            let gear = icon_position(&ctx, crate::tr!("Настройки", "Settings"));
+            let toggle = icon_position(
+                &ctx,
+                crate::tr!("Показать или скрыть панель", "Toggle sidebar"),
+            );
+            assert!(gear.x < toggle.x);
+            assert!(
+                icon_position(
+                    &ctx,
+                    crate::tr!("Управление и обозначения", "Controls and legend")
+                )
+                .x < gear.x
+            );
+            click(&ctx, &mut game, gear);
+            let output = frame(&ctx, &mut game, vec![]);
+            shell = ctx.data_mut(|d| d.get_temp::<ShellState>(key)).unwrap();
+            assert!(shell.settings_open);
+            let mute = text_position(
+                &output,
+                crate::tr!("Выключить музыку ожидания", "Disable waiting music"),
+            );
+            text_position(&output, crate::tr!("Скорость анимаций", "Animation speed"));
+            text_position(&output, crate::tr!("Переворачивать доски", "Flip boards"));
+            click(&ctx, &mut game, mute);
+            shell = ctx.data_mut(|d| d.get_temp::<ShellState>(key)).unwrap();
+            assert!(shell.settings_open && shell.disable_waiting_music);
+            click(&ctx, &mut game, gear);
+            assert!(
+                !ctx.data_mut(|d| d.get_temp::<ShellState>(key))
+                    .unwrap()
+                    .settings_open
+            );
+            assert!(game.selected.is_some());
+            assert_eq!(game.engine, engine);
+            click(
+                &ctx,
+                &mut game,
+                icon_position(
+                    &ctx,
+                    crate::tr!("Управление и обозначения", "Controls and legend"),
+                ),
+            );
+            assert!(
+                ctx.data_mut(|d| d.get_temp::<ShellState>(key))
+                    .unwrap()
+                    .help_open
+            );
+            frame(&ctx, &mut game, vec![]);
+            click(
+                &ctx,
+                &mut game,
+                icon_position(&ctx, crate::tr!("Закрыть справку", "Close help")),
+            );
+            assert!(
+                !ctx.data_mut(|d| d.get_temp::<ShellState>(key))
+                    .unwrap()
+                    .help_open
+            );
+        }
+    }
+
+    #[test]
+    fn multiplayer_is_a_new_game_mode_and_history_stays_visible_during_inspection() {
+        let ctx = egui::Context::default();
+        let mut game = GameUi {
+            inspect_mode: true,
+            ..Default::default()
+        };
+        frame(&ctx, &mut game, vec![]);
+        let output = frame(&ctx, &mut game, vec![]);
+        text_position(&output, crate::tr!("Ходы партии", "Move history"));
+        assert!(!output.shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.text() == crate::tr!("Создать новую комнату", "Create a new room"))));
+        click(
+            &ctx,
+            &mut game,
+            icon_position(&ctx, crate::tr!("Новая партия", "New game")),
+        );
+        let output = frame(&ctx, &mut game, vec![]);
+        text_position(&output, crate::tr!("Локальный", "Local"));
+        let mode = text_position(&output, crate::tr!("Локальный", "Local"));
+        click(&ctx, &mut game, mode);
+        let output = frame(&ctx, &mut game, vec![]);
+        let online = text_position(&output, crate::tr!("Мультиплеер", "Multiplayer"));
+        click(&ctx, &mut game, online);
+        frame(&ctx, &mut game, vec![]);
+        let output = frame(&ctx, &mut game, vec![]);
+        assert!(game.new_game_online);
+        assert!(!game.online.enabled);
+        text_position(&output, crate::tr!("Создать комнату", "Create room"));
+        text_position(&output, crate::tr!("Присоединиться", "Join"));
     }
 
     #[test]

@@ -7,63 +7,6 @@ use crate::{
 };
 use bevy_egui::egui::{self, Vec2};
 
-pub fn inspector(ui: &mut egui::Ui, game: &GameUi) {
-    let Some(id) = game.inspected else {
-        return;
-    };
-    let Some(state) = game.engine.piece_state(id) else {
-        ui.label(crate::tr!(
-            "Состояния больше нет в истории.",
-            "This state is no longer in the history."
-        ));
-        return;
-    };
-    let line = &game.engine.history().worldlines()[id.piece.wid];
-    ui.label(crate::tr_format!(
-        "Фигура #{} · {} состояний",
-        "Piece #{} · {} states",
-        id.piece.wid,
-        line.len()
-    ));
-    egui::CollapsingHeader::new(crate::tr!("Все поля состояния", "All state fields"))
-        .default_open(true)
-        .show(ui, |ui| {
-            ui.monospace(format!("{state:#?}"));
-        });
-    egui::CollapsingHeader::new(crate::tr!("Причинные разрывы", "Causal gaps")).show(ui, |ui| {
-        ui.monospace(format!("{:#?}", line.gaps()));
-    });
-    egui::CollapsingHeader::new(crate::tr!("Записанные ходы", "Recorded moves")).show(ui, |ui| {
-        for mv in game
-            .engine
-            .history()
-            .moves()
-            .values()
-            .filter(|mv| mv.pid.wid == id.piece.wid)
-        {
-            ui.monospace(format!("{mv:#?}"));
-        }
-    });
-    egui::CollapsingHeader::new(crate::tr!("Мировая линия", "Worldline")).show(ui, |ui| {
-        for (age, state) in line.iter().enumerate() {
-            egui::CollapsingHeader::new(format!(
-                "age={age} · t={} · {}",
-                state.t,
-                if state.alive {
-                    crate::tr!("жива", "alive")
-                } else {
-                    crate::tr!("мертва", "dead")
-                }
-            ))
-            .id_salt((id.piece.wid, age))
-            .show(ui, |ui| {
-                ui.monospace(format!("{state:#?}"));
-            });
-        }
-    });
-    ui.separator();
-}
-
 pub fn draw(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState, art: &PieceArt) {
     if game.undo_in_progress() {
         egui::Modal::new("undo_in_progress".into()).show(ctx, |ui| {
@@ -220,93 +163,54 @@ pub fn draw(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState, art:
     }
     if game.confirm_restart {
         egui::Modal::new("restart".into()).show(ctx, |ui| {
-            ui.heading(crate::tr!("Начать новую партию?", "Start a new game?"));
-            ui.label(crate::tr!(
-                "Текущая партия будет сброшена.",
-                "The current game will be reset."
-            ));
-            crate::tempfish::settings(ui, &mut game.new_game_bot);
-            crate::view::starting_position_controls(ui, &mut game.new_game_start);
-            crate::view::rule_controls(ui, &mut game.new_game_rules);
-            ui.horizontal(|ui| {
-                if icon_button(
-                    ui,
-                    Icon::Check,
-                    if game.new_game_start == temporal_chess_engine::model::StartingPosition::Lab {
-                        crate::tr!("Открыть Lab", "Open Lab")
+            ui.set_width(460.0_f32.min(ctx.viewport_rect().width() - 40.0));
+            ui.heading(crate::tr!("Новая партия", "New game"));
+            egui::ScrollArea::vertical()
+                .id_salt("new_game_options")
+                .max_height((ctx.viewport_rect().height() - 150.0).max(100.0))
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    crate::tempfish::creation_settings(
+                        ui,
+                        &mut game.new_game_bot,
+                        &mut game.new_game_online,
+                    );
+                    if game.new_game_online {
+                        crate::multiplayer::creation_panel(ui, game);
                     } else {
-                        crate::tr!("Начать новую партию", "Start new game")
-                    },
-                    false,
-                    game.new_game_start.is_valid(),
-                )
-                .clicked()
-                {
-                    *game = GameUi {
-                        cell_size: game.cell_size,
-                        animation_speed: game.animation_speed,
-                        local_auto_flip: game.local_auto_flip,
-                        bot: crate::tempfish::BotState {
-                            settings: if game.new_game_start
+                        crate::view::starting_position_controls(ui, &mut game.new_game_start);
+                        crate::view::rule_controls(ui, &mut game.new_game_rules);
+                        if icon_button(
+                            ui,
+                            Icon::Check,
+                            if game.new_game_start
                                 == temporal_chess_engine::model::StartingPosition::Lab
                             {
-                                Default::default()
+                                crate::tr!("Открыть Lab", "Open Lab")
                             } else {
-                                game.new_game_bot
+                                crate::tr!("Начать новую партию", "Start new game")
                             },
-                            ..Default::default()
-                        },
-                        new_game_bot: game.new_game_bot,
-                        ..GameUi::with_start(game.new_game_rules, game.new_game_start)
-                    };
-                }
-                if icon_button(ui, Icon::Close, crate::tr!("Отмена", "Cancel"), false, true)
-                    .clicked()
-                {
-                    game.confirm_restart = false;
-                }
-            });
+                            false,
+                            game.new_game_start.is_valid(),
+                        )
+                        .clicked()
+                        {
+                            game.request_new_local();
+                        }
+                    }
+                });
+            if icon_button(ui, Icon::Close, crate::tr!("Закрыть", "Close"), false, true).clicked()
+            {
+                game.confirm_restart = false;
+            }
         });
     }
     if shell.help_open {
-        egui::Modal::new("help".into()).show(ctx, |ui| {
-            ui.set_width(420.0_f32.min(ctx.viewport_rect().width() - 60.0));
-            ui.horizontal(|ui| {
-                ui.heading(crate::tr!("Управление", "Controls"));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if icon_button(ui, Icon::Close, crate::tr!("Закрыть справку", "Close help"), false, true).clicked() { shell.help_open = false; }
-                });
-            });
-            egui::ScrollArea::vertical().max_height((ctx.viewport_rect().height()-180.0).max(100.0)).show(ui, |ui| {
-                egui::Grid::new("controls").num_columns(2).spacing([24.0, 12.0]).show(ui, |ui| {
-                    for (key, text) in [
-                        (crate::tr!("ЛКМ", "Left click"), crate::tr!("Выбрать фигуру / сделать ход", "Select a piece / make a move")),
-                        (crate::tr!("СКМ", "Middle click"), crate::tr!("Сменить направление времени", "Change time direction")),
-                        (crate::tr!("ПКМ / Esc", "Right click / Esc"), crate::tr!("Снять выделение", "Clear selection")),
-                        (crate::tr!("Колесо", "Mouse wheel"), crate::tr!("Прокрутить историю", "Scroll history")),
-                        (crate::tr!("ПКМ + колесо", "Right mouse button + wheel"), crate::tr!("Изменить масштаб досок", "Zoom boards")),
-                        ("Ctrl+Z", crate::tr!("Отменить последний ход", "Undo last move")),
-                        ("I", crate::tr!("Инспекция фигуры", "Inspect piece")),
-                        ("C", crate::tr!("Продолжить просчёт", "Continue calculation")),
-                    ] { ui.strong(key); ui.label(text); ui.end_row(); }
-                });
-                ui.add_space(12.0); ui.separator(); ui.add_space(8.0);
-                for (color, text) in [
-                    (FUTURE, crate::tr!("Ход в будущее", "Move into the future")), (PAST, crate::tr!("Ход в прошлое", "Move into the past")),
-                    (ORDINARY, crate::tr!("Зелёная клетка — обычная активность", "Green square — ordinary activity")), (INFORMATION, crate::tr!("Глаз над фигурой — новая информация", "Eye above a piece — new information")),
-                    (REACTION, crate::tr!("Перечёркнутая стрелка — отменённый ход", "Crossed-out arrow — cancelled move")), (CAPTURE, crate::tr!("Взятие / видимый шах", "Capture / visible check")),
-                    (egui::Color32::from_rgb(239,137,185), crate::tr!("Угроза только из будущего", "Threat from the future only")),
-                    (FUTURE, crate::tr!("Стрелка: сыгранный ход в будущее", "Arrow: played move into the future")), (PAST, crate::tr!("Стрелка: сыгранный ход в прошлое", "Arrow: played move into the past")),
-                ] { ui.horizontal(|ui| { let (rect, _) = ui.allocate_exact_size(Vec2::splat(10.0), egui::Sense::hover()); ui.painter().circle_filled(rect.center(), 4.0, color); ui.label(text); }); }
-                ui.add_space(10.0);
-                ui.label(crate::tr!("Для ожидания выберите ту же клетку на другой доске по направлению фигуры. Доступные доски отмечены кольцом с точкой. Ожидание передаёт ход противнику, кроме режима «Свободное ожидание».", "To wait, select the same square on another board in the piece's time direction. Available boards are marked with a ring and dot. Waiting spends your turn unless Free wait is enabled."));
-                ui.colored_label(SUBTLE, crate::tr!("Инвертированные фигуры выделяются цветом и свечением.", "Inverted pieces have distinct colors and a glow."));
-                ui.add_space(10.0);
-                ui.small(crate::tr!("Фигуры: Cburnett / Lichess · GPL-2.0+", "Pieces: Cburnett / Lichess · GPL-2.0+"));
-            });
-        });
-        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-            shell.help_open = false;
-        }
+        crate::help::show(
+            ctx,
+            game.engine.history().rules(),
+            &mut shell.help_open,
+            art,
+        );
     }
 }
