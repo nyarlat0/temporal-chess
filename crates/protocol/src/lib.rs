@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u16 = 8;
+pub const PROTOCOL_VERSION: u16 = 9;
+pub const MAX_LAB_SETUP_LEN: usize = 16 * 1024 * 1024;
 pub const MAX_GAME_ID_LEN: usize = 12;
 pub const MAX_COMMAND_LEN: usize = 192;
 
@@ -35,6 +36,8 @@ pub enum ClientMessage {
     CreateGame {
         #[serde(default)]
         time_war_separation: Option<usize>,
+        #[serde(default)]
+        lab_setup: Option<String>,
         protocol: u16,
         #[serde(default)]
         engine_revision: String,
@@ -107,6 +110,8 @@ pub enum SyncReason {
 pub enum ServerMessage {
     GameReady {
         time_war_separation: Option<usize>,
+        #[serde(default)]
+        lab_setup: Option<String>,
         engine_revision: String,
         chain_info_activation: bool,
         global_reaction_reset: bool,

@@ -203,7 +203,10 @@ mod tests {
             cache.insert(key, engine.clone());
         }
         assert!(cache.entry(42, &engine).is_none());
-        assert_eq!(cache.weight, cache.entries.values().map(|e| e.weight).sum());
+        assert_eq!(
+            cache.weight,
+            cache.entries.values().map(|e| e.weight).sum::<usize>()
+        );
     }
     #[test]
     fn hash_collisions_and_changed_memory_cannot_reuse_a_position() {

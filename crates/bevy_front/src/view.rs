@@ -178,7 +178,7 @@ pub fn draw(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState, art:
                 .id_salt("sidebar_scroll")
                 .max_height(controls_height)
                 .auto_shrink([false, false])
-                .show(ui, |ui| sidebar(ui, game, shell));
+                .show(ui, |ui| sidebar(ui, game, shell, art));
             ui.separator();
             details_panel(ui, game, shell, art, history_height);
         });
@@ -723,7 +723,7 @@ fn language_header(ui: &mut egui::Ui) {
     }
 }
 
-fn sidebar(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState) {
+fn sidebar(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, art: &PieceArt) {
     let idle = game.replay_job.is_none() && !game.playback_busy() && !game.facing.animating();
     ui.horizontal(|ui| {
         ui.heading("Temporal Chess");
@@ -754,7 +754,10 @@ fn sidebar(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState) {
     if !rules.global_reaction_reset {
         ui.small(crate::tr!("Реагировать многократно", "React multiple"));
     }
-    crate::tempfish::panel(ui, game);
+    crate::lab::panel(ui, game, art);
+    if game.lab.is_none() {
+        crate::tempfish::panel(ui, game);
+    }
     crate::multiplayer::panel(ui, game);
     ui.horizontal(|ui| {
         if icon_button(
@@ -1133,6 +1136,7 @@ pub fn starting_position_controls(
         .selected_text(match position {
             StartingPosition::Standard => crate::tr!("Обычная", "Standard"),
             StartingPosition::TimeWar { .. } => "Time War",
+            StartingPosition::Lab => "Lab",
         })
         .show_ui(ui, |ui| {
             ui.selectable_value(
@@ -1145,7 +1149,14 @@ pub fn starting_position_controls(
                 _ => StartingPosition::TimeWar { separation: 9 },
             };
             ui.selectable_value(position, time_war, "Time War");
+            ui.selectable_value(position, StartingPosition::Lab, "Lab");
         });
+    if *position == StartingPosition::Lab {
+        ui.small(crate::tr!(
+            "Сначала откроется редактор сеттинга. Режим игры выберете после расстановки.",
+            "Opens the setting editor first. Choose how to play after building the position."
+        ));
+    }
     if let StartingPosition::TimeWar { separation } = position {
         ui.horizontal(|ui| {
             ui.label(crate::tr!("Разнос по времени", "Time separation"));

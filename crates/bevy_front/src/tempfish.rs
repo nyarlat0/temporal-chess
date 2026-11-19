@@ -319,7 +319,8 @@ pub fn poll(mut runner: ResMut<Runner>, mut game: ResMut<GameUi>, mut contexts: 
     if game.replaying_move || game.history_playback || !game.cancellations.is_empty() {
         return;
     }
-    let allowed = game.bot.owns_turn(&game)
+    let allowed = game.lab.is_none()
+        && game.bot.owns_turn(&game)
         && !game.bot.paused
         && game.engine.outcome().is_none()
         && game.replay_job.is_none()
@@ -393,6 +394,7 @@ pub fn poll(mut runner: ResMut<Runner>, mut game: ResMut<GameUi>, mut contexts: 
         if !runner.record.as_ref().is_some_and(|old| {
             old.rules() == game.record.rules()
                 && old.starting_position() == game.record.starting_position()
+                && old.lab_setup() == game.record.lab_setup()
                 && game.record.commands().starts_with(old.commands())
         }) {
             runner.memory = Default::default();

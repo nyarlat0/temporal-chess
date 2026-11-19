@@ -38,6 +38,9 @@ impl Engine {
         if starting_position == StartingPosition::Standard {
             return Ok(Self::new(rules));
         }
+        if starting_position == StartingPosition::Lab {
+            return Self::new_lab(rules);
+        }
         let end = starting_position.initial_end().unwrap();
         let worldlines = initial_position()
             .into_iter()
@@ -118,6 +121,14 @@ impl Engine {
 
     /// Restore an owned snapshot without trusting any cached boards or lookups.
     pub fn from_history(history: History, turn: Color) -> Result<Self, EngineErr> {
+        Self::restore_history(history, turn, true, true)
+    }
+    pub(super) fn restore_history(
+        history: History,
+        turn: Color,
+        auto: bool,
+        adjudicate: bool,
+    ) -> Result<Self, EngineErr> {
         if !history.starting_position.is_valid() || history.beginning > history.horizon {
             return Err(EngineErr::InvalidHistory("invalid timeline bounds"));
         }
@@ -205,8 +216,8 @@ impl Engine {
             projection: Projection::default(),
             turn,
         };
-        engine.reconcile()?;
-        if engine.status() == super::GameStatus::Ongoing {
+        engine.reconcile_with_auto_wait(auto)?;
+        if adjudicate && engine.status() == super::GameStatus::Ongoing {
             engine.finish_command(turn.opposite())?;
         }
         Ok(engine)

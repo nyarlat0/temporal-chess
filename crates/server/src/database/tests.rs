@@ -16,6 +16,79 @@ fn undo_proposed(result: CommandResult) -> UndoProposal {
 
 #[tokio::test]
 #[ignore = "requires an isolated PostgreSQL database in NOLAN_TEST_DATABASE_URL"]
+async fn lab_setting_is_opaque_and_survives_join_reconnect_and_gameplay() {
+    let pool = sqlx::PgPool::connect(&std::env::var("NOLAN_TEST_DATABASE_URL").unwrap())
+        .await
+        .unwrap();
+    sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+    let repo = Repository::new(pool.clone());
+    let hash = "e".repeat(64);
+    // Deliberately not engine data. The server only stores the envelope, even
+    // for settings larger than the previous 16 KiB websocket frame limit.
+    let setting = "s".repeat(128 * 1024);
+    let ready = repo
+        .create_game(
+            SidePreference::White,
+            true,
+            true,
+            false,
+            &hash,
+            RoomStart {
+                time_war_separation: None,
+                lab_setup: Some(setting.clone()),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(ready.lab_setup.as_ref(), Some(&setting));
+    let white = ready.auth;
+    let black = repo
+        .join_game(&white.game_id, None, &hash, false)
+        .await
+        .unwrap();
+    assert_eq!(black.lab_setup.as_ref(), Some(&setting));
+    let p = proposed(
+        repo.propose_command(&white, 0, "opaque Lab move")
+            .await
+            .unwrap(),
+    );
+    repo.vote_command(&white, &p.id, 0, true, None)
+        .await
+        .unwrap();
+    repo.vote_command(&black.auth, &p.id, 0, true, None)
+        .await
+        .unwrap();
+    let resumed = repo
+        .join_game(&white.game_id, Some(&white.player_token), &hash, false)
+        .await
+        .unwrap();
+    assert_eq!(resumed.lab_setup, Some(setting));
+    assert_eq!(resumed.history, ["opaque Lab move"]);
+    assert!(
+        repo.create_game(
+            SidePreference::White,
+            true,
+            true,
+            false,
+            &hash,
+            RoomStart {
+                time_war_separation: Some(9),
+                lab_setup: Some("conflict".into())
+            }
+        )
+        .await
+        .is_err()
+    );
+    sqlx::query("DELETE FROM games WHERE game_id = $1")
+        .bind(&white.game_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    pool.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires an isolated PostgreSQL database in NOLAN_TEST_DATABASE_URL"]
 async fn undo_requires_opponent_consent_and_keeps_revisions_monotonic() {
     let pool = sqlx::PgPool::connect(&std::env::var("NOLAN_TEST_DATABASE_URL").unwrap())
         .await
@@ -24,7 +97,7 @@ async fn undo_requires_opponent_consent_and_keeps_revisions_monotonic() {
     let repo = Repository::new(pool.clone());
     let hash = "d".repeat(64);
     let white = repo
-        .create_game(SidePreference::White, true, true, false, &hash, None)
+        .create_game(SidePreference::White, true, true, false, &hash, None.into())
         .await
         .unwrap()
         .auth;
@@ -182,7 +255,14 @@ async fn two_client_consensus_persists_and_commits_exactly_once() {
     let hash = "a".repeat(64);
     let new_hash = "b".repeat(64);
     let white = repo
-        .create_game(SidePreference::White, false, false, false, &hash, None)
+        .create_game(
+            SidePreference::White,
+            false,
+            false,
+            false,
+            &hash,
+            None.into(),
+        )
         .await
         .unwrap()
         .auth;
@@ -353,7 +433,14 @@ async fn two_client_consensus_keeps_independent_room_rules() {
     for chain in [false, true] {
         for global in [false, true] {
             let created = repo
-                .create_game(SidePreference::White, chain, global, chain, &hash, Some(9))
+                .create_game(
+                    SidePreference::White,
+                    chain,
+                    global,
+                    chain,
+                    &hash,
+                    Some(9).into(),
+                )
                 .await
                 .unwrap();
             assert_eq!(

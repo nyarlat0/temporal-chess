@@ -227,6 +227,7 @@ impl PieceView {
         // ---- queen-side (long) ----
         if let Some(rook) = source.get_piece(a, home_y)
             && rook.color == self.color
+            && rook.inverted == self.inverted
             && let PieceKind::R { moved: false } = rook.kind
             // squares between rook and king empty: b, c, d
             && empty(1) && empty(2) && empty(3)
@@ -239,6 +240,7 @@ impl PieceView {
         // ---- king-side (short) ----
         if let Some(rook) = source.get_piece(h, home_y)
             && rook.color == self.color
+            && rook.inverted == self.inverted
             && let PieceKind::R { moved: false } = rook.kind
             // squares between empty: f, g
             && empty(f) && empty(g)

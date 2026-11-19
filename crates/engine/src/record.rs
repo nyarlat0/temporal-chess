@@ -2,7 +2,7 @@
 //! Recorded moves in History can be replaced or cancelled; they are not a replay log.
 use crate::model::BoardTime;
 use crate::{
-    engine::{Engine, EngineErr},
+    engine::{Engine, EngineErr, LabSetup},
     model::{
         Castling, Color, GameRules, Move, MoveEffect, PieceAt, PieceId, PieceKind, Promotion, Sq,
         StartingPosition, TimeDirection,
@@ -36,6 +36,7 @@ pub enum Command {
 pub struct GameRecord {
     rules: GameRules,
     starting_position: StartingPosition,
+    lab_setup: Option<LabSetup>,
     commands: Vec<Command>,
     pieces: Vec<Option<RecordedPiece>>,
 }
@@ -72,6 +73,27 @@ impl GameRecord {
         Self {
             rules,
             starting_position,
+            lab_setup: (starting_position == StartingPosition::Lab)
+                .then(|| Engine::new_lab(rules).unwrap().lab_setup()),
+            ..Self::default()
+        }
+    }
+    pub fn from_lab(engine: &Engine) -> Self {
+        Self {
+            rules: engine.history().rules(),
+            starting_position: StartingPosition::Lab,
+            lab_setup: Some(engine.lab_setup()),
+            ..Self::default()
+        }
+    }
+    pub fn lab_setup(&self) -> Option<&LabSetup> {
+        self.lab_setup.as_ref()
+    }
+    pub fn with_lab_setup(setup: LabSetup) -> Self {
+        Self {
+            rules: setup.rules(),
+            starting_position: StartingPosition::Lab,
+            lab_setup: Some(setup),
             ..Self::default()
         }
     }
@@ -105,6 +127,7 @@ impl GameRecord {
                         Self {
                             rules: self.rules,
                             starting_position: self.starting_position,
+                            lab_setup: self.lab_setup.clone(),
                             commands: self.commands[..index].to_vec(),
                             pieces: self.pieces[..index].to_vec(),
                         },
@@ -126,6 +149,9 @@ impl GameRecord {
                 "record rules differ from engine rules",
             ));
         }
+        let initial_lab = (self.lab_setup.is_none()
+            && engine.history().starting_position() == StartingPosition::Lab)
+            .then(|| engine.lab_setup());
         let piece = match command {
             Command::Move { mv, .. } | Command::MoveAndWait { mv, .. } => {
                 engine.piece_state(mv.source()).map(|state| RecordedPiece {
@@ -164,6 +190,9 @@ impl GameRecord {
                 engine.continue_calculation()?;
             }
         }
+        if let Some(setup) = initial_lab {
+            self.lab_setup = Some(setup);
+        }
         self.rules = engine.history().rules();
         self.starting_position = engine.history().starting_position();
         self.commands.push(command);
@@ -172,8 +201,13 @@ impl GameRecord {
     }
 
     pub fn to_text(&self) -> String {
+        let header = if self.starting_position == StartingPosition::Lab {
+            "NOLAN-CHESS 7"
+        } else {
+            HEADER
+        };
         let mut text = format!(
-            "{HEADER}\nchain_info_activation {}\nreact_multiple {}\n",
+            "{header}\nchain_info_activation {}\nreact_multiple {}\n",
             if self.rules.chain_info_activation {
                 "on"
             } else {
@@ -195,6 +229,10 @@ impl GameRecord {
         ));
         match self.starting_position {
             StartingPosition::Standard => text.push_str("start standard\n"),
+            StartingPosition::Lab => text.push_str(&format!(
+                "start lab {}\n",
+                self.lab_setup.as_ref().expect("Lab setting").to_json()
+            )),
             StartingPosition::TimeWar { separation } => {
                 text.push_str(&format!("start time_war {separation}\n"))
             }
@@ -209,8 +247,8 @@ impl GameRecord {
     /// Blank lines and # comments are allowed; errors report original line numbers.
     pub fn load(text: &str) -> Result<(Engine, Self), RecordError> {
         let error = |line, message: String| RecordError { line, message };
-        if text.len() > 2 * 1024 * 1024 {
-            return Err(error(1, "Партия больше 2 МиБ".into()));
+        if text.len() > 32 * 1024 * 1024 {
+            return Err(error(1, "Партия больше 32 МиБ".into()));
         }
         let mut lines = text
             .trim_start_matches('\u{feff}')
@@ -248,7 +286,7 @@ impl GameRecord {
                     }
                 }
             }
-            "NOLAN-CHESS 3" | "NOLAN-CHESS 4" | "NOLAN-CHESS 5" | HEADER => {
+            "NOLAN-CHESS 3" | "NOLAN-CHESS 4" | "NOLAN-CHESS 5" | HEADER | "NOLAN-CHESS 7" => {
                 let mut read_option = |name: &str| -> Result<bool, RecordError> {
                     let (n, value) = lines
                         .next()
@@ -261,12 +299,12 @@ impl GameRecord {
                 };
                 GameRules {
                     chain_info_activation: read_option("chain_info_activation")?,
-                    global_reaction_reset: if header == HEADER {
+                    global_reaction_reset: if matches!(header, HEADER | "NOLAN-CHESS 7") {
                         !read_option("react_multiple")?
                     } else {
                         read_option("global_reaction_reset")?
                     },
-                    wait_before_move: if header == HEADER {
+                    wait_before_move: if matches!(header, HEADER | "NOLAN-CHESS 7") {
                         read_option("free_wait")?
                     } else if header == "NOLAN-CHESS 5" {
                         read_option("wait_before_move")?
@@ -284,13 +322,25 @@ impl GameRecord {
                 ));
             }
         };
-        let starting_position = if matches!(header, HEADER | "NOLAN-CHESS 4" | "NOLAN-CHESS 5") {
+        let mut lab_setup = None;
+        let starting_position = if matches!(
+            header,
+            HEADER | "NOLAN-CHESS 4" | "NOLAN-CHESS 5" | "NOLAN-CHESS 7"
+        ) {
             let (n, start) = lines
                 .next()
                 .ok_or_else(|| error(line, "Missing starting position".into()))?;
             let fields: Vec<_> = start.split_whitespace().collect();
             let position = match fields.as_slice() {
                 ["start", "standard"] => StartingPosition::Standard,
+                ["start", "lab", json] if header == "NOLAN-CHESS 7" => {
+                    let setup = LabSetup::from_json(json).map_err(|e| error(n, e))?;
+                    if setup.rules() != rules {
+                        return Err(error(n, "Lab rules differ from the record header".into()));
+                    }
+                    lab_setup = Some(setup);
+                    StartingPosition::Lab
+                }
                 ["start", "time_war", distance] => StartingPosition::TimeWar {
                     separation: number(distance).map_err(|e| error(n, e))?,
                 },
@@ -311,11 +361,15 @@ impl GameRecord {
         } else {
             StartingPosition::Standard
         };
-        let mut engine = Engine::with_start(rules, starting_position)
-            .map_err(|e| error(line, e.to_string()))?
-            .with_interactive_calculation()
-            .map_err(|e| error(line, e.to_string()))?;
+        let mut engine = if let Some(setup) = &lab_setup {
+            setup.restore().map_err(|e| error(line, e.to_string()))?
+        } else {
+            Engine::with_start(rules, starting_position)
+                .and_then(Engine::with_interactive_calculation)
+                .map_err(|e| error(line, e.to_string()))?
+        };
         let mut record = Self::with_start(rules, starting_position);
+        record.lab_setup = lab_setup;
         for (line, text) in lines {
             if record.commands.len() >= 10_000 {
                 return Err(error(line, "Больше 10000 команд".into()));

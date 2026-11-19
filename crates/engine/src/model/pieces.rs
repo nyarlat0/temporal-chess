@@ -1,7 +1,7 @@
 use super::{Move, MoveRights, State};
 use crate::model::BoardTime;
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize, Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Color {
     White,
     Black,
@@ -39,7 +39,9 @@ impl Color {
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    serde::Serialize, serde::Deserialize, Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash,
+)]
 pub enum PieceKind {
     P { moved: bool },
     N,
@@ -60,7 +62,7 @@ impl PieceKind {
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize, Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct PieceView {
     pub origin: usize, // wid
     pub age: usize,    // pid
@@ -74,7 +76,9 @@ pub struct PieceView {
     pub rights: MoveRights,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    serde::Serialize, serde::Deserialize, Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash,
+)]
 pub struct Sq(pub usize, pub usize);
 
 impl Sq {

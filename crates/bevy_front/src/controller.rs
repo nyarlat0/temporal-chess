@@ -98,6 +98,7 @@ pub struct GameUi {
     pub confirm_restart: bool,
     pub new_game_rules: GameRules,
     pub new_game_start: StartingPosition,
+    pub lab: Option<crate::lab::Editor>,
     pub viewport: TimelineViewport,
     pub history_playback: bool,
     pub history_focus_pending: bool,
@@ -215,6 +216,7 @@ impl Default for GameUi {
             confirm_restart: false,
             new_game_rules: GameRules::default(),
             new_game_start: StartingPosition::Standard,
+            lab: None,
             viewport: TimelineViewport::default(),
             history_playback: false,
             history_focus_pending: false,
@@ -481,6 +483,7 @@ impl GameUi {
                 .with_interactive_calculation()
                 .expect("initial game"),
             record: GameRecord::with_start(rules, starting_position),
+            lab: (starting_position == StartingPosition::Lab).then(crate::lab::Editor::default),
             new_game_start: starting_position,
             new_game_rules: rules,
             ..Self::default()
@@ -507,7 +510,7 @@ impl GameUi {
         self.engine.timeline_times().rev().collect()
     }
 
-    fn refresh_checks(&mut self) {
+    pub(crate) fn refresh_checks(&mut self) {
         let mut combined = CheckStatus::default();
         for side in [Color::White, Color::Black] {
             if let Ok(checks) = self.engine.checks(side) {
@@ -704,11 +707,15 @@ impl GameUi {
     pub fn selectable(&self, piece: PieceView) -> bool {
         self.can_submit()
             && self.engine.board(piece.t).is_some()
-            && piece.color == self.engine.turn()
-            && self
-                .engine
-                .move_sources()
-                .any(|p| identity(p) == identity(piece))
+            && if self.lab.is_some() {
+                piece.can_move() && piece.is_movable()
+            } else {
+                piece.color == self.engine.turn()
+                    && self
+                        .engine
+                        .move_sources()
+                        .any(|p| identity(p) == identity(piece))
+            }
     }
 
     pub fn apply_pending_input(&mut self) {
@@ -726,6 +733,14 @@ impl GameUi {
 
     pub fn choose(&mut self, piece: PieceView) {
         self.move_wait_until = None;
+        if self.lab.is_some()
+            && !self.inspect_mode
+            && !self.worldline_mode
+            && piece.color != self.engine.turn()
+            && !self.lab_edit(temporal_chess_engine::engine::LabEdit::Turn(piece.color))
+        {
+            return;
+        }
         if self.worldline_mode {
             self.focus_worldline(identity(piece), false);
             self.overlapping.clear();
@@ -849,6 +864,9 @@ impl GameUi {
             || self.playback_busy()
             || self.facing.animating()
         {
+            return;
+        }
+        if !self.inspect_mode && !self.worldline_mode && self.lab_click(t, sq) {
             return;
         }
         if reverse && !self.worldline_mode && !self.inspect_mode {
@@ -1000,8 +1018,15 @@ impl GameUi {
     /// mutate the game optimistically: only acknowledged commands reach here.
     pub fn apply_confirmed(&mut self, command: Command) -> Result<(), String> {
         let before = Some(self.engine.clone());
+        let editor_record = self.lab.as_ref().map(|_| self.record.clone());
         let actor = self.engine.turn();
         let result = self.record.apply(&mut self.engine, command);
+        if result.is_ok()
+            && let Some(record) = editor_record
+            && let Some(lab) = &mut self.lab
+        {
+            lab.undo.push((before.as_ref().unwrap().clone(), record));
+        }
         self.finish_confirmed(command, before, result, actor)
     }
 
@@ -1124,7 +1149,7 @@ impl GameUi {
         self.begin_replay(
             format!(
                 "{}{}\n",
-                GameRecord::with_start(self.online.rules, self.online.starting_position).to_text(),
+                self.online.initial_record().to_text(),
                 history.join("\n")
             ),
             ReplayKind::Network,
@@ -1140,6 +1165,12 @@ impl GameUi {
     }
 
     pub fn can_undo(&self) -> bool {
+        if let Some(lab) = &self.lab {
+            return !lab.undo.is_empty()
+                && !self.playback_busy()
+                && self.replay_job.is_none()
+                && !self.facing.animating();
+        }
         (!self.online.enabled
             || (self.online.ready
                 && !self.online.fatal
@@ -1162,6 +1193,19 @@ impl GameUi {
 
     pub fn undo_last_move(&mut self) {
         if !self.can_undo() {
+            return;
+        }
+        if let Some(lab) = &mut self.lab
+            && let Some((engine, record)) = lab.undo.pop()
+        {
+            self.reset_playback();
+            self.clear_selection();
+            self.worldline_selected = None;
+            self.worldline_state = None;
+            self.worldline_transition = None;
+            self.engine = engine;
+            self.record = record;
+            self.refresh_checks();
             return;
         }
         let Some((prefix, removed)) = self.record.without_last_move() else {
@@ -1269,6 +1313,26 @@ impl GameUi {
                     self.start_move_preview();
                     return;
                 }
+                let editor_import = matches!(kind, ReplayKind::Import) && self.lab.is_some();
+                let (engine, record) = if editor_import {
+                    let engine = match engine.lab_setup().restore() {
+                        Ok(engine) => engine,
+                        Err(error) => {
+                            self.replay_failed(kind, error.to_string());
+                            return;
+                        }
+                    };
+                    let record = GameRecord::from_lab(&engine);
+                    self.lab
+                        .as_mut()
+                        .unwrap()
+                        .undo
+                        .push((self.engine.clone(), self.record.clone()));
+                    (engine, record)
+                } else {
+                    self.lab = None;
+                    (engine, record)
+                };
                 self.clear_selection();
                 self.last_move = None;
                 self.engine = engine;

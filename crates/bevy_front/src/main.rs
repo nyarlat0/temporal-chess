@@ -7,6 +7,7 @@ mod frontend;
 mod i18n;
 mod icons;
 mod input;
+mod lab;
 mod multiplayer;
 mod piece_art;
 mod sound;

@@ -83,16 +83,10 @@ fn a_rook_with_a_different_temporal_identity_still_cancels_its_castling() {
         for side in [Castling::Short, Castling::Long] {
             for direction in [TimeDirection::Future, TimeDirection::Past] {
                 let (mut engine, source) = pair(color, side, false);
-                let mut rook = engine.history.worldlines[1].last().unwrap().clone();
-                rook.inverted = true;
-                let mut line = vec![rook];
-                for _ in 0..engine.history.horizon {
-                    line.push(line.last().unwrap().prolongate().unwrap());
+                let seen = engine.history.horizon;
+                for state in engine.history.worldlines[1].iter_mut() {
+                    state.fut_seen = seen;
                 }
-                for state in &mut line {
-                    state.rights = MoveRights::default();
-                }
-                engine.history.worldlines[1] = line.into();
                 engine.update_bufs().unwrap();
                 engine.reconcile().unwrap();
                 let mv = select(&engine, source, side, direction);

@@ -14,27 +14,29 @@ pub enum CaptureOutcome {
     Unresolved,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum WinReason {
     Checkmate,
     KingCaptured,
     Paradox,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum GameOutcome {
     Victory { winner: Color, reason: WinReason },
     Stalemate,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum WaitingReason {
     NoActivePieces,
     OpponentPastMoves,
     KingUnderAttack,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(
+    serde::Serialize, serde::Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq, Hash,
+)]
 pub enum GameStatus {
     #[default]
     Ongoing,
@@ -64,7 +66,7 @@ pub enum CalculationStatus {
     Paused { t: BoardTime, side: Color },
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub(super) struct Calculation {
     pub interactive: bool,
     pub acknowledged: Vec<PieceAt>,
@@ -74,21 +76,23 @@ pub(super) struct Calculation {
 
 /// Physical worldline edits caused by one cancellation, including a castling rook.
 /// Reaction flags alone are not evidence that a continuation affects history.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Cancellation {
     pub source: PieceAt,
     pub lines: Vec<(usize, Worldline, Worldline)>,
 }
 
 /// Authoritative state. Board projections and lookup tables are never stored here.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct History {
     pub(super) rules: crate::model::GameRules,
     pub(super) starting_position: crate::model::StartingPosition,
     pub(super) worldlines: Vec<Worldline>,
+    #[serde(with = "super::lab::map_entries")]
     pub(super) moves: BTreeMap<MoveId, Move>,
     /// Targets observed when a move was played. Dead targets are restored only
     /// in its legality view, so a recorded pawn capture can be revalidated.
+    #[serde(with = "super::lab::map_entries")]
     pub(super) targets: BTreeMap<MoveId, Vec<PieceAt>>,
     /// The timeline still advances when its newest board contains no pieces.
     pub(super) horizon: BoardTime,

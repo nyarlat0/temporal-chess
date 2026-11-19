@@ -219,7 +219,9 @@ pub fn ribbon(
         game.viewport.frame = Some(frame);
     }
     game.facing.update(
-        if game.online.enabled {
+        if game.lab.is_some() {
+            false
+        } else if game.online.enabled {
             game.online.side == Some(Color::Black)
         } else if let Some(human) = game.bot.settings.human_side() {
             human == Color::Black

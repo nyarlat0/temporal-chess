@@ -11,7 +11,7 @@ use std::{
 };
 use temporal_chess_engine::{
     ENGINE_REVISION,
-    engine::Engine,
+    engine::{Engine, LabSetup},
     model::{Color, GameRules, StartingPosition},
     record::{Command, GameRecord},
 };
@@ -24,6 +24,7 @@ use web_time::Instant;
 pub struct OnlineState {
     pub rules: GameRules,
     pub starting_position: StartingPosition,
+    pub lab_setup: Option<LabSetup>,
     pub enabled: bool,
     pub ready: bool,
     pub waiting: bool,
@@ -48,6 +49,7 @@ impl Default for OnlineState {
         Self {
             rules: GameRules::default(),
             starting_position: StartingPosition::Standard,
+            lab_setup: None,
             enabled: false,
             ready: false,
             waiting: false,
@@ -70,6 +72,22 @@ impl Default for OnlineState {
     }
 }
 impl OnlineState {
+    pub fn initial_record(&self) -> GameRecord {
+        if self.starting_position == StartingPosition::Lab
+            && let Some(setup) = &self.lab_setup
+        {
+            return GameRecord::with_lab_setup(setup.clone());
+        }
+        GameRecord::with_start(self.rules, self.starting_position)
+    }
+    pub fn create_from_lab(&mut self, record: &GameRecord) {
+        self.enabled = true;
+        self.ready = false;
+        self.lab_setup = record.lab_setup().cloned();
+        self.rules = record.rules();
+        self.starting_position = StartingPosition::Lab;
+        self.action = Some(Action::Create);
+    }
     pub fn opponent_connected(&self) -> bool {
         self.opponent
     }
@@ -221,7 +239,8 @@ impl MultiplayerClient {
         let (sender, receiver) = ewebsock::connect_with_wakeup(
             url,
             ewebsock::Options {
-                max_incoming_frame_size: 4 * 1024 * 1024,
+                max_incoming_frame_size: temporal_chess_protocol::MAX_LAB_SETUP_LEN
+                    + 4 * 1024 * 1024,
                 ..Default::default()
             },
             move || wake.request_repaint(),
@@ -400,6 +419,11 @@ pub fn poll(
                     game.online.room = None;
                     ClientMessage::CreateGame {
                         engine_revision: ENGINE_REVISION.to_owned(),
+                        lab_setup: if game.online.starting_position == StartingPosition::Lab {
+                            game.online.lab_setup.as_ref().map(LabSetup::to_json)
+                        } else {
+                            None
+                        },
                         time_war_separation: game
                             .online
                             .starting_position
@@ -592,6 +616,7 @@ fn receive(client: &mut MultiplayerClient, game: &mut GameUi, message: ServerMes
     match message {
         ServerMessage::GameReady {
             time_war_separation,
+            lab_setup,
             engine_revision,
             pending,
             pending_undo,
@@ -630,6 +655,25 @@ fn receive(client: &mut MultiplayerClient, game: &mut GameUi, message: ServerMes
                 global_reaction_reset,
                 wait_before_move,
             };
+            game.online.lab_setup = match lab_setup {
+                Some(json) => match LabSetup::from_json(&json) {
+                    Ok(setup)
+                        if setup.rules() == game.online.rules && time_war_separation.is_none() =>
+                    {
+                        game.online.starting_position = StartingPosition::Lab;
+                        Some(setup)
+                    }
+                    _ => {
+                        game.online.fatal = true;
+                        game.online.ready = false;
+                        game.online.status =
+                            crate::message!("Некорректный сеттинг Lab", "Invalid Lab setting");
+                        return;
+                    }
+                },
+                None => None,
+            };
+            game.lab = None;
             let key = token_key(&game.online.endpoint, &game_id);
             client.tokens.insert(key.clone(), player_token.clone());
             save_token(&key, &player_token);
@@ -1010,7 +1054,32 @@ pub fn undo_notification(ctx: &egui::Context, game: &mut GameUi) {
     }
 }
 
+pub fn lab_controls(ui: &mut egui::Ui, online: &mut OnlineState) {
+    ui.label(crate::tr!("Адрес сервера", "Server URL"));
+    ui.text_edit_singleline(&mut online.endpoint);
+    ui.horizontal_wrapped(|ui| {
+        ui.selectable_value(
+            &mut online.preference,
+            SidePreference::Random,
+            crate::tr!("Случайная сторона", "Random side"),
+        );
+        ui.selectable_value(
+            &mut online.preference,
+            SidePreference::White,
+            crate::tr!("Белые", "White"),
+        );
+        ui.selectable_value(
+            &mut online.preference,
+            SidePreference::Black,
+            crate::tr!("Чёрные", "Black"),
+        );
+    });
+}
+
 pub fn panel(ui: &mut egui::Ui, game: &mut GameUi) {
+    if game.lab.is_some() {
+        return;
+    }
     let idle = game.replay_job.is_none() && !game.playback_busy();
     ui.add_space(8.0);
     if game.online.enabled {
@@ -1103,7 +1172,11 @@ pub fn panel(ui: &mut egui::Ui, game: &mut GameUi) {
                         )
                         .clicked()
                     {
-                        game.online.action = Some(Action::Create);
+                        if game.online.starting_position == StartingPosition::Lab {
+                            game.open_network_lab();
+                        } else {
+                            game.online.action = Some(Action::Create);
+                        }
                     }
                     ui.separator();
                     ui.add(
@@ -1422,6 +1495,80 @@ mod tests {
         assert!(game.online.pending_undo.is_none());
         assert!(!game.online.waiting);
         assert!(game.can_submit());
+    }
+
+    #[test]
+    fn lab_network_snapshot_and_consensual_undo_keep_the_prepared_history() {
+        use temporal_chess_engine::{
+            engine::LabEdit,
+            model::{PieceKind, Sq},
+        };
+        let mut engine = Engine::new_lab(GameRules::default())
+            .unwrap()
+            .with_interactive_calculation()
+            .unwrap();
+        engine
+            .edit_lab(LabEdit::Boards {
+                beginning: -2,
+                horizon: 6,
+            })
+            .unwrap();
+        for (color, t, square) in [(Color::White, 0, Sq(1, 0)), (Color::Black, 1, Sq(1, 7))] {
+            engine
+                .edit_lab(LabEdit::Place {
+                    t,
+                    square,
+                    color,
+                    kind: PieceKind::N,
+                    inverted: false,
+                })
+                .unwrap();
+        }
+        let preparation = CommandProposal {
+            id: "e".repeat(32),
+            revision: 0,
+            side: Side::White,
+            command: "move 0 0:0:0 b1 c3 + normal".into(),
+        };
+        let prepared = validate_proposal(
+            engine.clone(),
+            GameRecord::from_lab(&engine),
+            &preparation,
+            0,
+        )
+        .unwrap();
+        let initial = prepared.engine;
+        let seed = GameRecord::from_lab(&initial);
+        let mut game = GameUi {
+            engine: initial.clone(),
+            record: seed.clone(),
+            ..Default::default()
+        };
+        game.online.enabled = true;
+        game.online.ready = true;
+        game.online.side = Some(Color::Black);
+        game.online.starting_position = StartingPosition::Lab;
+        game.online.lab_setup = seed.lab_setup().cloned();
+        let command = "move 1 1:1:0 b8 c6 + normal".to_owned();
+        let mut client = MultiplayerClient::default();
+        snapshot(&mut client, &mut game, 1, vec![command], None, None);
+        finish_network_replay(&mut game);
+        assert_eq!(game.record.commands().len(), 1);
+        assert_eq!(game.engine.history().moves().len(), 2);
+        let request = undo_request();
+        receive_undo(&mut client, &mut game, request.clone());
+        receive(
+            &mut client,
+            &mut game,
+            ServerMessage::UndoAccepted {
+                proposal_id: request.id,
+                revision: 2,
+                history: vec![],
+            },
+        );
+        finish_network_replay(&mut game);
+        assert_eq!(game.engine, initial);
+        assert_eq!(game.record, seed);
     }
 
     #[test]

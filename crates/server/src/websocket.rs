@@ -10,11 +10,11 @@ use tokio::sync::{Mutex, mpsc};
 use uuid::Uuid;
 
 use crate::{
-    database::{AuthenticatedPlayer, CommandResult, Repository, RepositoryError},
+    database::{AuthenticatedPlayer, CommandResult, Repository, RepositoryError, RoomStart},
     hub::{ConnectionHub, Outbound},
 };
 
-const MAX_FRAME_BYTES: usize = 16 * 1024;
+const MAX_FRAME_BYTES: usize = temporal_chess_protocol::MAX_LAB_SETUP_LEN * 2 + 16 * 1024;
 
 #[derive(Clone)]
 pub(crate) struct AppState {
@@ -174,6 +174,7 @@ async fn handle_client_message(
     match message {
         ClientMessage::CreateGame {
             time_war_separation,
+            lab_setup,
             protocol,
             engine_revision,
             side,
@@ -192,7 +193,10 @@ async fn handle_client_message(
                     global_reaction_reset,
                     wait_before_move,
                     &engine_revision,
-                    time_war_separation,
+                    RoomStart {
+                        time_war_separation,
+                        lab_setup,
+                    },
                 )
                 .await
             {
@@ -216,6 +220,7 @@ async fn handle_client_message(
                             global_reaction_reset: ready.global_reaction_reset,
                             wait_before_move: ready.wait_before_move,
                             time_war_separation: ready.time_war_separation,
+                            lab_setup: ready.lab_setup,
                             created: true,
                             game_id: ready.auth.game_id.clone(),
                             player_token: ready.auth.player_token.clone(),
@@ -277,6 +282,7 @@ async fn handle_client_message(
                             global_reaction_reset: ready.global_reaction_reset,
                             wait_before_move: ready.wait_before_move,
                             time_war_separation: ready.time_war_separation,
+                            lab_setup: ready.lab_setup,
                             created: false,
                             game_id: ready.auth.game_id.clone(),
                             player_token: ready.auth.player_token.clone(),
@@ -533,6 +539,7 @@ mod tests {
                 &state,
                 ClientMessage::CreateGame {
                     time_war_separation: None,
+                    lab_setup: None,
                     protocol: PROTOCOL_VERSION,
                     engine_revision: hash.clone(),
                     chain_info_activation: false,

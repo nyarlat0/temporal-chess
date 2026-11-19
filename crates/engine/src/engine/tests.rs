@@ -556,7 +556,7 @@ fn castling_separates_source_participants_from_destination_occupancy() {
 }
 
 #[test]
-fn backward_castling_accepts_either_orientation_and_cancels_both_participants() {
+fn backward_castling_requires_matching_orientation_and_cancels_both_participants() {
     for color in [Color::White, Color::Black] {
         for side in [Castling::Short, Castling::Long] {
             for (king_inv, rook_inv) in [(false, false), (false, true), (true, false), (true, true)]
@@ -586,8 +586,9 @@ fn backward_castling_accepts_either_orientation_and_cancels_both_participants() 
                     .unwrap()
                     .into_iter()
                     .find(|mv| mv.castling() == Some(side) && mv.to_past());
-                assert!(
+                assert_eq!(
                     castle.is_some(),
+                    king_inv == rook_inv,
                     "{color:?} {side:?} king={king_inv} rook={rook_inv}"
                 );
                 if let Some(castle) = castle {

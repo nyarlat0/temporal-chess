@@ -1,8 +1,8 @@
 use sha2::{Digest, Sha256};
 use sqlx::{FromRow, PgPool};
 use temporal_chess_protocol::{
-    CommandProposal, MAX_COMMAND_LEN, MAX_COMMANDS, MAX_GAME_ID_LEN, MAX_REJECTION_LEN, Side,
-    SidePreference, SyncReason, UndoProposal,
+    CommandProposal, MAX_COMMAND_LEN, MAX_COMMANDS, MAX_GAME_ID_LEN, MAX_LAB_SETUP_LEN,
+    MAX_REJECTION_LEN, Side, SidePreference, SyncReason, UndoProposal,
 };
 use thiserror::Error;
 use uuid::Uuid;
@@ -35,9 +35,24 @@ pub(crate) struct ReadyGame {
     pub(crate) global_reaction_reset: bool,
     pub(crate) wait_before_move: bool,
     pub(crate) time_war_separation: Option<usize>,
+    pub(crate) lab_setup: Option<String>,
     pub(crate) auth: AuthenticatedPlayer,
     pub(crate) revision: u64,
     pub(crate) history: Vec<String>,
+}
+
+#[derive(Default)]
+pub(crate) struct RoomStart {
+    pub(crate) time_war_separation: Option<usize>,
+    pub(crate) lab_setup: Option<String>,
+}
+impl From<Option<usize>> for RoomStart {
+    fn from(time_war_separation: Option<usize>) -> Self {
+        Self {
+            time_war_separation,
+            lab_setup: None,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -89,6 +104,7 @@ struct RoomRow {
     global_reaction_reset: bool,
     wait_before_move: bool,
     time_war_separation: Option<i32>,
+    lab_setup: Option<String>,
     game_id: String,
     white_token_hash: Option<Vec<u8>>,
     black_token_hash: Option<Vec<u8>>,
@@ -108,8 +124,21 @@ impl Repository {
         global_reaction_reset: bool,
         wait_before_move: bool,
         engine_revision: &str,
-        time_war_separation: Option<usize>,
+        start: RoomStart,
     ) -> Result<ReadyGame, RepositoryError> {
+        let RoomStart {
+            time_war_separation,
+            lab_setup,
+        } = start;
+        if lab_setup.as_ref().is_some_and(|s| {
+            s.is_empty() || s.len() > MAX_LAB_SETUP_LEN || !s.is_ascii() || s.contains(['\r', '\n'])
+        }) || (lab_setup.is_some() && time_war_separation.is_some())
+        {
+            return Err(client_error(
+                "invalid_starting_position",
+                "Invalid starting setting envelope.",
+            ));
+        }
         validate_engine_revision(engine_revision)?;
         if time_war_separation.is_some_and(|n| !(3..=255).contains(&n) || n % 2 == 0) {
             return Err(client_error(
@@ -129,8 +158,8 @@ impl Repository {
             };
             let result = sqlx::query(
                 "INSERT INTO games
-                    (game_id, white_token_hash, black_token_hash, revision, chain_info_activation, global_reaction_reset, engine_revision, time_war_separation, wait_before_move)
-                 VALUES ($1, $2, $3, 0, $4, $5, $6, $7, $8)
+                    (game_id, white_token_hash, black_token_hash, revision, chain_info_activation, global_reaction_reset, engine_revision, time_war_separation, wait_before_move, lab_setup)
+                 VALUES ($1, $2, $3, 0, $4, $5, $6, $7, $8, $9)
                  ON CONFLICT (game_id) DO NOTHING",
             )
             .bind(&game_id)
@@ -141,6 +170,7 @@ impl Repository {
             .bind(engine_revision)
             .bind(time_war_separation.map(|n| n as i32))
             .bind(wait_before_move)
+            .bind(lab_setup.as_deref())
             .execute(&self.pool)
             .await?;
             if result.rows_affected() == 1 {
@@ -152,6 +182,7 @@ impl Repository {
                     global_reaction_reset,
                     wait_before_move,
                     time_war_separation,
+                    lab_setup: lab_setup.clone(),
                     auth: AuthenticatedPlayer {
                         game_id,
                         side,
@@ -188,7 +219,7 @@ impl Repository {
         let game_id = normalize_game_id(game_id)?;
         let mut transaction = self.pool.begin().await?;
         let mut room = sqlx::query_as::<_, RoomRow>(
-            "SELECT game_id, white_token_hash, black_token_hash, revision, command_count, causal_gaps, chain_info_activation, global_reaction_reset, engine_revision, time_war_separation, wait_before_move
+            "SELECT game_id, white_token_hash, black_token_hash, revision, command_count, causal_gaps, chain_info_activation, global_reaction_reset, engine_revision, time_war_separation, wait_before_move, lab_setup
              FROM games WHERE game_id = $1 FOR UPDATE",
         )
         .bind(&game_id)
@@ -285,6 +316,7 @@ impl Repository {
             global_reaction_reset: room.global_reaction_reset,
             wait_before_move: room.wait_before_move,
             time_war_separation: room.time_war_separation.map(|n| n as usize),
+            lab_setup: room.lab_setup,
             auth: AuthenticatedPlayer {
                 game_id: room.game_id,
                 side,
@@ -676,7 +708,7 @@ async fn locked_room(
     game_id: &str,
 ) -> Result<RoomRow, RepositoryError> {
     sqlx::query_as::<_, RoomRow>(
-        "SELECT game_id, white_token_hash, black_token_hash, revision, command_count, causal_gaps, chain_info_activation, global_reaction_reset, engine_revision, time_war_separation, wait_before_move
+        "SELECT game_id, white_token_hash, black_token_hash, revision, command_count, causal_gaps, chain_info_activation, global_reaction_reset, engine_revision, time_war_separation, wait_before_move, NULL::text AS lab_setup
          FROM games WHERE game_id = $1 FOR UPDATE",
     )
     .bind(game_id)

@@ -6,6 +6,8 @@ mod collisions;
 mod expansion;
 mod history;
 mod initialization;
+mod lab;
+pub use lab::{LabEdit, LabSetup};
 mod move_generation;
 mod move_wait;
 mod outcome;

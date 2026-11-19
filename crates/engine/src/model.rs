@@ -15,10 +15,13 @@ pub type BoardTime = i64;
 
 pub const MAX_TIME_WAR_SEPARATION: usize = 255;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(
+    serde::Serialize, serde::Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq, Hash,
+)]
 pub enum StartingPosition {
     #[default]
     Standard,
+    Lab,
     TimeWar {
         separation: usize,
     },
@@ -26,7 +29,7 @@ pub enum StartingPosition {
 impl StartingPosition {
     pub fn is_valid(self) -> bool {
         match self {
-            Self::Standard => true,
+            Self::Standard | Self::Lab => true,
             Self::TimeWar { separation } => {
                 (3..=MAX_TIME_WAR_SEPARATION).contains(&separation) && separation % 2 == 1
             }
@@ -34,7 +37,7 @@ impl StartingPosition {
     }
     pub fn initial_end(self) -> Option<BoardTime> {
         match self {
-            Self::Standard => None,
+            Self::Standard | Self::Lab => None,
             Self::TimeWar { separation } => Some(separation as BoardTime),
         }
     }
@@ -50,7 +53,7 @@ impl StartingPosition {
 }
 
 /// Independent, immutable options. React once is enabled by default.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct GameRules {
     /// Free wait: a standalone advance does not consume the player's turn.
     /// The field name is retained for wire compatibility.
@@ -70,7 +73,9 @@ impl Default for GameRules {
 }
 
 /// Enemy appearance, independent of incarnation identity and movement rights.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash,
+)]
 pub struct Observation {
     pub square: Sq,
     pub kind: PieceKind,
@@ -95,7 +100,9 @@ impl Observation {
 
 /// Independent reasons why an occurrence may act. Expiring reactions never
 /// consumes an ordinary move; only playing in its causal slot consumes that.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(
+    serde::Serialize, serde::Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq, Hash,
+)]
 pub struct MoveRights {
     pub ordinary: bool,
     pub new_information: bool,
@@ -115,7 +122,7 @@ impl MoveRights {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct State {
     pub t: BoardTime,
     pub x: usize,
@@ -142,7 +149,9 @@ pub struct State {
 
 /// A move slot shared by pieces of the same causal order on one board.
 /// No worldline ID: one piece's reaction can replace another piece's move.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    serde::Serialize, serde::Deserialize, Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord,
+)]
 pub struct MoveId {
     pub t: BoardTime,
     pub fut_seen: BoardTime,
@@ -150,7 +159,9 @@ pub struct MoveId {
 }
 
 /// Long-term identification of a piece
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    serde::Serialize, serde::Deserialize, Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord,
+)]
 pub struct PieceId {
     pub wid: usize,
     pub fut_seen: BoardTime,
@@ -158,20 +169,20 @@ pub struct PieceId {
 }
 
 /// A location in a worldline. Invalidated when earlier states are removed.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize, Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ShortPieceId {
     pub wid: usize,
     pub age: usize,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize, Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Castling {
     Long,
     Short,
 }
 
 /// Direction selected for this move, independently of the previous move.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TimeDirection {
     Future,
     Past,
@@ -194,7 +205,7 @@ impl TimeDirection {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Promotion {
     Knight,
     Bishop,
@@ -216,7 +227,7 @@ impl Promotion {
 }
 
 /// Special moves are mutually exclusive; promotion to a king is unrepresentable.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum MoveEffect {
     Normal,
     Castle(Castling),
@@ -224,7 +235,7 @@ pub enum MoveEffect {
     Promote(Promotion),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Move {
     pub pid: PieceId,
     pub t: BoardTime,
@@ -235,7 +246,7 @@ pub struct Move {
 
 /// An occurrence of a causal incarnation on a particular board.
 /// `PieceId` alone repeats at several times inside an inverted worldline.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PieceAt {
     pub piece: PieceId,
     pub t: BoardTime,
