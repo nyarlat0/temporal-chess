@@ -130,25 +130,6 @@ impl Engine {
             let Some(age) = self.revival_age(wid) else {
                 continue;
             };
-            // Two dead opponents can become eligible together after undoing a
-            // capture. Restore the inverted winner first at their shared cell;
-            // otherwise the ordinary victim's occupancy would keep it dead.
-            let state = &self.history.worldlines[wid][age];
-            let preferred = (!state.inverted)
-                .then(|| {
-                    candidates.iter().find_map(|&other| {
-                        let other_age = self.revival_age(other)?;
-                        let candidate = &self.history.worldlines[other][other_age];
-                        (candidate.inverted
-                            && candidate.color != state.color
-                            && candidate.t == state.t
-                            && candidate.x == state.x
-                            && candidate.y == state.y)
-                            .then_some((other, other_age))
-                    })
-                })
-                .flatten();
-            let (wid, age) = preferred.unwrap_or((wid, age));
             let line = &mut self.history.worldlines[wid];
             if barrier.is_some_and(|limit| line[age].t > limit) {
                 continue;
@@ -191,16 +172,6 @@ impl Engine {
     }
 
     pub(super) fn reconcile_with_auto_wait(&mut self, auto: bool) -> Result<(), EngineErr> {
-        self.reconcile_with_capture_dependencies(auto, &BTreeSet::new())
-    }
-
-    /// A probe excludes already tested moves, bounding nested dependency checks
-    /// while allowing removal of an attacker to invalidate its counter-capture.
-    fn reconcile_with_capture_dependencies(
-        &mut self,
-        auto: bool,
-        excluded: &BTreeSet<MoveId>,
-    ) -> Result<(), EngineErr> {
         let mut auto_waited = Vec::new();
         let mut seen = Vec::new();
         loop {
@@ -271,87 +242,8 @@ impl Engine {
             if self.prune_immobile_undo_reactions()? {
                 continue;
             }
-            if self.cancel_redundant_counter_capture(excluded)? == ValidRes::HistChanged {
-                continue;
-            }
             return Ok(());
         }
-    }
-
-    /// A friendly inverted arrival cannot sustain an ordinary death solely by
-    /// occupying its square after its recorded enemy capture has lost its cause.
-    fn cancel_redundant_counter_capture(
-        &mut self,
-        excluded: &BTreeSet<MoveId>,
-    ) -> Result<ValidRes, EngineErr> {
-        if self.calculation_barrier().is_some() {
-            return Ok(ValidRes::Unchanged);
-        }
-        let mut candidates = BTreeSet::new();
-        for line in &self.history.worldlines {
-            let Some(dead) = line.iter().find(|s| !s.alive) else {
-                continue;
-            };
-            if dead.inverted
-                || crate::model::Color::from_board(dead.t) != dead.color
-                || self.board(dead.t).is_none()
-            {
-                continue;
-            }
-            let Some(board) = self.preboard(dead.t) else {
-                continue;
-            };
-            for killer in &board.space[dead.x][dead.y] {
-                if killer.color != dead.color || !killer.inverted {
-                    continue;
-                }
-                let route = &self.history.worldlines[killer.origin];
-                for age in (0..killer.age).rev() {
-                    if route.gap_after(age).is_some() {
-                        break;
-                    }
-                    let id = MoveId::from_state(&route[age]);
-                    if let Some(mv) = self.history.moves.get(&id)
-                        && mv.pid == super::PieceId::from_state(&route[age], killer.origin)
-                    {
-                        if mv.to_past()
-                            && self
-                                .history
-                                .targets
-                                .get(&id)
-                                .is_some_and(|targets| !targets.is_empty())
-                        {
-                            candidates.insert(id);
-                        }
-                        break;
-                    }
-                }
-            }
-        }
-        for id in candidates.difference(excluded).copied() {
-            let mut probe = self.clone();
-            probe.history.calculation.interactive = false;
-            let mut checking = excluded.clone();
-            checking.insert(id);
-            // An unresolved/contradictory counterfactual is not evidence that a
-            // real move is redundant. Leave paradox adjudication to the caller.
-            if probe.undo_mv(id).is_err()
-                || probe
-                    .reconcile_with_capture_dependencies(false, &checking)
-                    .is_err()
-            {
-                continue;
-            }
-            let necessary = self.history.targets[&id].iter().any(|&target| {
-                self.piece_state(target).is_some_and(|s| !s.alive)
-                    && probe.piece_state(target).is_some_and(|s| s.alive)
-            });
-            if !necessary {
-                self.undo_mv(id)?;
-                return Ok(ValidRes::HistChanged);
-            }
-        }
-        Ok(ValidRes::Unchanged)
     }
 
     fn reconcile_boards(&mut self) -> Result<ValidRes, EngineErr> {

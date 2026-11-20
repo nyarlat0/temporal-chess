@@ -563,9 +563,45 @@ impl Command {
 mod tests {
     use super::*;
     use crate::engine::CalculationStatus;
-    // Cancelling a redundant counter-capture must not cancel the pawn arrival.
+
     #[test]
-    fn counter_capture_cancellation_does_not_grant_a_spurious_pawn_reaction() {
+    fn inverted_bishop_recapture_survives_reconciliation() {
+        let text = "NOLAN-CHESS 6
+chain_info_activation on
+react_multiple off
+free_wait off
+start standard
+move 0 12:0:0 e2 e4 + normal
+move 1 28:1:0 e7 e5 + normal
+move 2 6:2:0 g1 f3 - normal
+move 3 21:3:0 f8 a3 - normal
+move 4 10:4:0 c2 c3 + normal
+move 1 21:3:1 a3 b2 - normal
+move 0 2:0:0 c1 b2 - normal
+";
+        let (engine, record) = GameRecord::load(text).unwrap();
+        for command in &record.commands()[5..] {
+            let Command::Move { mv, .. } = command else {
+                unreachable!()
+            };
+            assert_eq!(engine.history().moves().get(&mv.id()), Some(mv));
+        }
+
+        let on_b2 = |wid: usize, t| {
+            engine.history().worldlines()[wid]
+                .iter()
+                .find(|state| state.t == t && (state.x, state.y) == (1, 1))
+                .unwrap()
+        };
+        assert!(on_b2(2, -1).alive && on_b2(2, -1).inverted);
+        assert!(!on_b2(21, -1).alive);
+        assert!(on_b2(21, 0).alive);
+        assert!(!on_b2(9, 0).alive);
+    }
+
+    // Regression fixture: death on d4 at t=3 must not cancel d2-d4 at t=2.
+    #[test]
+    fn arrival_collision_does_not_grant_a_spurious_cancellation_reaction() {
         let text = "NOLAN-CHESS 1
 move 0 6:0:0 g1 f3 + normal
 move 1 17:1:0 b8 c6 + normal
@@ -576,6 +612,7 @@ move 5 30:5:0 g7 g5 + normal
 move 6 14:6:0 g2 g4 + normal
 move 7 17:7:0 c6 d4 - normal
 move 6 6:6:0 f3 d4 - normal
+move 5 17:5:0 c6 d4 - normal
 ";
         let (engine, record) = GameRecord::load(text).unwrap();
         let Command::Move { mv, .. } = record.commands()[2] else {
@@ -593,14 +630,12 @@ move 6 6:6:0 f3 d4 - normal
         let arrival = &engine.history().worldlines()[11][3];
         assert_eq!(
             (arrival.t, arrival.x, arrival.y, arrival.alive),
-            (3, 3, 3, true)
+            (3, 3, 3, false)
         );
-        // The redundant reply remains in the journal, but not in live moves.
-        let Command::Move { mv: reply, .. } = record.commands()[8] else {
-            unreachable!()
-        };
-        assert!(!engine.history().moves().contains_key(&reply.id()));
-        assert_eq!(record.commands().len(), 9);
+        // Revalidation's collision exception must not open a new straight pawn
+        // capture against the actual occupant of the destination board.
+        assert!(!engine.possible_moves(11, 2).unwrap().contains(&mv));
+        assert_eq!(record.commands().len(), 10);
     }
 
     #[test]

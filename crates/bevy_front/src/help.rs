@@ -162,8 +162,8 @@ fn rules_reference(ui: &mut egui::Ui) {
         (
             crate::tr!("Взятия и столкновения", "Captures and collisions"),
             crate::tr!(
-                "При встречном столкновении фигур разных цветов всегда выживает инвертированная. При одинаковой временной ориентации обычное взятие убивает цель, но пешка может взять только своим атакующим ходом. Столкновение со своей фигурой тоже влияет на историю, а не считается обычным взятием. Красный череп предупреждает, что выбранная фигура проиграет столкновение. Ответное инвертированное взятие, убившее свою обычную фигуру, отменяется, если смерть его вражеской цели больше не зависит от этого хода. Своя жертва тогда может воскреснуть, если других причин смерти нет.",
-                "When opposing colors collide with opposite time orientations, the inverted piece always survives. With the same time orientation, a regular capture kills the target, but a pawn must use its capturing movement. A collision with a friendly piece also affects history rather than acting as a regular capture. A red skull warns that your selected piece will lose the collision. An inverted counter-capture that kills a friendly ordinary piece is cancelled if its enemy target no longer needs that move to remain dead. The friendly victim can then revive unless another cause of death remains."
+                "При встречном столкновении фигур разных цветов всегда выживает инвертированная. При одинаковой временной ориентации обычное взятие убивает цель, но пешка может взять только своим атакующим ходом. Столкновение со своей фигурой тоже влияет на историю, а не считается обычным взятием. Красный череп предупреждает, что выбранная фигура проиграет столкновение.",
+                "When opposing colors collide with opposite time orientations, the inverted piece always survives. With the same time orientation, a regular capture kills the target, but a pawn must use its capturing movement. A collision with a friendly piece also affects history rather than acting as a regular capture. A red skull warns that your selected piece will lose the collision."
             ),
         ),
         (

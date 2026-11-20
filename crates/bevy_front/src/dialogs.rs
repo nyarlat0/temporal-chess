@@ -8,6 +8,10 @@ use crate::{
 use bevy_egui::egui::{self, Vec2};
 
 pub fn draw(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState, art: &PieceArt) {
+    #[cfg(target_arch = "wasm32")]
+    let browser_import = mobile_import(ctx, game).unwrap_or(false);
+    #[cfg(not(target_arch = "wasm32"))]
+    let browser_import = false;
     if game.undo_in_progress() {
         egui::Modal::new("undo_in_progress".into()).show(ctx, |ui| {
             ui.heading(crate::tr!("Отмена хода", "Undo move"));
@@ -20,7 +24,7 @@ pub fn draw(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState, art:
             });
         });
     }
-    if game.import_open {
+    if game.import_open && !browser_import {
         egui::Modal::new("import_game".into()).show(ctx, |ui| {
             ui.set_width(560.0_f32.min(ctx.viewport_rect().width() - 60.0));
             ui.heading(crate::tr!("Загрузить партию", "Import game"));
@@ -223,4 +227,100 @@ pub fn draw(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState, art:
             art,
         );
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn install_import_wakeup(proxy: &bevy::winit::EventLoopProxyWrapper) {
+    use wasm_bindgen::{JsCast, closure::Closure};
+
+    let Some(dialog) = web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.get_element_by_id("mobile-import"))
+    else {
+        return;
+    };
+    let proxy = (**proxy).clone();
+    let wake = Closure::<dyn FnMut()>::new(move || {
+        let _ = proxy.send_event(bevy::winit::WinitUserEvent::WakeUp);
+    });
+    if dialog
+        .add_event_listener_with_callback("nolan-import-action", wake.as_ref().unchecked_ref())
+        .is_ok()
+    {
+        // The dialog and its listener live for the lifetime of the page.
+        wake.forget();
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn mobile_import(ctx: &egui::Context, game: &mut GameUi) -> Option<bool> {
+    use wasm_bindgen::JsCast;
+    use web_sys::{HtmlDialogElement, HtmlFieldSetElement, HtmlTextAreaElement};
+
+    let document = web_sys::window()?.document()?;
+    let dialog = document
+        .get_element_by_id("mobile-import")?
+        .dyn_into::<HtmlDialogElement>()
+        .ok()?;
+    if !game.import_open {
+        if dialog.open() {
+            dialog.close();
+        }
+        return Some(false);
+    }
+    if !dialog.open() && !crate::view::mobile_layout(ctx) {
+        return Some(false);
+    }
+
+    let fieldset = document
+        .get_element_by_id("import-fields")?
+        .dyn_into::<HtmlFieldSetElement>()
+        .ok()?;
+    let textarea = document
+        .get_element_by_id("import-record")?
+        .dyn_into::<HtmlTextAreaElement>()
+        .ok()?;
+    let status = document.get_element_by_id("import-status")?;
+    if !dialog.open() {
+        textarea.set_value(&game.import_text);
+        let _ = dialog.remove_attribute("data-action");
+        dialog.show_modal().ok()?;
+    }
+    if let Some(action) = dialog.get_attribute("data-action") {
+        let _ = dialog.remove_attribute("data-action");
+        if game.replay_job.is_none() {
+            game.import_text = textarea.value();
+            match action.as_str() {
+                "submit" if !game.import_text.trim().is_empty() => game.begin_import(),
+                "cancel" => {
+                    game.import_open = false;
+                    dialog.close();
+                    ctx.request_repaint();
+                    return Some(true);
+                }
+                _ => {}
+            }
+        }
+    }
+    let loading = game.replay_job.is_some();
+    if fieldset.disabled() != loading {
+        fieldset.set_disabled(loading);
+    }
+    let error = game.import_error.as_ref().map(|error| error.text());
+    let message = if loading {
+        crate::tr!("Проверка истории…", "Validating history…")
+    } else {
+        error.unwrap_or("")
+    };
+    if status.text_content().as_deref() != Some(message) {
+        status.set_text_content(Some(message));
+    }
+    status
+        .set_attribute("data-error", if error.is_some() { "true" } else { "false" })
+        .ok()?;
+    if loading {
+        // Keep polling for the replay result while the canvas lacks focus.
+        ctx.request_repaint();
+    }
+    Some(true)
 }

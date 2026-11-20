@@ -45,10 +45,16 @@ fn setup_camera(mut commands: Commands) {
     commands.spawn((Camera2d, PrimaryEguiContext));
 }
 
-fn configure_ui(mut contexts: EguiContexts, mut commands: Commands) -> Result {
+fn configure_ui(
+    mut contexts: EguiContexts,
+    mut commands: Commands,
+    #[cfg(target_arch = "wasm32")] proxy: Res<bevy::winit::EventLoopProxyWrapper>,
+) -> Result {
     let ctx = contexts.ctx_mut()?;
     theme::configure(ctx);
     commands.insert_resource(PieceArt::new(ctx));
+    #[cfg(target_arch = "wasm32")]
+    crate::dialogs::install_import_wakeup(&proxy);
     Ok(())
 }
 

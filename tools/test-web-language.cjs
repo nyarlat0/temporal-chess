@@ -6,7 +6,7 @@ const html = readFileSync('crates/bevy_front/web/index.html.in', 'utf8');
 const bootstrap = html.match(/<script>([\s\S]*?)<\/script>/)[1];
 function boot(saved, languages, language = 'en', unavailable = false) {
   const context = {
-    document: { documentElement: { lang: 'en' } },
+    document: { documentElement: { lang: 'en', dataset: {} } },
     navigator: { languages, language },
     localStorage: {
       getItem(key) {
