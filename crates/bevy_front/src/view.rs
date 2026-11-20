@@ -134,12 +134,18 @@ pub fn draw(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState, art:
             style.animation_time = drawer_duration
         });
     }
+    let viewport = ctx.viewport_rect();
+    let mobile_drawer = if compact {
+        ctx.animate_bool_responsive(egui::Id::new("mobile_drawer_slide"), shell.sidebar_open)
+    } else {
+        0.0
+    };
     let mut root = egui::Ui::new(
         ctx.clone(),
         "viewport".into(),
         egui::UiBuilder::new()
             .layer_id(egui::LayerId::background())
-            .max_rect(ctx.viewport_rect()),
+            .max_rect(viewport),
     );
     let modal = game.import_open
         || game.confirm_restart
@@ -151,74 +157,100 @@ pub fn draw(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState, art:
         root.disable();
     }
     if compact {
-        egui::Panel::top("mobile_turn_header")
-            .resizable(false)
-            .frame(egui::Frame::new().fill(BACKGROUND).inner_margin(12))
+        // Cover layout spacing as well as the header and the ribbon.
+        ctx.layer_painter(root.layer_id())
+            .rect_filled(viewport, 0.0, BACKGROUND);
+        egui::Frame::new()
+            .inner_margin(egui::Margin::symmetric(12, 0))
             .show(&mut root, |ui| {
-                if shell.settings_open {
+                ui.set_min_width(ui.available_width());
+                if shell.settings_open || mobile_drawer > 0.0 {
                     ui.disable();
                 }
-                // The collapsed toolbar has three buttons. Keep the phone HUD
-                // below it so its two columns retain the full screen width.
-                if !shell.sidebar_open {
-                    ui.add_space(46.0);
-                }
-                let rect = ui.available_rect_before_wrap();
+                ui.add_space(58.0);
+                let mut rect = ui.available_rect_before_wrap();
+                let width = if has_hud_selection(game) {
+                    420.0
+                } else {
+                    184.0
+                };
+                rect = rect.shrink2(Vec2::new((rect.width() - width).max(0.0) * 0.5, 0.0));
                 let height = game_hud(ui, game, art, rect, modal);
                 ui.allocate_space(Vec2::new(0.0, height));
             });
     }
-    let mut sidebar_open = shell.sidebar_open;
-    let mut header_drawn = false;
-    let mut collapse_requested = false;
-    egui::Panel::right("game_sidebar")
-        .default_size(if compact {
-            ctx.viewport_rect().width().min(400.0)
-        } else {
-            340.0
-        })
-        .min_size(if compact {
-            ctx.viewport_rect().width().min(300.0)
-        } else {
-            300.0
-        })
-        .max_size(400.0)
-        .frame(egui::Frame::new().fill(PANEL).inner_margin(18))
-        .show_collapsible(&mut root, &mut sidebar_open, |ui| {
-            header_drawn = true;
-            collapse_requested = sidebar_header(ui, game, shell, modal, true);
-            let history_height =
-                (ctx.viewport_rect().height() / 3.0).min((ui.available_height() - 90.0).max(100.0));
-            let controls_height = (ui.available_height() - history_height - 16.0).max(60.0);
-            egui::ScrollArea::vertical()
-                .id_salt("sidebar_scroll")
-                .max_height(controls_height)
-                .auto_shrink([false, false])
-                .show(ui, |ui| sidebar(ui, game, shell, art));
-            ui.separator();
-            details_panel(ui, game, art, history_height);
-        });
-    if collapse_requested {
-        sidebar_open = false;
-    }
-    shell.sidebar_open = sidebar_open;
+    let desktop_sidebar_drawn = if compact {
+        false
+    } else {
+        let mut open = shell.sidebar_open;
+        let drawer = egui::Panel::right("game_sidebar")
+            .default_size(340.0)
+            .min_size(300.0)
+            .max_size(400.0)
+            .frame(egui::Frame::new().fill(PANEL).inner_margin(18))
+            .show_collapsible(&mut root, &mut open, |ui| {
+                sidebar_contents(ui, game, shell, art, modal)
+            });
+        shell.sidebar_open = open && !drawer.as_ref().is_some_and(|r| r.inner);
+        drawer.is_some()
+    };
     egui::CentralPanel::default()
-        .frame(egui::Frame::new().fill(BACKGROUND).inner_margin(12))
+        .frame(
+            egui::Frame::new()
+                .fill(if compact {
+                    egui::Color32::TRANSPARENT
+                } else {
+                    BACKGROUND
+                })
+                .inner_margin(12),
+        )
         .show(&mut root, |ui| {
-            if shell.settings_open {
+            if shell.settings_open || mobile_drawer > 0.0 {
                 ui.disable();
             }
-            if compact && shell.sidebar_open {
-                shell.ribbon_rect = egui::Rect::NOTHING;
-                return;
-            }
-            shell.ribbon_rect = ui.available_rect_before_wrap();
+            shell.ribbon_rect = if mobile_drawer > 0.0 {
+                egui::Rect::NOTHING
+            } else {
+                ui.available_rect_before_wrap()
+            };
             let rect = crate::board_view::ribbon(ui, game, art, &shell.touch);
             if !compact {
                 game_hud(ui, game, art, rect, modal);
             }
         });
-    if !header_drawn {
+    if mobile_drawer > 0.0 {
+        let position = viewport.min + Vec2::new(viewport.width() * (1.0 - mobile_drawer), 0.0);
+        let close = egui::Area::new("mobile_sidebar".into())
+            .order(egui::Order::Foreground)
+            .fixed_pos(position)
+            .constrain_to(viewport)
+            .constrain(false)
+            .default_size(viewport.size())
+            .fade_in(false)
+            .show(ctx, |ui| {
+                ui.set_min_size(viewport.size());
+                ui.set_max_size(viewport.size());
+                ui.painter().rect_filled(
+                    egui::Rect::from_min_size(ui.min_rect().min, viewport.size()),
+                    0.0,
+                    PANEL,
+                );
+                egui::Frame::new()
+                    .inner_margin(18)
+                    .show(ui, |ui| {
+                        if modal {
+                            ui.disable();
+                        }
+                        sidebar_contents(ui, game, shell, art, modal)
+                    })
+                    .inner
+            })
+            .inner;
+        if close {
+            shell.sidebar_open = false;
+            ctx.request_repaint();
+        }
+    } else if !desktop_sidebar_drawn {
         menu_button(ctx, game, shell, modal);
     }
     if previous_sidebar != shell.sidebar_open {
@@ -266,6 +298,29 @@ pub fn draw(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState, art:
     {
         ctx.request_repaint();
     }
+}
+
+fn sidebar_contents(
+    ui: &mut egui::Ui,
+    game: &mut GameUi,
+    shell: &mut ShellState,
+    art: &PieceArt,
+    modal: bool,
+) -> bool {
+    let close = sidebar_header(ui, game, shell, modal, true);
+    let compact = mobile_layout(ui.ctx());
+    let history_height =
+        (ui.ctx().viewport_rect().height() / 3.0).min((ui.available_height() - 90.0).max(100.0));
+    let controls_height = (ui.available_height() - history_height - 16.0).max(60.0);
+    let show_board = egui::ScrollArea::vertical()
+        .id_salt("sidebar_scroll")
+        .max_height(controls_height)
+        .auto_shrink([false, compact])
+        .show(ui, |ui| sidebar(ui, game, shell, art))
+        .inner;
+    ui.separator();
+    let jumped = details_panel(ui, game, art, history_height);
+    close || (compact && (show_board || jumped))
 }
 
 fn menu_button(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState, modal: bool) {
@@ -343,6 +398,10 @@ fn sidebar_header(
                     "Автоматический поворот при смене хода в локальной игре.",
                     "Automatically flip boards between turns in local play."
                 ));
+                ui.checkbox(
+                    &mut shell.disable_waiting_music,
+                    crate::tr!("Выключить музыку ожидания", "Disable waiting music"),
+                );
                 ui.add(
                     egui::Slider::new(&mut game.animation_speed, 0.25..=3.0)
                         .step_by(0.05)
@@ -350,15 +409,15 @@ fn sidebar_header(
                         .suffix("×")
                         .text(crate::tr!("Скорость анимаций", "Animation speed")),
                 );
-                ui.checkbox(
-                    &mut shell.disable_waiting_music,
-                    crate::tr!("Выключить музыку ожидания", "Disable waiting music"),
-                );
             });
         shell.settings_open = open;
         icon_button(
             ui,
-            Icon::Menu,
+            if title && mobile_layout(ui.ctx()) {
+                Icon::Close
+            } else {
+                Icon::Menu
+            },
             crate::tr!("Показать или скрыть панель", "Toggle sidebar"),
             false,
             !modal,
@@ -366,6 +425,11 @@ fn sidebar_header(
         .clicked()
     })
     .inner
+}
+
+fn has_hud_selection(game: &GameUi) -> bool {
+    game.selected.is_some()
+        || ((game.inspect_mode || game.worldline_mode) && game.inspected_piece().is_some())
 }
 
 fn game_hud(
@@ -377,7 +441,13 @@ fn game_hud(
 ) -> f32 {
     let compact = mobile_layout(parent.ctx());
     let mut rect = rect;
-    rect.max.y = parent.clip_rect().bottom() - if compact { 110.0 } else { 12.0 };
+    rect.max.y = if compact {
+        // Leave room for the ribbon and its margin when inspection grows.
+        let available = rect.intersect(parent.clip_rect());
+        available.bottom() - 150.0_f32.min(available.height() * 0.5)
+    } else {
+        parent.clip_rect().bottom() - 12.0
+    };
 
     let mut child = parent.new_child(
         egui::UiBuilder::new()
@@ -394,17 +464,13 @@ fn game_hud(
         .corner_radius(12)
         .inner_margin(12)
         .show(ui, |ui| {
-            ui.set_max_width(if compact {
-                (rect.width() - 24.0).max(132.0)
+            if compact {
+                ui.set_width((rect.width() - 24.0).max(0.0));
             } else {
-                (rect.width() - 24.0).clamp(132.0, 172.0)
-            });
+                ui.set_max_width((rect.width() - 24.0).clamp(132.0, 172.0));
+            }
             ui.spacing_mut().item_spacing.x = if compact { 4.0 } else { 6.0 };
-            if compact
-                && (game.selected.is_some()
-                    || ((game.inspect_mode || game.worldline_mode)
-                        && game.inspected_piece().is_some()))
-            {
+            if compact && has_hud_selection(game) {
                 ui.columns(2, |columns| {
                     hud_turn(&mut columns[0], game, art, true);
                     hud_selection(&mut columns[1], game, art, true);
@@ -421,10 +487,7 @@ fn game_hud(
                 });
             } else {
                 hud_turn(ui, game, art, compact);
-                if game.selected.is_some()
-                    || ((game.inspect_mode || game.worldline_mode)
-                        && game.inspected_piece().is_some())
-                {
+                if has_hud_selection(game) {
                     ui.separator();
                 }
                 hud_selection(ui, game, art, compact);
@@ -736,6 +799,8 @@ fn observation_block(
     } else {
         observations.len()
     };
+    // Match the wrap layout's minimum row height to the observation cells.
+    ui.spacing_mut().interact_size.y = cell.y;
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = Vec2::splat(4.0);
         let (rect, response) = ui.allocate_exact_size(cell, egui::Sense::hover());
@@ -832,7 +897,7 @@ fn language_header(ui: &mut egui::Ui) {
     }
 }
 
-fn sidebar(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, art: &PieceArt) {
+fn sidebar(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, art: &PieceArt) -> bool {
     let idle = game.replay_job.is_none() && !game.playback_busy() && !game.facing.animating();
     let rules = game.engine.history().rules();
     if rules.wait_before_move {
@@ -949,6 +1014,7 @@ fn sidebar(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, art: &P
             ),
         );
     });
+    let mut show_board = false;
     ui.horizontal(|ui| {
         if icon_button(
             ui,
@@ -974,6 +1040,7 @@ fn sidebar(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, art: &P
                 game.jump_to = None;
             } else {
                 game.play_history();
+                show_board = true;
             }
         }
         if icon_button(
@@ -986,6 +1053,7 @@ fn sidebar(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, art: &P
         .clicked()
         {
             game.jump_to = game.times().first().copied();
+            show_board = true;
         }
         if icon_button(
             ui,
@@ -997,6 +1065,7 @@ fn sidebar(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, art: &P
         .clicked()
         {
             game.jump_to = Some(game.engine.history().beginning());
+            show_board = true;
         }
         if icon_button(
             ui,
@@ -1013,16 +1082,25 @@ fn sidebar(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, art: &P
     });
     ui.colored_label(
         SUBTLE,
-        egui::RichText::new(crate::tr!(
-            "Масштаб: Shift или ПКМ + колесо",
-            "Zoom: Shift or right mouse button + wheel"
-        ))
+        egui::RichText::new(if mobile_layout(ui.ctx()) {
+            crate::tr!(
+                "Масштаб · сведите или разведите два пальца",
+                "Pinch with two fingers to zoom"
+            )
+        } else {
+            crate::tr!(
+                "Масштаб: Shift или ПКМ + колесо",
+                "Zoom: Shift or right mouse button + wheel"
+            )
+        })
         .small(),
     );
+    show_board
 }
 
-fn details_panel(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt, height: f32) {
+fn details_panel(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt, height: f32) -> bool {
     ui.strong(crate::tr!("Ходы партии", "Move history"));
+    let mut jumped = false;
     if game.record.commands().is_empty() {
         ui.allocate_ui(
             Vec2::new(ui.available_width(), (height - 34.0).max(80.0)),
@@ -1143,10 +1221,12 @@ fn details_panel(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt, height: f
                     ))) && !playback_busy
                     {
                         game.jump_to = Some(t);
+                        jumped = true;
                     }
                 }
             });
     }
+    jumped
 }
 
 pub fn piece_name(kind: PieceKind) -> &'static str {
@@ -1247,6 +1327,15 @@ mod tests {
     use temporal_chess_engine::model::{Sq, TimeDirection};
 
     fn frame(ctx: &egui::Context, game: &mut GameUi, events: Vec<egui::Event>) -> egui::FullOutput {
+        frame_at(ctx, game, Vec2::new(1260.0, 900.0), events)
+    }
+
+    fn frame_at(
+        ctx: &egui::Context,
+        game: &mut GameUi,
+        size: Vec2,
+        events: Vec<egui::Event>,
+    ) -> egui::FullOutput {
         let key = egui::Id::new("test_art");
         let art = ctx
             .data_mut(|data| data.get_temp::<std::sync::Arc<PieceArt>>(key))
@@ -1262,7 +1351,7 @@ mod tests {
             .unwrap_or_default();
         let mut output = ctx.run_ui(
             egui::RawInput {
-                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1260.0, 900.0))),
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
                 events,
                 ..Default::default()
             },
@@ -1275,6 +1364,53 @@ mod tests {
                 .is_empty()
         );
         output
+    }
+
+    #[test]
+    fn phone_menu_covers_the_viewport_and_returns_to_the_centered_game() {
+        let ctx = egui::Context::default();
+        let mut game = GameUi::default();
+        let size = Vec2::new(430.0, 812.0);
+        let viewport = Rect::from_min_size(Pos2::ZERO, size);
+        let toggle = crate::tr!("Показать или скрыть панель", "Toggle sidebar");
+        let shell_key = egui::Id::new("test_shell");
+        let mut render = |events| frame_at(&ctx, &mut game, size, events);
+        render(vec![]);
+        let output = render(vec![]);
+        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Rect(rect)
+            if rect.fill == BACKGROUND && rect.rect == viewport && shape.clip_rect.contains_rect(viewport))));
+        assert!(
+            output
+                .shapes
+                .iter()
+                .any(|shape| matches!(&shape.shape, egui::Shape::Rect(rect)
+            if rect.fill == SURFACE && (rect.rect.center().x - viewport.center().x).abs() < 1.0))
+        );
+
+        let mut click = |label: &str| {
+            let pos = icon_position(&ctx, label);
+            for pressed in [true, false] {
+                render(vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: Default::default(),
+                    },
+                ]);
+            }
+            (0..48).map(|_| render(vec![])).last().unwrap()
+        };
+        let output = click(toggle);
+        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Rect(rect)
+            if rect.fill == PANEL && rect.rect == viewport && shape.clip_rect.contains_rect(viewport))));
+        let shell = ctx.data(|d| d.get_temp::<ShellState>(shell_key)).unwrap();
+        assert!(shell.sidebar_open && shell.ribbon_rect == Rect::NOTHING);
+
+        click(crate::tr!("Последняя доска", "Latest board"));
+        let shell = ctx.data(|d| d.get_temp::<ShellState>(shell_key)).unwrap();
+        assert!(!shell.sidebar_open && shell.ribbon_rect.width() > 400.0);
     }
 
     #[test]
@@ -1314,7 +1450,7 @@ mod tests {
             |ui| draw(ui.ctx(), &mut game, &mut shell, &art),
         );
         output.textures_delta.clear();
-        assert!(shell.ribbon_rect.top() < 500.0);
+        assert!(shell.ribbon_rect.top() < 500.0, "{:?}", shell.ribbon_rect);
         assert!(shell.ribbon_rect.height() > 90.0);
     }
 
@@ -1523,6 +1659,15 @@ mod tests {
         let king = ctx
             .data(|d| d.get_temp::<Rect>(egui::Id::new("hud_king")))
             .unwrap();
+        assert!(
+            output.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Mesh(mesh)
+                    if mesh.texture_id != egui::TextureId::default()
+                        && mesh.calc_bounds().contains_rect(king)
+                        && shape.clip_rect.contains_rect(king))
+            }),
+            "the turn king must be painted inside the visible clip"
+        );
         let help = ctx
             .data(|d| {
                 d.get_temp::<Rect>(egui::Id::new((

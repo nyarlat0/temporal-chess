@@ -164,6 +164,9 @@ pub fn draw(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState, art:
     if game.confirm_restart {
         egui::Modal::new("restart".into()).show(ctx, |ui| {
             ui.set_width(460.0_f32.min(ctx.viewport_rect().width() - 40.0));
+            // The mode may change from a short local form to a longer online
+            // form. Let the scroll area grow past the previous frame's height.
+            ui.set_max_height((ctx.viewport_rect().height() - 40.0).max(0.0));
             ui.heading(crate::tr!("Новая партия", "New game"));
             egui::ScrollArea::vertical()
                 .id_salt("new_game_options")
@@ -180,7 +183,12 @@ pub fn draw(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState, art:
                     } else {
                         crate::view::starting_position_controls(ui, &mut game.new_game_start);
                         crate::view::rule_controls(ui, &mut game.new_game_rules);
-                        if icon_button(
+                    }
+                });
+            let start = ui
+                .horizontal(|ui| {
+                    let start = !game.new_game_online
+                        && icon_button(
                             ui,
                             Icon::Check,
                             if game.new_game_start
@@ -193,15 +201,17 @@ pub fn draw(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState, art:
                             false,
                             game.new_game_start.is_valid(),
                         )
+                        .clicked();
+                    if icon_button(ui, Icon::Close, crate::tr!("Закрыть", "Close"), false, true)
                         .clicked()
-                        {
-                            game.request_new_local();
-                        }
+                    {
+                        game.confirm_restart = false;
                     }
-                });
-            if icon_button(ui, Icon::Close, crate::tr!("Закрыть", "Close"), false, true).clicked()
-            {
-                game.confirm_restart = false;
+                    start
+                })
+                .inner;
+            if start {
+                game.request_new_local();
             }
         });
     }
