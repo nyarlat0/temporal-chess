@@ -101,6 +101,44 @@ fn stalemate_is_final_only_without_past_reserves_or_opponent_ordinary_debt() {
 }
 
 #[test]
+fn an_available_move_that_loses_the_king_prevents_stalemate() {
+    let mut white_king = State::new(PieceKind::K { moved: true }, Color::White, Sq(0, 0));
+    white_king.rights.ordinary = true;
+    let mut knight = State::new(PieceKind::N, Color::Black, Sq(1, 0));
+    knight.t = 1;
+    knight.fut_seen = 1;
+    knight.inverted = true;
+    let pawn = PieceKind::P { moved: true };
+    let mut engine = super::legacy_from_worldlines(
+        vec![
+            vec![white_king],
+            line(PieceKind::K { moved: true }, Color::Black, Sq(7, 7), 1),
+            vec![knight],
+            line(pawn, Color::White, Sq(0, 1), 1),
+            line(pawn, Color::White, Sq(1, 1), 1),
+            line(PieceKind::N, Color::White, Sq(1, 0), 0),
+        ],
+        Color::White,
+    )
+    .unwrap();
+
+    assert!(engine.checks(Color::White).unwrap().ordinary.is_empty());
+    assert_eq!(engine.status(), GameStatus::Ongoing);
+    let moves = engine.possible_moves(0, 0).unwrap();
+    assert_eq!(moves.len(), 1);
+    assert_eq!(moves[0].direction, TimeDirection::Future);
+    assert_eq!(moves[0].sq, Sq(1, 0));
+    engine.apply_new_mv(moves[0]).unwrap();
+    assert_eq!(
+        engine.outcome(),
+        Some(GameOutcome::Victory {
+            winner: Color::Black,
+            reason: WinReason::KingCaptured,
+        })
+    );
+}
+
+#[test]
 fn blocked_player_is_rechecked_after_each_opponent_move() {
     let mut lines = stalemate_lines();
     let mut debt = line(PieceKind::N, Color::Black, Sq(6, 7), 4);

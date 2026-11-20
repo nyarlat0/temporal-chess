@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use crate::pieces::{Color, PieceKind};
 
 use super::{
@@ -119,10 +121,32 @@ impl Engine {
             .any(|s| s.color == side && !s.alive && matches!(s.kind, PieceKind::K { .. }))
     }
 
+    fn has_available_action(&self, side: Color) -> Result<bool, EngineErr> {
+        for piece in self.active_occurrences(side) {
+            if !self.possible_moves(piece.origin, piece.age)?.is_empty() {
+                return Ok(true);
+            }
+        }
+
+        // The wait and decline APIs check the current turn. A side whose
+        // opponent is closing a causal debt can be checked between turns.
+        let view = if side == self.turn {
+            Cow::Borrowed(self)
+        } else {
+            let mut view = self.clone();
+            view.turn = side;
+            Cow::Owned(view)
+        };
+        Ok(view.can_decline_reactions()
+            || view.move_sources().any(|piece| {
+                piece.rights.ordinary && !view.possible_skips(Self::piece_at(piece)).is_empty()
+            }))
+    }
+
     /// Probe commands without recursively adjudicating their resulting turns.
     /// Only surviving, non-paradoxical continuations count as a defence.
     /// The initiating move may still cancel itself during reconciliation.
-    fn can_act(&self, side: Color) -> Result<bool, EngineErr> {
+    fn can_save_king(&self, side: Color) -> Result<bool, EngineErr> {
         let mut prepared = self.clone();
         prepared.turn = side;
         if prepared.can_decline_reactions() {
@@ -205,23 +229,34 @@ impl Engine {
         if let GameStatus::Waiting { player, .. } = self.status()
             && player != self.turn
             && self.has_active_pieces(player)
-            && !self.can_act(player)?
+            && self.adjudicate_blocked(player, false)?
         {
-            return self.set_blocked(player, false);
+            return Ok(());
         }
         self.history.status = GameStatus::Ongoing;
-        if !self.can_act(self.turn)? {
-            self.set_blocked(self.turn, true)?;
-        }
+        self.adjudicate_blocked(self.turn, true)?;
         Ok(())
     }
 
-    fn set_blocked(&mut self, player: Color, hand_over: bool) -> Result<(), EngineErr> {
-        // A purely future-origin threat is a warning, not a visible check
-        // that restricts the player's commands or turns stalemate into mate.
+    /// Return whether the player had to wait or the game ended.
+    fn adjudicate_blocked(&mut self, player: Color, hand_over: bool) -> Result<bool, EngineErr> {
+        // An inverted threat alone does not trigger the mate defence probe.
         let threatened = !self.checks(player)?.ordinary.is_empty();
+        let can_act = if threatened {
+            self.can_save_king(player)?
+        } else {
+            self.has_available_action(player)?
+        };
+        if can_act {
+            return Ok(false);
+        }
         let debt = self.has_past_debt(player.opposite());
-        if self.has_active_pieces(player) && !debt {
+        let eligible = if threatened {
+            self.has_active_pieces(player)
+        } else {
+            self.active_occurrences(player).any(|p| p.rights.ordinary)
+        };
+        if eligible && !debt {
             self.history.status = GameStatus::Finished(if threatened {
                 GameOutcome::Victory {
                     winner: player.opposite(),
@@ -230,14 +265,16 @@ impl Engine {
             } else {
                 GameOutcome::Stalemate
             });
-            return Ok(());
+            return Ok(true);
         }
         self.history.status = GameStatus::Waiting {
             player,
             reason: if debt {
                 WaitingReason::OpponentPastMoves
-            } else {
+            } else if threatened {
                 WaitingReason::KingUnderAttack
+            } else {
+                WaitingReason::NoActivePieces
             },
         };
         if hand_over {
@@ -245,6 +282,6 @@ impl Engine {
             self.reconcile()?;
         }
         // No recursive handovers: two blocked sides never busy-loop.
-        Ok(())
+        Ok(true)
     }
 }
