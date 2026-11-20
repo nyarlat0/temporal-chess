@@ -230,6 +230,13 @@ fn paid_wait_resets_reactions_according_to_react_multiple_and_free_wait_does_not
             let source = Engine::piece_at(engine.get_piv(0, 0).unwrap());
             engine.skip_ordinary(source, 2).unwrap();
             assert_eq!(
+                engine.turn_streak(),
+                (!free).then_some(TurnStreak {
+                    side: Color::White,
+                    count: 1,
+                })
+            );
+            assert_eq!(
                 engine.history.worldlines[1][4].rights.new_information,
                 free || !global
             );

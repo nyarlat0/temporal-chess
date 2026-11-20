@@ -360,6 +360,7 @@ impl Engine {
                 beginning: 0,
                 horizon: 0,
                 status: GameStatus::Ongoing,
+                turn_streak: None,
                 calculation: Default::default(),
             },
             Color::White,
@@ -376,6 +377,22 @@ impl Engine {
         }
     }
 
+    /// Start a game from the editor with a fresh count of consecutive turns.
+    pub fn reset_lab_turn_streak(&mut self) {
+        if self.history.starting_position == StartingPosition::Lab {
+            self.history.turn_streak = None;
+            if matches!(
+                self.outcome(),
+                Some(super::GameOutcome::Victory {
+                    reason: super::WinReason::TurnHogging,
+                    ..
+                })
+            ) {
+                self.history.status = GameStatus::Ongoing;
+            }
+        }
+    }
+
     /// Editor mutations are atomic. Trial spatial moves still use the ordinary
     /// public move API and all of its legality/collision/history checks.
     pub fn edit_lab(&mut self, edit: LabEdit) -> Result<(), EngineErr> {
@@ -386,6 +403,7 @@ impl Engine {
         }
         let mut next = self.clone();
         next.history.status = GameStatus::Ongoing;
+        next.history.turn_streak = None;
         match edit {
             LabEdit::Boards { beginning, horizon } => {
                 if beginning > next.history.beginning

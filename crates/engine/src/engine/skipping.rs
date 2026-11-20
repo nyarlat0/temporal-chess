@@ -17,7 +17,7 @@ impl Engine {
     /// Spends a turn unless Free wait is enabled. Staying at the same time
     /// cannot relinquish a right. No spatial move is stored in either mode.
     pub fn skip_ordinary(&mut self, source: PieceAt, to_t: BoardTime) -> Result<(), EngineErr> {
-        self.transaction(|candidate| {
+        self.transaction(!self.history.rules.wait_before_move, |candidate| {
             if candidate.history.rules.wait_before_move {
                 return candidate.skip_with_information(source, to_t);
             }

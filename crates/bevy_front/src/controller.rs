@@ -1525,6 +1525,10 @@ impl GameUi {
                     WinReason::Checkmate => crate::tr!("мат", "checkmate"),
                     WinReason::KingCaptured => crate::tr!("король взят", "king captured"),
                     WinReason::Paradox => crate::tr!("парадокс", "paradox"),
+                    WinReason::TurnHogging => crate::tr!(
+                        "соперник дисквалифицирован за свинство",
+                        "opponent disqualified for turn hogging"
+                    ),
                 }
             ),
         }

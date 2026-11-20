@@ -23,7 +23,7 @@ pub use crate::model::{
 };
 pub use types::{
     BoardConflict, BoardErr, CalculationStatus, Cancellation, CaptureOutcome, CheckStatus, Engine,
-    EngineErr, GameOutcome, GameStatus, History, WaitingReason, WinReason,
+    EngineErr, GameOutcome, GameStatus, History, TurnStreak, WaitingReason, WinReason,
 };
 use types::{PieceCollision, Projection, ValidRes};
 

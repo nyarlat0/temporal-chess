@@ -19,6 +19,24 @@ pub enum WinReason {
     Checkmate,
     KingCaptured,
     Paradox,
+    TurnHogging,
+}
+
+/// Consecutive accepted turn actions by one side, in journal order.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct TurnStreak {
+    pub side: Color,
+    pub count: u8,
+}
+
+impl TurnStreak {
+    pub const LIMIT: u8 = 10;
+
+    pub fn disqualification_countdown(self) -> Option<u8> {
+        (5..Self::LIMIT)
+            .contains(&self.count)
+            .then(|| Self::LIMIT - self.count)
+    }
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -98,6 +116,8 @@ pub struct History {
     pub(super) horizon: BoardTime,
     pub(super) beginning: BoardTime,
     pub(super) status: GameStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) turn_streak: Option<TurnStreak>,
     pub(super) calculation: Calculation,
 }
 
@@ -209,6 +229,9 @@ impl Engine {
     pub fn turn(&self) -> Color {
         self.turn
     }
+    pub fn turn_streak(&self) -> Option<TurnStreak> {
+        self.history.turn_streak
+    }
     pub fn board(&self, t: BoardTime) -> Option<&Board> {
         self.projection.boards.get(&t)
     }
@@ -243,14 +266,16 @@ impl Engine {
     /// boards and commits only a paradox loss; other errors change nothing.
     pub(super) fn transaction(
         &mut self,
+        spends_turn: bool,
         command: impl FnOnce(&mut Self) -> Result<(), EngineErr>,
     ) -> Result<(), EngineErr> {
-        *self = self.fork_transaction(command)?;
+        *self = self.fork_transaction(spends_turn, command)?;
         Ok(())
     }
 
     pub(super) fn fork_transaction(
         &self,
+        spends_turn: bool,
         command: impl FnOnce(&mut Self) -> Result<(), EngineErr>,
     ) -> Result<Self, EngineErr> {
         if self.outcome().is_some() {
@@ -261,6 +286,9 @@ impl Engine {
         candidate.history.calculation.acknowledged.clear();
         candidate.history.calculation.responsible = Some(actor);
         match command(&mut candidate).and_then(|()| {
+            if spends_turn {
+                candidate.record_turn(actor);
+            }
             candidate
                 .finish_command(actor)
                 .map_err(|e| e.during("adjudicating the resulting position"))
@@ -274,9 +302,26 @@ impl Engine {
                     winner: actor.opposite(),
                     reason: WinReason::Paradox,
                 });
+                if spends_turn {
+                    previous.record_turn(actor);
+                }
                 Ok(previous)
             }
             Err(error) => Err(error),
+        }
+    }
+
+    fn record_turn(&mut self, side: Color) {
+        let count = self
+            .turn_streak()
+            .filter(|streak| streak.side == side)
+            .map_or(1, |streak| streak.count + 1);
+        self.history.turn_streak = Some(TurnStreak { side, count });
+        if count == TurnStreak::LIMIT {
+            self.history.status = GameStatus::Finished(GameOutcome::Victory {
+                winner: side.opposite(),
+                reason: WinReason::TurnHogging,
+            });
         }
     }
 }

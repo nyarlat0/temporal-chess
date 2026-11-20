@@ -403,6 +403,7 @@ fn oncoming_tracking_uses_orientation_even_when_inverted_piece_knows_more_future
             horizon: 2,
             beginning: 0,
             status: GameStatus::Ongoing,
+            turn_streak: None,
             calculation: Default::default(),
         },
         projection: Projection::default(),

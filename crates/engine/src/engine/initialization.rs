@@ -65,6 +65,7 @@ impl Engine {
                 horizon: end,
                 beginning: 0,
                 status: super::GameStatus::Ongoing,
+                turn_streak: None,
                 calculation: Default::default(),
             },
             Color::White,
@@ -113,6 +114,7 @@ impl Engine {
                 horizon,
                 beginning,
                 status: super::GameStatus::Ongoing,
+                turn_streak: None,
                 calculation: Default::default(),
             },
             turn,
@@ -131,6 +133,13 @@ impl Engine {
     ) -> Result<Self, EngineErr> {
         if !history.starting_position.is_valid() || history.beginning > history.horizon {
             return Err(EngineErr::InvalidHistory("invalid timeline bounds"));
+        }
+        if history.turn_streak.is_some_and(|streak| {
+            !(1..=super::TurnStreak::LIMIT).contains(&streak.count)
+                || (streak.count == super::TurnStreak::LIMIT
+                    && !matches!(history.status, super::GameStatus::Finished(_)))
+        }) {
+            return Err(EngineErr::InvalidHistory("invalid consecutive turn count"));
         }
         for line in &history.worldlines {
             if !line.gaps.is_empty() {

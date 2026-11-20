@@ -117,6 +117,7 @@ impl GameUi {
             return;
         }
         let online = self.lab.as_ref().is_some_and(|lab| lab.online);
+        self.engine.reset_lab_turn_streak();
         let record = GameRecord::from_lab(&self.engine);
         if online
             && record.lab_setup().unwrap().to_json().len()

@@ -335,6 +335,115 @@ fn two_sides_without_active_pieces_wait_without_a_false_stalemate_or_loop() {
 }
 
 #[test]
+fn ten_consecutive_turns_disqualify_the_mover_and_replay_the_same_outcome() {
+    use crate::record::{Command, GameRecord};
+
+    // An inverted black king with no own-color endpoint stays out of play
+    // while White's knight moves safely between b1 and c3.
+    let mut black = State::new(PieceKind::K { moved: true }, Color::Black, Sq(7, 7));
+    black.inverted = true;
+    black.rights = MoveRights::default();
+    let setup = Engine::from_worldlines(
+        vec![
+            vec![State::new(
+                PieceKind::K { moved: true },
+                Color::White,
+                Sq(0, 0),
+            )],
+            vec![State::new(PieceKind::N, Color::White, Sq(1, 0))],
+            vec![black],
+        ],
+        Color::White,
+    )
+    .unwrap();
+    let (mut engine, mut record) =
+        GameRecord::load(&GameRecord::from_lab(&setup).to_text()).unwrap();
+    let mut last = None;
+    for count in 1..=TurnStreak::LIMIT {
+        assert_eq!(engine.turn(), Color::White);
+        let piece = engine
+            .move_sources()
+            .find(|piece| piece.origin == 1)
+            .unwrap();
+        let square = if piece.sq == Sq(1, 0) {
+            Sq(2, 2)
+        } else {
+            Sq(1, 0)
+        };
+        let mv = engine
+            .possible_moves(piece.origin, piece.age)
+            .unwrap()
+            .into_iter()
+            .find(|mv| mv.direction == TimeDirection::Future && mv.sq == square)
+            .unwrap();
+        let command = Command::Move { mv, from: piece.sq };
+        record.apply(&mut engine, command).unwrap();
+        last = Some(command);
+        let streak = engine.turn_streak().unwrap();
+        assert_eq!(
+            streak,
+            TurnStreak {
+                side: Color::White,
+                count
+            }
+        );
+        assert_eq!(
+            streak.disqualification_countdown(),
+            if (5..10).contains(&count) {
+                Some(10 - count)
+            } else {
+                None
+            }
+        );
+        if count < TurnStreak::LIMIT {
+            record.apply(&mut engine, Command::Continue).unwrap();
+            assert_eq!(engine.turn_streak(), Some(streak));
+            assert!(engine.outcome().is_none());
+        }
+    }
+    assert_eq!(
+        engine.outcome(),
+        Some(GameOutcome::Victory {
+            winner: Color::Black,
+            reason: WinReason::TurnHogging,
+        })
+    );
+    assert!(record.apply(&mut engine, last.unwrap()).is_err());
+    assert_eq!(GameRecord::load(&record.to_text()).unwrap().0, engine);
+    let (shorter, _) = record.without_last_move().unwrap();
+    let (before_loss, _) = GameRecord::load(&shorter.to_text()).unwrap();
+    assert_eq!(
+        before_loss
+            .turn_streak()
+            .unwrap()
+            .disqualification_countdown(),
+        Some(1)
+    );
+    assert!(before_loss.outcome().is_none());
+}
+
+#[test]
+fn the_opponents_next_turn_resets_the_streak() {
+    let mut engine = Engine::default();
+    play(&mut engine, 12, 0, TimeDirection::Future, Sq(4, 3));
+    assert_eq!(
+        engine.turn_streak(),
+        Some(TurnStreak {
+            side: Color::White,
+            count: 1
+        })
+    );
+    play(&mut engine, 28, 1, TimeDirection::Future, Sq(4, 4));
+    assert_eq!(
+        engine.turn_streak(),
+        Some(TurnStreak {
+            side: Color::Black,
+            count: 1
+        })
+    );
+}
+
+#[test]
 fn interposing_only_on_the_future_board_is_allowed_despite_past_threat() {
     let mut bishop = line(PieceKind::B, Color::White, Sq(1, 3), 3);
     bishop[2].rights.ordinary = true;
@@ -397,7 +506,7 @@ fn paradox_is_a_committed_loss_but_other_failures_roll_back() {
     let mut engine = Engine::default();
     let before = engine.clone();
     assert_eq!(
-        engine.transaction(|candidate| {
+        engine.transaction(true, |candidate| {
             candidate.history.worldlines[0][0].x = 4;
             Err(EngineErr::WrongMove)
         }),
@@ -405,7 +514,7 @@ fn paradox_is_a_committed_loss_but_other_failures_roll_back() {
     );
     assert_eq!(engine, before);
     engine
-        .transaction(|candidate| {
+        .transaction(true, |candidate| {
             candidate.history.worldlines[0][0].x = 4;
             Err(EngineErr::InfLoop)
         })

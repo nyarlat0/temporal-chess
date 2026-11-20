@@ -602,6 +602,22 @@ fn hud_turn(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt, compact: bool)
             ui.colored_label(REACTION, crate::tr_format!("Доска {t}", "Board {t}"));
         });
     }
+    if game.lab.is_none()
+        && game.engine.outcome().is_none()
+        && let Some(streak) = game.engine.turn_streak()
+        && let Some(remaining) = streak.disqualification_countdown()
+    {
+        ui.colored_label(
+            REACTION,
+            egui::RichText::new(crate::tr_format!(
+                "{} · до дисквалификации {}",
+                "{} · {} until disqualification",
+                crate::controller::side_name(streak.side),
+                remaining
+            ))
+            .small(),
+        );
+    }
     if !matches!(
         game.engine.status(),
         temporal_chess_engine::engine::GameStatus::Ongoing

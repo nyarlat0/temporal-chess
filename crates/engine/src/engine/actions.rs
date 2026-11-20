@@ -23,7 +23,7 @@ impl Engine {
     /// Accept the current continuations, retire all own reactions and hand over.
     /// This is a journaled turn action; it never creates a spatial move or board.
     pub fn decline_reactions(&mut self) -> Result<(), EngineErr> {
-        self.transaction(|candidate| {
+        self.transaction(true, |candidate| {
             if !candidate.can_decline_reactions() {
                 return Err(EngineErr::WrongMove);
             }
@@ -64,7 +64,7 @@ impl Engine {
         if !self.possible_moves(piece.origin, piece.age)?.contains(&mv) {
             return Err(EngineErr::WrongMove);
         }
-        self.fork_transaction(|candidate| {
+        self.fork_transaction(true, |candidate| {
             candidate
                 .apply_admitted_move(mv, piece)
                 .map_err(|e| e.during(format!("applying {mv:?}")))?;

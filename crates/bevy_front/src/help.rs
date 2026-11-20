@@ -174,6 +174,13 @@ fn rules_reference(ui: &mut egui::Ui) {
             ),
         ),
         (
+            crate::tr!("Поражение за свинство", "Loss for turn hogging"),
+            crate::tr!(
+                "Сторона, которая сделала десять ходов подряд, дисквалифицируется. После пятого хода в блоке хода появляется отсчёт. Платное ожидание и отказ от реакций считаются ходами. Бесплатное ожидание и продолжение просчёта сохраняют текущий счёт.",
+                "A side that takes ten consecutive turns is disqualified for turn hogging. The turn panel shows a countdown after the fifth turn. Paid waiting and declining reactions count as turns. Free waiting and continuing calculation leave the count unchanged."
+            ),
+        ),
+        (
             crate::tr!("Особые ходы", "Special moves"),
             crate::tr!(
                 "Поддерживаются превращение пешки, обычное и инвертированное взятие на проходе, рокировка в обоих направлениях времени. Для рокировки король и ладья должны иметь одинаковую временную ориентацию и сохранять право на рокировку. Как и другие ходы, рокировка может отмениться при изменении истории.",

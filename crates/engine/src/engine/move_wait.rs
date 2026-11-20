@@ -73,7 +73,7 @@ impl Engine {
         {
             return Err(EngineErr::WrongMove);
         }
-        self.fork_transaction(|next| {
+        self.fork_transaction(true, |next| {
             next.apply_move_inner(mv)?;
             // Resolve captures before occupancy checks, without advancing a
             // temporarily immobile arrival past the player's chosen endpoint.
@@ -207,6 +207,7 @@ mod tests {
                 horizon,
                 beginning: 0,
                 status: GameStatus::Ongoing,
+                turn_streak: None,
                 calculation: Default::default(),
             },
             turn,
@@ -457,6 +458,7 @@ mod tests {
             }
             let command = found.expect("an opening move can wait");
             record.apply(&mut engine, command).unwrap();
+            assert_eq!(engine.turn_streak().unwrap().count, 1);
             assert_eq!(record.commands(), &[command]);
             assert_eq!(command.to_string().parse::<Command>().unwrap(), command);
             assert_eq!(GameRecord::load(&record.to_text()).unwrap().0, engine);
