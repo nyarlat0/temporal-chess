@@ -1011,7 +1011,8 @@ fn inspection_hud(
 }
 
 fn inspection_clock(ui: &mut egui::Ui, piece: temporal_chess_engine::model::PieceView) {
-    let (rect, response) = ui.allocate_exact_size(Vec2::splat(22.0), egui::Sense::hover());
+    let (rect, response) =
+        ui.allocate_exact_size(Vec2::splat(HUD_SECTION_ICON_SIZE), egui::Sense::hover());
     crate::icons::paint(
         ui.painter(),
         Icon::PastClock,
@@ -1035,7 +1036,7 @@ fn observation_block(
     let (size, capacity) = height.map_or((22.0, observations.len()), |height| {
         observation_grid(ui.available_width(), height, observations.len())
     });
-    let cell = Vec2::new((size + 2.0).max(22.0), size + 9.0);
+    let cell = Vec2::new((size + 2.0).max(HUD_SECTION_ICON_SIZE), size + 9.0);
     let shown = if observations.len() > capacity {
         capacity.saturating_sub(1)
     } else {
@@ -1045,13 +1046,16 @@ fn observation_block(
     ui.allocate_ui_with_layout(Vec2::new(ui.available_width(), cell.y), layout, |ui| {
         ui.spacing_mut().interact_size.y = cell.y;
         ui.spacing_mut().item_spacing = Vec2::splat(4.0);
-        let (rect, response) = ui.allocate_exact_size(cell, egui::Sense::hover());
+        let (rect, response) = ui.allocate_exact_size(
+            Vec2::new(HUD_SECTION_ICON_SIZE, cell.y),
+            egui::Sense::hover(),
+        );
         crate::icons::paint(
             ui.painter(),
             Icon::Information,
             egui::Rect::from_center_size(
-                rect.center(),
-                Vec2::splat(size.min(HUD_SECTION_ICON_SIZE)),
+                rect.center() + Vec2::X,
+                Vec2::splat(HUD_SECTION_ICON_SIZE),
             ),
             egui::Stroke::new(1.5, TEXT),
         );
@@ -1108,11 +1112,11 @@ fn observation_block(
 fn observation_grid(width: f32, height: f32, count: usize) -> (f32, usize) {
     let mut result = (18.0, 0);
     for size in [34.0_f32, 30.0, 26.0, 22.0, 18.0] {
-        let columns = ((width + 4.0) / ((size + 2.0).max(22.0) + 4.0))
-            .floor()
-            .max(1.0) as usize;
+        let stride = (size + 2.0).max(HUD_SECTION_ICON_SIZE) + 4.0;
+        let columns = ((width + 4.0) / stride).floor().max(1.0) as usize;
+        let first_row = ((width - HUD_SECTION_ICON_SIZE) / stride).floor().max(0.0) as usize;
         let rows = ((height + 4.0) / (size + 13.0)).floor().max(1.0) as usize;
-        result = (size, (columns * rows).saturating_sub(1));
+        result = (size, first_row + columns * (rows - 1));
         if count <= result.1 {
             break;
         }

@@ -257,13 +257,19 @@ pub fn ribbon(
         )
     };
     if !times.is_empty() {
+        let tip = Pos2::new(rail_x, board_at(0).top() - gap * 0.5 + 5.0);
+        let rail_stroke = Stroke::new(1.5, Color32::from_rgb(73, 65, 83));
         painter.line_segment(
             [
-                Pos2::new(rail_x, board_at(0).top() - gap * 0.5),
+                tip,
                 Pos2::new(rail_x, board_at(times.len() - 1).bottom() + gap * 0.5),
             ],
-            Stroke::new(1.5, Color32::from_rgb(73, 65, 83)),
+            rail_stroke,
         );
+        painter.add(egui::Shape::line(
+            vec![tip + Vec2::new(-5.0, 7.0), tip, tip + Vec2::new(5.0, 7.0)],
+            rail_stroke,
+        ));
     }
     let first = (offset.max(0.0) / height).floor() as usize;
     let last = ((offset + viewport.height()) / height).ceil() as usize;
