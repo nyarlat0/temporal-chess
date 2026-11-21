@@ -8,7 +8,10 @@ use crate::{
 };
 use bevy::prelude::Resource;
 use bevy_egui::egui::{self, Vec2};
-use temporal_chess_engine::{engine::CalculationStatus, model::PieceKind};
+use temporal_chess_engine::{
+    engine::{CalculationStatus, GameStatus},
+    model::PieceKind,
+};
 
 #[derive(Resource, Clone)]
 pub struct ShellState {
@@ -207,14 +210,26 @@ pub fn draw(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState, art:
                 }
                 ui.add_space(if teaching { 8.0 } else { 58.0 });
                 let mut rect = ui.available_rect_before_wrap();
-                let width = if has_hud_selection(game) || game.first_deaths().next().is_some() {
+                let width = if has_hud_selection(game)
+                    || game.first_deaths().next().is_some()
+                    || game.engine.status() != GameStatus::Ongoing
+                    || matches!(
+                        game.engine.calculation_status(),
+                        CalculationStatus::Paused { .. }
+                    )
+                    || game
+                        .engine
+                        .turn_streak()
+                        .is_some_and(|streak| streak.disqualification_countdown().is_some())
+                    || game.engine.can_decline_reactions()
+                {
                     420.0
                 } else {
                     184.0
                 };
                 rect = rect.shrink2(Vec2::new((rect.width() - width).max(0.0) * 0.5, 0.0));
-                let height = game_hud(ui, game, art, rect, modal);
-                ui.allocate_space(Vec2::new(0.0, height));
+                game_hud(ui, game, art, rect, modal);
+                ui.allocate_space(Vec2::new(0.0, MOBILE_HUD_HEIGHT));
             });
     }
     let desktop_sidebar_drawn = if compact || teaching {
@@ -499,6 +514,7 @@ fn has_hud_selection(game: &GameUi) -> bool {
 
 const GAME_HUD_RECT: &str = "game_hud_rect";
 const HUD_SECTION_ICON_SIZE: f32 = 22.0;
+const MOBILE_HUD_HEIGHT: f32 = 104.0;
 
 pub(crate) fn hud_contains_pointer(ctx: &egui::Context, pos: egui::Pos2) -> bool {
     ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new(GAME_HUD_RECT)))
@@ -511,13 +527,11 @@ fn game_hud(
     art: &PieceArt,
     rect: egui::Rect,
     modal: bool,
-) -> f32 {
+) {
     let compact = mobile_layout(parent.ctx());
     let mut rect = rect;
     rect.max.y = if compact {
-        // Leave room for the ribbon and its margin when inspection grows.
-        let available = rect.intersect(parent.clip_rect());
-        available.bottom() - 150.0_f32.min(available.height() * 0.5)
+        rect.top() + MOBILE_HUD_HEIGHT
     } else {
         parent.clip_rect().bottom() - 12.0
     };
@@ -535,17 +549,18 @@ fn game_hud(
     let frame = egui::Frame::new()
         .fill(SURFACE)
         .corner_radius(12)
-        .inner_margin(12)
+        .inner_margin(egui::Margin::symmetric(12, if compact { 8 } else { 12 }))
         .show(ui, |ui| {
+            let deaths: Vec<_> = game.first_deaths().collect();
             if compact {
                 ui.set_width((rect.width() - 24.0).max(0.0));
-            } else {
-                ui.set_max_width((rect.width() - 24.0).clamp(132.0, 172.0));
+                mobile_hud(ui, game, art, &deaths);
+                return;
             }
-            ui.spacing_mut().item_spacing.x = if compact { 4.0 } else { 6.0 };
-            let deaths: Vec<_> = game.first_deaths().collect();
+            ui.set_max_width((rect.width() - 24.0).clamp(132.0, 172.0));
+            ui.spacing_mut().item_spacing.x = 6.0;
             if deaths.is_empty() {
-                hud_sections(ui, game, art, compact);
+                desktop_hud_sections(ui, game, art);
             } else {
                 egui::ScrollArea::vertical()
                     .id_salt("turn_panel")
@@ -553,40 +568,53 @@ fn game_hud(
                     .min_scrolled_height(0.0)
                     .auto_shrink([false, true])
                     .show(ui, |ui| {
-                        hud_sections(ui, game, art, compact);
-                        hud_deaths(ui, game, art, &deaths);
+                        desktop_hud_sections(ui, game, art);
+                        hud_deaths(ui, game, art, &deaths, false);
                     });
             }
         });
     ui.ctx().data_mut(|d| {
-        d.insert_temp(egui::Id::new(GAME_HUD_RECT), frame.response.rect);
+        let bounds = if compact { rect } else { frame.response.rect };
+        d.insert_temp(egui::Id::new(GAME_HUD_RECT), bounds);
     });
-    child.min_rect().height()
 }
 
-fn hud_sections(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt, compact: bool) {
-    if compact && has_hud_selection(game) {
-        ui.columns(2, |columns| {
-            hud_turn(&mut columns[0], game, art, true);
-            hud_selection(&mut columns[1], game, art, true);
-            let left = columns[0].min_rect();
-            let right = columns[1].min_rect();
-            let x = (columns[0].max_rect().right() + columns[1].max_rect().left()) * 0.5;
-            columns[0].painter().line_segment(
-                [
-                    egui::pos2(x, left.top()),
-                    egui::pos2(x, left.bottom().max(right.bottom())),
-                ],
-                columns[0].visuals().widgets.noninteractive.bg_stroke,
-            );
+fn mobile_hud(
+    ui: &mut egui::Ui,
+    game: &mut GameUi,
+    art: &PieceArt,
+    deaths: &[temporal_chess_engine::model::PieceView],
+) {
+    ui.spacing_mut().item_spacing.x = 4.0;
+    ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
+    egui::ScrollArea::horizontal()
+        .id_salt("mobile_turn_panel")
+        .max_height(ui.available_height())
+        .auto_shrink([false, false])
+        .scroll_source(egui::scroll_area::ScrollSource::ALL)
+        .show(ui, |ui| {
+            ui.horizontal_top(|ui| {
+                ui.vertical(|ui| hud_turn(ui, game, art, true));
+                hud_turn_actions(ui, game, true);
+                if has_hud_selection(game) {
+                    ui.separator();
+                    ui.vertical(|ui| hud_selection(ui, game, art, true));
+                }
+                if !deaths.is_empty() {
+                    ui.separator();
+                    hud_deaths(ui, game, art, deaths, true);
+                }
+            });
         });
-    } else {
-        hud_turn(ui, game, art, compact);
-        if has_hud_selection(game) {
-            ui.separator();
-        }
-        hud_selection(ui, game, art, compact);
+}
+
+fn desktop_hud_sections(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt) {
+    hud_turn(ui, game, art, false);
+    hud_turn_actions(ui, game, false);
+    if has_hud_selection(game) {
+        ui.separator();
     }
+    hud_selection(ui, game, art, false);
 }
 
 fn hud_deaths(
@@ -594,10 +622,13 @@ fn hud_deaths(
     game: &mut GameUi,
     art: &PieceArt,
     deaths: &[temporal_chess_engine::model::PieceView],
+    compact: bool,
 ) {
     use temporal_chess_engine::model::Color;
 
-    ui.separator();
+    if !compact {
+        ui.separator();
+    }
     ui.horizontal_top(|ui| {
         let (skull, response) =
             ui.allocate_exact_size(Vec2::splat(HUD_SECTION_ICON_SIZE), egui::Sense::hover());
@@ -616,63 +647,75 @@ fn hud_deaths(
                     continue;
                 }
                 pieces.sort_by_key(|piece| (piece.t, piece.origin));
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing.x = 3.0;
-                    ui.spacing_mut().interact_size.y = 42.0;
-                    for piece in pieces {
-                        let label = format!("({}, {})", square_name(piece.sq), piece.t);
-                        let font = egui::FontId::proportional(11.0);
-                        let label_width = ui.fonts_mut(|fonts| {
-                            fonts
-                                .layout_no_wrap(label.clone(), font.clone(), TEXT)
-                                .size()
-                                .x
-                        });
-                        let (tile, response) = ui.allocate_exact_size(
-                            Vec2::new((label_width + 6.0).max(37.0), 42.0),
-                            egui::Sense::click(),
-                        );
-                        let at = crate::controller::identity(*piece);
-                        if game.worldline_state == Some(at) || response.hovered() {
-                            ui.painter().rect_filled(
-                                tile,
-                                5.0,
-                                ui.visuals().widgets.hovered.bg_fill,
+                let layout =
+                    egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(!compact);
+                let tile_height = if compact { 34.0 } else { 42.0 };
+                let icon_size = if compact { 21.0 } else { 27.0 };
+                ui.allocate_ui_with_layout(
+                    Vec2::new(ui.available_width(), tile_height),
+                    layout,
+                    |ui| {
+                        ui.spacing_mut().item_spacing.x = 3.0;
+                        ui.spacing_mut().interact_size.y = tile_height;
+                        for piece in pieces {
+                            let label = format!("({}, {})", square_name(piece.sq), piece.t);
+                            let font = egui::FontId::proportional(11.0);
+                            let label_width = ui.fonts_mut(|fonts| {
+                                fonts
+                                    .layout_no_wrap(label.clone(), font.clone(), TEXT)
+                                    .size()
+                                    .x
+                            });
+                            let (tile, response) = ui.allocate_exact_size(
+                                Vec2::new((label_width + 6.0).max(37.0), tile_height),
+                                egui::Sense::click(),
                             );
+                            let at = crate::controller::identity(*piece);
+                            if game.worldline_state == Some(at) || response.hovered() {
+                                ui.painter().rect_filled(
+                                    tile,
+                                    5.0,
+                                    ui.visuals().widgets.hovered.bg_fill,
+                                );
+                            }
+                            art.paint_styled(
+                                ui.painter(),
+                                piece.kind,
+                                side,
+                                egui::Rect::from_center_size(
+                                    tile.center_top() + Vec2::new(0.0, icon_size * 0.5 + 0.5),
+                                    Vec2::splat(icon_size),
+                                ),
+                                1.0,
+                                crate::piece_art::PieceStyle {
+                                    inverted: piece.inverted,
+                                    ..Default::default()
+                                },
+                            );
+                            ui.painter().text(
+                                tile.center_bottom() - Vec2::new(0.0, 1.0),
+                                egui::Align2::CENTER_BOTTOM,
+                                &label,
+                                font,
+                                TEXT,
+                            );
+                            response.widget_info(|| {
+                                egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label)
+                            });
+                            if crate::input::clicked(&response)
+                                && !game.playback_busy()
+                                && !game.facing.animating()
+                            {
+                                game.inspect_death(*piece);
+                            }
+                            response.on_hover_text(format!(
+                                "{} · {}",
+                                piece_name(piece.kind),
+                                label
+                            ));
                         }
-                        art.paint_styled(
-                            ui.painter(),
-                            piece.kind,
-                            side,
-                            egui::Rect::from_center_size(
-                                tile.center_top() + Vec2::new(0.0, 14.0),
-                                Vec2::splat(27.0),
-                            ),
-                            1.0,
-                            crate::piece_art::PieceStyle {
-                                inverted: piece.inverted,
-                                ..Default::default()
-                            },
-                        );
-                        ui.painter().text(
-                            tile.center_bottom() - Vec2::new(0.0, 1.0),
-                            egui::Align2::CENTER_BOTTOM,
-                            &label,
-                            font,
-                            TEXT,
-                        );
-                        response.widget_info(|| {
-                            egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label)
-                        });
-                        if crate::input::clicked(&response)
-                            && !game.playback_busy()
-                            && !game.facing.animating()
-                        {
-                            game.inspect_death(*piece);
-                        }
-                        response.on_hover_text(format!("{} · {}", piece_name(piece.kind), label));
-                    }
-                });
+                    },
+                );
             }
         });
     });
@@ -771,6 +814,10 @@ fn hud_turn(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt, compact: bool)
             game.tutorial_clicked(Control::Inspect);
         }
     });
+}
+
+fn hud_turn_actions(ui: &mut egui::Ui, game: &mut GameUi, compact: bool) {
+    let idle = game.replay_job.is_none() && !game.playback_busy() && !game.facing.animating();
     if game.engine.can_decline_reactions() {
         let decline = ui
             .add_enabled(
@@ -792,7 +839,9 @@ fn hud_turn(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt, compact: bool)
         }
     }
     if let CalculationStatus::Paused { t, .. } = game.engine.calculation_status() {
-        ui.horizontal_wrapped(|ui| {
+        let layout = egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(!compact);
+        let size = Vec2::new(ui.available_width(), ui.spacing().interact_size.y);
+        ui.allocate_ui_with_layout(size, layout, |ui| {
             let resume = icon_button(
                 ui,
                 Icon::Continue,
@@ -829,10 +878,7 @@ fn hud_turn(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt, compact: bool)
         );
         tutorial::mark(ui.ctx(), game, Anchor::Streak, countdown.rect);
     }
-    if !matches!(
-        game.engine.status(),
-        temporal_chess_engine::engine::GameStatus::Ongoing
-    ) {
+    if game.engine.status() != GameStatus::Ongoing {
         ui.label(game.status_text());
     }
 }
@@ -840,7 +886,7 @@ fn hud_turn(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt, compact: bool)
 fn hud_selection(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt, compact: bool) {
     if game.inspect_mode || game.worldline_mode {
         if let Some(piece) = game.inspected_piece() {
-            let details = ui.scope(|ui| inspection_hud(ui, game, art, piece));
+            let details = ui.scope(|ui| inspection_hud(ui, game, art, piece, compact));
             tutorial::mark(ui.ctx(), game, Anchor::Inspection, details.response.rect);
         }
         return;
@@ -913,12 +959,16 @@ fn inspection_hud(
     game: &GameUi,
     art: &PieceArt,
     piece: temporal_chess_engine::model::PieceView,
+    compact: bool,
 ) {
     let Some(state) = game.engine.piece_state(crate::controller::identity(piece)) else {
         return;
     };
     ui.scope(|ui| {
-        ui.horizontal_wrapped(|ui| {
+        let show_clock = piece.fut_seen != piece.t || piece.loop_turn != 0;
+        let layout = egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(!compact);
+        let size = Vec2::new(ui.available_width(), ui.spacing().interact_size.y);
+        ui.allocate_ui_with_layout(size, layout, |ui| {
             let (rect, _) = ui.allocate_exact_size(Vec2::splat(32.0), egui::Sense::hover());
             art.paint_styled(
                 ui.painter(),
@@ -937,23 +987,12 @@ fn inspection_hud(
                 square_name(piece.sq),
                 piece.t
             ));
+            if compact && show_clock {
+                inspection_clock(ui, piece);
+            }
         });
-        if piece.fut_seen != piece.t || piece.loop_turn != 0 {
-            ui.horizontal(|ui| {
-                let (rect, response) =
-                    ui.allocate_exact_size(Vec2::splat(22.0), egui::Sense::hover());
-                crate::icons::paint(
-                    ui.painter(),
-                    Icon::PastClock,
-                    rect.shrink(2.0),
-                    egui::Stroke::new(1.5, TEXT),
-                );
-                response.on_hover_text(format!(
-                    "fut_seen: {} · loop_turn: {}",
-                    piece.fut_seen, piece.loop_turn
-                ));
-                ui.label(piece.fut_seen.to_string());
-            });
+        if !compact && show_clock {
+            ui.horizontal(|ui| inspection_clock(ui, piece));
         }
         let visible: Vec<_> = state
             .informed
@@ -961,12 +1000,29 @@ fn inspection_hud(
             .map(|o| (*o, !state.acknowledged_observations.contains(o)))
             .collect();
         if !visible.is_empty() {
-            // Fit the current view in the HUD without an inner scroller.
-            let remaining = (ui.max_rect().bottom() - ui.cursor().min.y - 22.0).max(64.0);
-            ui.separator();
+            let remaining = (!compact).then(|| {
+                let height = (ui.max_rect().bottom() - ui.cursor().min.y - 22.0).max(64.0);
+                ui.separator();
+                height
+            });
             observation_block(ui, art, piece.color.opposite(), &visible, remaining);
         }
     });
+}
+
+fn inspection_clock(ui: &mut egui::Ui, piece: temporal_chess_engine::model::PieceView) {
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(22.0), egui::Sense::hover());
+    crate::icons::paint(
+        ui.painter(),
+        Icon::PastClock,
+        rect.shrink(2.0),
+        egui::Stroke::new(1.5, TEXT),
+    );
+    response.on_hover_text(format!(
+        "fut_seen: {} · loop_turn: {}",
+        piece.fut_seen, piece.loop_turn
+    ));
+    ui.label(piece.fut_seen.to_string());
 }
 
 fn observation_block(
@@ -974,18 +1030,20 @@ fn observation_block(
     art: &PieceArt,
     side: temporal_chess_engine::model::Color,
     observations: &[(temporal_chess_engine::model::Observation, bool)],
-    height: f32,
+    height: Option<f32>,
 ) {
-    let (size, capacity) = observation_grid(ui.available_width(), height, observations.len());
+    let (size, capacity) = height.map_or((22.0, observations.len()), |height| {
+        observation_grid(ui.available_width(), height, observations.len())
+    });
     let cell = Vec2::new((size + 2.0).max(22.0), size + 9.0);
     let shown = if observations.len() > capacity {
         capacity.saturating_sub(1)
     } else {
         observations.len()
     };
-    // Match the wrap layout's minimum row height to the observation cells.
-    ui.spacing_mut().interact_size.y = cell.y;
-    ui.horizontal_wrapped(|ui| {
+    let layout = egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(height.is_some());
+    ui.allocate_ui_with_layout(Vec2::new(ui.available_width(), cell.y), layout, |ui| {
+        ui.spacing_mut().interact_size.y = cell.y;
         ui.spacing_mut().item_spacing = Vec2::splat(4.0);
         let (rect, response) = ui.allocate_exact_size(cell, egui::Sense::hover());
         crate::icons::paint(
@@ -1578,7 +1636,7 @@ mod tests {
     }
 
     #[test]
-    fn visible_information_fits_phone_height_without_an_inner_scroller() {
+    fn phone_hud_scrolls_to_inspection_details_without_taking_space_from_the_ribbon() {
         use temporal_chess_engine::{
             engine::Engine,
             model::{Color, State},
@@ -1594,24 +1652,51 @@ mod tests {
         let engine = Engine::from_worldlines(lines, Color::White).unwrap();
         let mut game = GameUi {
             engine,
-            inspect_mode: true,
             ..Default::default()
         };
-        game.click_square(0, Sq(3, 3));
         let ctx = egui::Context::default();
-        crate::theme::configure(&ctx);
-        let art = PieceArt::new(&ctx);
-        let mut shell = ShellState::default();
-        let mut output = ctx.run_ui(
-            egui::RawInput {
-                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(375.0, 600.0))),
-                ..Default::default()
-            },
-            |ui| draw(ui.ctx(), &mut game, &mut shell, &art),
+        let size = Vec2::new(320.0, 600.0);
+        let positions = || {
+            ctx.data(|d| {
+                (
+                    d.get_temp::<Rect>(egui::Id::new(GAME_HUD_RECT)).unwrap(),
+                    d.get_temp::<ShellState>(egui::Id::new("test_shell"))
+                        .unwrap()
+                        .ribbon_rect,
+                )
+            })
+        };
+        frame_at(&ctx, &mut game, size, vec![]);
+        let (before, ribbon) = positions();
+        game.toggle_inspector();
+        game.click_square(0, Sq(3, 3));
+        frame_at(&ctx, &mut game, size, vec![]);
+        let before_scroll = frame_at(&ctx, &mut game, size, vec![]);
+        let (hud, ribbon_with_selection) = positions();
+        assert_eq!(hud.height(), before.height());
+        assert_eq!(ribbon_with_selection, ribbon);
+        let last = text_position(&before_scroll, "e5");
+        assert!(last.x > hud.right());
+
+        let start = egui::pos2(hud.right() - 28.0, hud.center().y);
+        let end = egui::pos2(hud.left() + 28.0, hud.center().y);
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        frame_at(
+            &ctx,
+            &mut game,
+            size,
+            vec![egui::Event::PointerMoved(start), button(start, true)],
         );
-        output.textures_delta.clear();
-        assert!(shell.ribbon_rect.top() < 500.0, "{:?}", shell.ribbon_rect);
-        assert!(shell.ribbon_rect.height() > 90.0);
+        frame_at(&ctx, &mut game, size, vec![egui::Event::PointerMoved(end)]);
+        frame_at(&ctx, &mut game, size, vec![button(end, false)]);
+        let after_scroll = frame_at(&ctx, &mut game, size, vec![]);
+        assert!(hud.contains(text_position(&after_scroll, "e5")));
+        assert_eq!(positions(), (hud, ribbon));
     }
 
     #[test]
@@ -1695,7 +1780,7 @@ mod tests {
         assert!(state.informed.is_empty());
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
             ui.set_max_width(300.0);
-            inspection_hud(ui, &game, &art, piece);
+            inspection_hud(ui, &game, &art, piece, false);
             assert!(ui.min_rect().height() <= 40.0);
         });
         output.textures_delta.clear();
@@ -2243,12 +2328,10 @@ mod tests {
     }
 
     #[test]
-    fn death_tiles_wrap_within_the_panel_before_the_other_color() {
+    fn death_tiles_wrap_on_desktop_and_stay_in_two_rows_on_phones() {
         use temporal_chess_engine::model::{Color, PieceView, State};
 
-        let ctx = egui::Context::default();
         let mut game = GameUi::default();
-        let art = PieceArt::new(&ctx);
         let deaths: Vec<_> = (0..7)
             .map(|file| {
                 let color = if file < 5 { Color::White } else { Color::Black };
@@ -2258,22 +2341,31 @@ mod tests {
                 PieceView::from_state(&state, file, 0)
             })
             .collect();
-        let mut output = ctx.run_ui(
-            egui::RawInput {
-                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(160.0, 350.0))),
-                ..Default::default()
-            },
-            |ui| hud_deaths(ui, &mut game, &art, &deaths),
-        );
-        output.textures_delta.clear();
-
-        let first = text_position(&output, "(a5, 2)");
-        let wrapped = text_position(&output, "(e5, 2)");
-        let black = text_position(&output, "(f5, 2)");
-        assert!(first.y < wrapped.y && wrapped.y < black.y);
-        assert!((first.x - black.x).abs() < 2.0);
-        for file in 'a'..='g' {
-            assert!(text_position(&output, &format!("({file}5, 2)")).x < 160.0);
+        for compact in [false, true] {
+            let ctx = egui::Context::default();
+            let art = PieceArt::new(&ctx);
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(160.0, 350.0))),
+                    ..Default::default()
+                },
+                |ui| hud_deaths(ui, &mut game, &art, &deaths, compact),
+            );
+            output.textures_delta.clear();
+            let first = text_position(&output, "(a5, 2)");
+            let last_white = text_position(&output, "(e5, 2)");
+            let black = text_position(&output, "(f5, 2)");
+            assert!(last_white.y < black.y);
+            assert!((first.x - black.x).abs() < 2.0);
+            if compact {
+                assert_eq!(first.y, last_white.y);
+                assert!(last_white.x >= 160.0);
+            } else {
+                assert!(first.y < last_white.y);
+                for file in 'a'..='g' {
+                    assert!(text_position(&output, &format!("({file}5, 2)")).x < 160.0);
+                }
+            }
         }
     }
 

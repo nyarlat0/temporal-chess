@@ -269,6 +269,26 @@ pub(super) static CHAPTERS: &[Chapter] = &[
                 "Фигура, которая уже сделала ход с этой доски, не становится инфо-активной от новой цели. Пешка e7 активировалась из-за отмены своего хода. Её значок — перечёркнутая стрелка.",
                 "A piece that already moved from a board does not gain an information reaction there. The e7 pawn became active because its move was cancelled. The crossed-out arrow marks this reaction.").focus(Anchor::Square(1, at(1, "e7").sq)).camera(1),
         ),
+        scene!(Position::Scenario(sight_after_moving), 1;
+            step!(mv(1, "c5", "a4", Past);
+                "Инвертируйте чёрного коня c5 → a4 с доски 1. На доске 0 его увидят обе белые ладьи.",
+                "Invert Black’s knight from c5 to a4 on board 1. Both white rooks will see it on board 0."),
+            step!(Button(Control::Inspect);
+                "На доске 0 глаз появился только над ладьёй e4. Откройте инспекцию, чтобы сравнить ладьи.",
+                "On board 0, only the e4 rook gets an eye above it. Open inspection to compare the rooks.").camera(0),
+            step!(Inspect(at(0, "a1"));
+                "Выберите ладью a1 на доске 0. Розовая стрелка показывает её ход a1 → b1.",
+                "Select the a1 rook on board 0. The pink arrow shows its move from a1 to b1."),
+            step!(Next;
+                "Конь a4 появился в видимой информации ладьи a1. Её ход a1 → b1 сохранился, поэтому новой реакции у этой ладьи нет.",
+                "The a4 knight appears in the a1 rook’s visible information. Its move to b1 still stands, so this rook gains no reaction.").focus(Anchor::Inspection).also_focus(Anchor::Square(0, at(0, "a1").sq)),
+            step!(Inspect(at(0, "e4"));
+                "Теперь выберите ладью e4 на той же доске.",
+                "Now select the e4 rook on the same board."),
+            step!(Next;
+                "Ладья e4 видит того же коня. Она ещё не ходила с доски 0, поэтому глаз над ней показывает, что она может отреагировать.",
+                "The e4 rook sees the same knight. It has no move from board 0, so the eye above it shows that it can react.").focus(Anchor::Inspection).also_focus(Anchor::Square(0, at(0, "e4").sq)),
+        ),
     ),
     chapter!("Реакция III · Виды активаций", "Reaction III · Types of activation";
         scene!(Position::Scenario(reactions), 6;

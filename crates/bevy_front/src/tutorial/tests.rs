@@ -537,6 +537,29 @@ fn reactions_replace_a_move_and_reset_without_consuming_ordinary_rights() {
 }
 
 #[test]
+fn both_rooks_see_the_new_target_but_only_the_one_without_a_move_gains_a_reaction() {
+    use temporal_chess_engine::model::{Observation, PieceKind};
+
+    let before = game(5, 1, 0);
+    let after = game(5, 1, 1);
+    let target = Observation {
+        square: at(0, "a4").sq,
+        kind: PieceKind::N,
+        inverted: true,
+    };
+    for wid in [0, 1] {
+        assert!(!state(&before, wid, 0).informed.contains(&target));
+        let rook = state(&after, wid, 0);
+        assert!(rook.informed.contains(&target));
+        assert!(!rook.acknowledged_observations.contains(&target));
+        assert_eq!(rook.rights.new_information, wid == 1);
+        assert!(!rook.rights.cancelled_move);
+    }
+    let original_move = after.engine.history().moves().values().find(|mv| mv.t == 0);
+    assert!(original_move.is_some_and(|mv| mv.pid.wid == 0 && mv.sq == at(0, "b1").sq));
+}
+
+#[test]
 fn resurrecting_the_victim_restores_its_later_move() {
     let captured = game(8, 0, 1);
     assert!(!state(&captured, 1, 6).alive);

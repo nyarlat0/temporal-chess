@@ -136,6 +136,20 @@ pub(super) fn replace_move() -> Setup {
     )
 }
 
+pub(super) fn sight_after_moving() -> Setup {
+    stage(
+        setting(
+            vec![
+                line(ROOK, White, at(0, "a1"), 4, true),
+                line(ROOK, White, at(0, "e4"), 4, false),
+                vec![state(N, Black, at(1, "c5"), false, true)],
+            ],
+            White,
+        ),
+        &[Action::mv(0, "a1", "b1", Future)],
+    )
+}
+
 pub(super) fn reactions() -> Setup {
     let mut observer = line(ROOK, White, at(0, "a1"), 6, false);
     observer.last_mut().unwrap().rights.ordinary = true;
