@@ -96,6 +96,7 @@ pub fn panel(ui: &mut egui::Ui, game: &mut GameUi, compact: bool) {
     let mut selected_chapter = session.cursor.chapter;
     let mut restart = false;
     let mut advance = false;
+    let mut playback = false;
     let bounds = ui.max_rect().intersect(ui.clip_rect());
     let mut footer = ui.new_child(
         egui::UiBuilder::new()
@@ -123,9 +124,7 @@ pub fn panel(ui: &mut egui::Ui, game: &mut GameUi, compact: bool) {
                 &ui.button(crate::tr!("Заново", "Restart"))
                     .on_hover_text(crate::tr!("Перезапустить главу", "Restart this chapter")),
             );
-            if crate::input::clicked(&ui.button(crate::tr!("Выйти", "Exit"))) {
-                leave = Some(Leave::Pause);
-            }
+            playback = crate::view::timeline_playback_button(ui, game, !busy);
         }
     });
 
@@ -231,6 +230,9 @@ pub fn panel(ui: &mut egui::Ui, game: &mut GameUi, compact: bool) {
         ui.ctx().request_repaint();
     } else if advance {
         game.tutorial.as_mut().unwrap().advance();
+        ui.ctx().request_repaint();
+    } else if playback {
+        game.toggle_history_playback();
         ui.ctx().request_repaint();
     }
 }

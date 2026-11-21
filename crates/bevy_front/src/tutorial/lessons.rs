@@ -458,11 +458,16 @@ pub(super) static CHAPTERS: &[Chapter] = &[
                 "На доске 0 король пассивно встретил свою пешку и убил её. Инвертированная фигура может убить обычную фигуру своего цвета на доске своего цвета.",
                 "On board 0 the king passively ran into and killed its own pawn. An inverted piece can kill an ordinary ally on a board of their own color.").focus(Anchor::Board(0)).camera(0),
         ),
-        scene!(Position::Scenario(paradox), 6;
-            step!(mv(6, "c3", "c1", Past);
-                "Ладья пришла с a1 на c3 двумя ходами в будущее. Теперь разверните её: c3 → c1 в прошлое с доски 6.",
-                "The rook reached c3 from a1 with two moves into the future. Now invert it: play c3 → c1 into the past from board 6."),
-            step!(mv(4, "c1", "a1", Past); "Сыграйте c1 → a1 с доски 4. Теперь ладья столкнётся со своим прошлым.", "Play c1 → a1 from board 4. The rook will run into its own past."),
+        scene!(Position::Scenario(paradox), 0;
+            step!(mv(0, "a1", "a4", Future);
+                "Сыграйте ладьёй a1 → a4 в будущее с доски 0.",
+                "Play the rook a1 → a4 into the future from board 0."),
+            step!(mv(1, "h8", "g6", Future);
+                "Чёрные отвечают ходом коня h8 → g6.",
+                "Black replies with the knight h8 → g6.").automatic(),
+            step!(mv(2, "a4", "a1", Past);
+                "Теперь инвертируйте ладью: a4 → a1 в прошлое с доски 2. Ладья встретит саму себя до своего первого хода.",
+                "Invert the rook: play a4 → a1 into the past from board 2. It will meet itself before its first move."),
             step!(Next;
                 "Ладья уничтожила причину собственного хода. Если история зацикливается при согласовании, движок засчитывает поражение тому, кто вызвал парадокс.",
                 "The rook destroyed the cause of its own move. If reconciliation loops indefinitely, the player who caused the paradox loses."),

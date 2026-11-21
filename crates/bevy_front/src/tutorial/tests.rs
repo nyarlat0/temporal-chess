@@ -180,6 +180,17 @@ fn prior_checkpoints_resume_in_the_updated_lessons() {
         }),
     );
     assert_eq!(
+        migrate_checkpoint(Checkpoint::Playing(former_paradox), 5),
+        Checkpoint::Playing(Cursor {
+            step: 0,
+            ..former_paradox
+        }),
+    );
+    assert_eq!(
+        migrate_checkpoint(Checkpoint::Paused(former_recapture), 5),
+        Checkpoint::Paused(former_recapture),
+    );
+    assert_eq!(
         migrate_checkpoint(
             Checkpoint::Playing(Cursor {
                 chapter: 13,
@@ -618,6 +629,14 @@ fn tactical_examples_live_up_to_their_results() {
     let paradox = last(15, 2);
     assert_eq!(
         paradox.record.commands().len() - game(15, 2, 0).record.commands().len(),
+        3
+    );
+    assert_eq!(
+        CHAPTERS[15].scenes[2]
+            .steps
+            .iter()
+            .filter(|step| matches!(step.action, Action::Move { .. }) && !step.automatic)
+            .count(),
         2
     );
     assert_eq!(
@@ -694,6 +713,73 @@ fn an_inverted_recapture_kills_a_friendly_pawn_that_was_alive_on_an_earlier_boar
             .iter()
             .any(|track| track.dying && track.to.origin == pawn.origin)
     );
+
+    let deaths: Vec<_> = live.first_deaths().collect();
+    let inspection = deaths
+        .iter()
+        .find(|death| death.origin == pawn.origin)
+        .unwrap();
+    assert_eq!(
+        (inspection.t, inspection.sq, inspection.color),
+        (2, pawn.sq, Color::White)
+    );
+    let black_death = deaths
+        .iter()
+        .find(|death| death.origin == attacker.origin)
+        .unwrap();
+    assert_eq!(
+        (black_death.t, black_death.sq, black_death.color),
+        (3, attacker.sq, Color::Black)
+    );
+    live.reset_playback();
+    live.inspect_death(*inspection);
+    live.update_worldline_transition(&egui::Context::default());
+    assert!(live.worldline_mode);
+    assert_eq!(
+        live.worldline_state,
+        Some(crate::controller::identity(*inspection))
+    );
+    assert_eq!(live.jump_to, Some(2));
+}
+
+#[test]
+fn inspection_and_replay_are_available_without_advancing_a_lesson() {
+    let mut live = GameUi::default();
+    start(&mut live, Cursor::FIRST);
+    let cursor = live.tutorial.as_ref().unwrap().cursor;
+    assert!(spotlight_square(&live, 0).is_some());
+    live.toggle_inspector();
+    live.tutorial_clicked(Control::Inspect);
+    assert_eq!(spotlight_square(&live, 0), None);
+    live.click_square(0, at(0, "e7").sq);
+    assert_eq!(live.inspected_piece().unwrap().color, Color::Black);
+    live.toggle_worldline();
+    live.tutorial_clicked(Control::Worldline);
+    live.click_square(0, at(0, "d2").sq);
+    assert_eq!(live.worldline_selected, Some(11));
+    assert_eq!(live.tutorial.as_ref().unwrap().cursor, cursor);
+    live.toggle_worldline();
+
+    let Action::Move { from, to, .. } = live.tutorial.as_ref().unwrap().step().action else {
+        panic!("expected the first lesson to start with a move");
+    };
+    live.click_square(from.t, from.sq);
+    live.click_square(from.t, to);
+    live.reset_playback();
+    let cursor = live.tutorial.as_ref().unwrap().cursor;
+    let journal = live.record.to_text();
+    live.replay_last_move();
+    live.tutorial_clicked(Control::Replay);
+    assert!(live.replaying_move);
+    assert_eq!(live.tutorial.as_ref().unwrap().cursor, cursor);
+    assert_eq!(live.record.to_text(), journal);
+    live.reset_playback();
+    live.toggle_history_playback();
+    assert!(live.history_playback);
+    live.toggle_history_playback();
+    assert!(!live.playback_busy());
+    assert_eq!(live.tutorial.as_ref().unwrap().cursor, cursor);
+    assert_eq!(live.record.to_text(), journal);
 }
 
 #[test]

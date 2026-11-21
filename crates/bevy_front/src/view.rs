@@ -207,7 +207,7 @@ pub fn draw(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState, art:
                 }
                 ui.add_space(if teaching { 8.0 } else { 58.0 });
                 let mut rect = ui.available_rect_before_wrap();
-                let width = if has_hud_selection(game) {
+                let width = if has_hud_selection(game) || game.first_deaths().next().is_some() {
                     420.0
                 } else {
                     184.0
@@ -472,9 +472,37 @@ fn sidebar_header(
     .inner
 }
 
+pub(super) fn timeline_playback_button(ui: &mut egui::Ui, game: &GameUi, idle: bool) -> bool {
+    let (icon, label) = if game.history_playback {
+        (
+            Icon::Stop,
+            crate::tr!("Остановить просмотр", "Stop playback"),
+        )
+    } else {
+        (Icon::Play, crate::tr!("Проиграть историю", "Play timeline"))
+    };
+    icon_button(
+        ui,
+        icon,
+        label,
+        game.history_playback,
+        game.history_playback
+            || (idle && game.engine.history().horizon() > game.engine.history().beginning()),
+    )
+    .clicked()
+}
+
 fn has_hud_selection(game: &GameUi) -> bool {
     game.selected.is_some()
         || ((game.inspect_mode || game.worldline_mode) && game.inspected_piece().is_some())
+}
+
+const GAME_HUD_RECT: &str = "game_hud_rect";
+const HUD_SECTION_ICON_SIZE: f32 = 22.0;
+
+pub(crate) fn hud_contains_pointer(ctx: &egui::Context, pos: egui::Pos2) -> bool {
+    ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new(GAME_HUD_RECT)))
+        .is_some_and(|rect| rect.contains(pos))
 }
 
 fn game_hud(
@@ -504,7 +532,7 @@ fn game_hud(
     if modal {
         ui.disable();
     }
-    egui::Frame::new()
+    let frame = egui::Frame::new()
         .fill(SURFACE)
         .corner_radius(12)
         .inner_margin(12)
@@ -515,30 +543,139 @@ fn game_hud(
                 ui.set_max_width((rect.width() - 24.0).clamp(132.0, 172.0));
             }
             ui.spacing_mut().item_spacing.x = if compact { 4.0 } else { 6.0 };
-            if compact && has_hud_selection(game) {
-                ui.columns(2, |columns| {
-                    hud_turn(&mut columns[0], game, art, true);
-                    hud_selection(&mut columns[1], game, art, true);
-                    let left = columns[0].min_rect();
-                    let right = columns[1].min_rect();
-                    let x = (columns[0].max_rect().right() + columns[1].max_rect().left()) * 0.5;
-                    columns[0].painter().line_segment(
-                        [
-                            egui::pos2(x, left.top()),
-                            egui::pos2(x, left.bottom().max(right.bottom())),
-                        ],
-                        columns[0].visuals().widgets.noninteractive.bg_stroke,
-                    );
-                });
+            let deaths: Vec<_> = game.first_deaths().collect();
+            if deaths.is_empty() {
+                hud_sections(ui, game, art, compact);
             } else {
-                hud_turn(ui, game, art, compact);
-                if has_hud_selection(game) {
-                    ui.separator();
-                }
-                hud_selection(ui, game, art, compact);
+                egui::ScrollArea::vertical()
+                    .id_salt("turn_panel")
+                    .max_height(ui.available_height().max(0.0))
+                    .min_scrolled_height(0.0)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        hud_sections(ui, game, art, compact);
+                        hud_deaths(ui, game, art, &deaths);
+                    });
             }
         });
+    ui.ctx().data_mut(|d| {
+        d.insert_temp(egui::Id::new(GAME_HUD_RECT), frame.response.rect);
+    });
     child.min_rect().height()
+}
+
+fn hud_sections(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt, compact: bool) {
+    if compact && has_hud_selection(game) {
+        ui.columns(2, |columns| {
+            hud_turn(&mut columns[0], game, art, true);
+            hud_selection(&mut columns[1], game, art, true);
+            let left = columns[0].min_rect();
+            let right = columns[1].min_rect();
+            let x = (columns[0].max_rect().right() + columns[1].max_rect().left()) * 0.5;
+            columns[0].painter().line_segment(
+                [
+                    egui::pos2(x, left.top()),
+                    egui::pos2(x, left.bottom().max(right.bottom())),
+                ],
+                columns[0].visuals().widgets.noninteractive.bg_stroke,
+            );
+        });
+    } else {
+        hud_turn(ui, game, art, compact);
+        if has_hud_selection(game) {
+            ui.separator();
+        }
+        hud_selection(ui, game, art, compact);
+    }
+}
+
+fn hud_deaths(
+    ui: &mut egui::Ui,
+    game: &mut GameUi,
+    art: &PieceArt,
+    deaths: &[temporal_chess_engine::model::PieceView],
+) {
+    use temporal_chess_engine::model::Color;
+
+    ui.separator();
+    ui.horizontal_top(|ui| {
+        let (skull, response) =
+            ui.allocate_exact_size(Vec2::splat(HUD_SECTION_ICON_SIZE), egui::Sense::hover());
+        crate::icons::paint(
+            ui.painter(),
+            Icon::Skull,
+            skull,
+            egui::Stroke::new(1.5, TEXT),
+        );
+        response.on_hover_text(crate::tr!("Погибшие фигуры", "Dead pieces"));
+        ui.vertical(|ui| {
+            for side in [Color::White, Color::Black] {
+                let mut pieces: Vec<_> =
+                    deaths.iter().filter(|piece| piece.color == side).collect();
+                if pieces.is_empty() {
+                    continue;
+                }
+                pieces.sort_by_key(|piece| (piece.t, piece.origin));
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing.x = 3.0;
+                    ui.spacing_mut().interact_size.y = 42.0;
+                    for piece in pieces {
+                        let label = format!("({}, {})", square_name(piece.sq), piece.t);
+                        let font = egui::FontId::proportional(11.0);
+                        let label_width = ui.fonts_mut(|fonts| {
+                            fonts
+                                .layout_no_wrap(label.clone(), font.clone(), TEXT)
+                                .size()
+                                .x
+                        });
+                        let (tile, response) = ui.allocate_exact_size(
+                            Vec2::new((label_width + 6.0).max(37.0), 42.0),
+                            egui::Sense::click(),
+                        );
+                        let at = crate::controller::identity(*piece);
+                        if game.worldline_state == Some(at) || response.hovered() {
+                            ui.painter().rect_filled(
+                                tile,
+                                5.0,
+                                ui.visuals().widgets.hovered.bg_fill,
+                            );
+                        }
+                        art.paint_styled(
+                            ui.painter(),
+                            piece.kind,
+                            side,
+                            egui::Rect::from_center_size(
+                                tile.center_top() + Vec2::new(0.0, 14.0),
+                                Vec2::splat(27.0),
+                            ),
+                            1.0,
+                            crate::piece_art::PieceStyle {
+                                inverted: piece.inverted,
+                                ..Default::default()
+                            },
+                        );
+                        ui.painter().text(
+                            tile.center_bottom() - Vec2::new(0.0, 1.0),
+                            egui::Align2::CENTER_BOTTOM,
+                            &label,
+                            font,
+                            TEXT,
+                        );
+                        response.widget_info(|| {
+                            egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label)
+                        });
+                        if crate::input::clicked(&response)
+                            && !game.playback_busy()
+                            && !game.facing.animating()
+                        {
+                            game.inspect_death(*piece);
+                        }
+                        response.on_hover_text(format!("{} · {}", piece_name(piece.kind), label));
+                    }
+                });
+            }
+        });
+    });
 }
 
 fn hud_turn(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt, compact: bool) {
@@ -604,7 +741,7 @@ fn hud_turn(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt, compact: bool)
             Icon::Replay,
             crate::tr!("Повторить предыдущий ход", "Replay previous move"),
             game.replaying_move,
-            game.can_replay_move() && game.tutorial_tool_enabled(Control::Replay),
+            game.can_replay_move(),
         );
         tutorial::mark(
             ui.ctx(),
@@ -621,7 +758,7 @@ fn hud_turn(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt, compact: bool)
             Icon::Inspect,
             crate::tr!("Инспекция фигуры · I", "Inspect piece · I"),
             game.inspect_mode,
-            idle && game.tutorial_tool_enabled(Control::Inspect),
+            idle,
         );
         tutorial::mark(
             ui.ctx(),
@@ -854,7 +991,10 @@ fn observation_block(
         crate::icons::paint(
             ui.painter(),
             Icon::Information,
-            egui::Rect::from_center_size(rect.center(), Vec2::splat(size.min(22.0))),
+            egui::Rect::from_center_size(
+                rect.center(),
+                Vec2::splat(size.min(HUD_SECTION_ICON_SIZE)),
+            ),
             egui::Stroke::new(1.5, TEXT),
         );
         response.on_hover_text(crate::tr!("Видимая информация", "Visible information"));
@@ -1063,32 +1203,9 @@ fn sidebar(ui: &mut egui::Ui, game: &mut GameUi, shell: &mut ShellState, art: &P
     });
     let mut show_board = false;
     ui.horizontal(|ui| {
-        if icon_button(
-            ui,
-            if game.history_playback {
-                Icon::Stop
-            } else {
-                Icon::Play
-            },
-            if game.history_playback {
-                crate::tr!("Остановить просмотр", "Stop playback")
-            } else {
-                crate::tr!("Проиграть историю", "Play timeline")
-            },
-            game.history_playback,
-            game.history_playback
-                || (idle && game.engine.history().horizon() > game.engine.history().beginning()),
-        )
-        .clicked()
-        {
-            if game.history_playback {
-                game.reset_playback();
-                game.viewport.scroll = None;
-                game.jump_to = None;
-            } else {
-                game.play_history();
-                show_board = true;
-            }
+        if timeline_playback_button(ui, game, idle) {
+            game.toggle_history_playback();
+            show_board = game.history_playback;
         }
         if icon_button(
             ui,
@@ -2090,6 +2207,74 @@ mod tests {
                 modifiers: Default::default(),
             }],
         )
+    }
+
+    #[test]
+    fn death_rows_list_white_before_black_and_open_worldline_inspection() {
+        let ctx = egui::Context::default();
+        let mut game = GameUi {
+            local_auto_flip: false,
+            ..Default::default()
+        };
+        for (t, from, to) in [
+            (0, Sq(4, 1), Sq(4, 3)),
+            (1, Sq(3, 6), Sq(3, 4)),
+            (2, Sq(4, 3), Sq(3, 4)),
+            (3, Sq(3, 7), Sq(3, 4)),
+        ] {
+            game.click_square(t, from);
+            game.click_square(t, to);
+            game.reset_playback();
+        }
+        frame(&ctx, &mut game, vec![]);
+        let output = frame(&ctx, &mut game, vec![]);
+        let white = text_position(&output, "(d5, 4)");
+        let black = text_position(&output, "(d5, 3)");
+        assert!(white.y < black.y);
+        click(&ctx, &mut game, black);
+        assert!(game.worldline_mode);
+        let target = game.worldline_state.unwrap();
+        assert_eq!(target.t, 3);
+        assert!(
+            game.engine
+                .piece_state(target)
+                .is_some_and(|state| !state.alive)
+        );
+    }
+
+    #[test]
+    fn death_tiles_wrap_within_the_panel_before_the_other_color() {
+        use temporal_chess_engine::model::{Color, PieceView, State};
+
+        let ctx = egui::Context::default();
+        let mut game = GameUi::default();
+        let art = PieceArt::new(&ctx);
+        let deaths: Vec<_> = (0..7)
+            .map(|file| {
+                let color = if file < 5 { Color::White } else { Color::Black };
+                let mut state = State::new(PieceKind::N, color, Sq(file, 4));
+                state.t = 2;
+                state.alive = false;
+                PieceView::from_state(&state, file, 0)
+            })
+            .collect();
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(160.0, 350.0))),
+                ..Default::default()
+            },
+            |ui| hud_deaths(ui, &mut game, &art, &deaths),
+        );
+        output.textures_delta.clear();
+
+        let first = text_position(&output, "(a5, 2)");
+        let wrapped = text_position(&output, "(e5, 2)");
+        let black = text_position(&output, "(f5, 2)");
+        assert!(first.y < wrapped.y && wrapped.y < black.y);
+        assert!((first.x - black.x).abs() < 2.0);
+        for file in 'a'..='g' {
+            assert!(text_position(&output, &format!("({file}5, 2)")).x < 160.0);
+        }
     }
 
     #[test]

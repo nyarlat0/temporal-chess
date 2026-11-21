@@ -121,6 +121,7 @@ pub fn ribbon(
                 && !game.playback_busy()
                 && ui.ctx().pointer_hover_pos().is_some_and(|pos| {
                     viewport.contains(pos)
+                        && (compact || !crate::view::hud_contains_pointer(ui.ctx(), pos))
                         && ui
                             .ctx()
                             .layer_id_at(pos)
@@ -395,9 +396,7 @@ pub fn ribbon(
         Icon::Worldline,
         crate::tr!("Мировая линия фигуры", "Piece worldline"),
         game.worldline_mode,
-        !moving
-            && game.replay_job.is_none()
-            && game.tutorial_tool_enabled(crate::tutorial::Control::Worldline),
+        !moving && game.replay_job.is_none(),
     );
     use crate::tutorial::{Anchor, Control, mark};
     mark(
@@ -468,23 +467,16 @@ pub fn ribbon(
         } else {
             Control::Down
         };
-        let lesson_navigation = game.tutorial.is_some() && following_line;
-        let response = icon_button(
-            &mut nav,
-            icon,
-            hint,
-            following_line,
-            enabled && (!lesson_navigation || game.tutorial_tool_enabled(control)),
-        );
+        let response = icon_button(&mut nav, icon, hint, following_line, enabled);
         mark(
             ui.ctx(),
             game,
             Anchor::Control(control),
             response.response().rect,
         );
-        let opponent = !lesson_navigation && response.secondary_clicked();
+        let opponent = response.secondary_clicked();
         if response.clicked() || opponent {
-            if boundary && !lesson_navigation {
+            if boundary {
                 game.navigate_boundary(matches!(icon, Icon::Up));
             } else {
                 game.navigate_active(next, opponent);

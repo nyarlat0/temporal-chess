@@ -336,6 +336,16 @@ impl GameUi {
         self.jump_to = Some(self.engine.history().beginning());
     }
 
+    pub fn toggle_history_playback(&mut self) {
+        if self.history_playback {
+            self.reset_playback();
+            self.viewport.scroll = None;
+            self.jump_to = None;
+        } else {
+            self.play_history();
+        }
+    }
+
     pub fn can_replay_move(&self) -> bool {
         !self.playback_busy()
             && self.replay_job.is_none()
@@ -658,6 +668,25 @@ impl GameUi {
         self.viewport.scroll = None;
     }
 
+    pub fn first_deaths(&self) -> impl Iterator<Item = PieceView> + '_ {
+        self.engine
+            .history()
+            .worldlines()
+            .iter()
+            .enumerate()
+            .filter_map(|(wid, line)| {
+                let (age, state) = line.iter().enumerate().find(|(_, state)| !state.alive)?;
+                Some(PieceView::from_state(state, wid, age))
+            })
+    }
+
+    pub fn inspect_death(&mut self, death: PieceView) {
+        self.clear_selection();
+        self.inspect_mode = false;
+        self.worldline_mode = true;
+        self.navigate_to_state(identity(death));
+    }
+
     pub fn focus_worldline(&mut self, target: PieceAt, travel: bool) {
         let from = self
             .worldline_transition
@@ -934,8 +963,15 @@ impl GameUi {
     }
 
     pub fn tutorial_clicked(&mut self, control: crate::tutorial::Control) {
+        use crate::tutorial::Control;
+        let active = match control {
+            Control::Worldline => self.worldline_mode,
+            Control::Inspect => self.inspect_mode,
+            Control::Up | Control::Down => self.worldline_mode && self.worldline_selected.is_some(),
+            _ => true,
+        };
         if let Some(tutorial) = &mut self.tutorial {
-            tutorial.clicked(control);
+            tutorial.clicked(control, active);
         }
     }
 
@@ -961,14 +997,6 @@ impl GameUi {
             return;
         }
         if !self.inspect_mode && !self.worldline_mode && self.lab_click(t, sq) {
-            return;
-        }
-        if (self.inspect_mode || self.worldline_mode)
-            && self
-                .tutorial
-                .as_ref()
-                .is_some_and(|lesson| !lesson.inspect_target(t, sq))
-        {
             return;
         }
         if reverse && !self.worldline_mode && !self.inspect_mode {
@@ -1026,7 +1054,7 @@ impl GameUi {
                     .map_or(0, |i| (i + 1) % states.len());
                 self.focus_worldline(states[next].2, false);
                 if let Some(tutorial) = &mut self.tutorial {
-                    tutorial.inspected(t, sq);
+                    tutorial.inspected(t, sq, true);
                 }
             } else {
                 self.worldline_selected = None;
@@ -1083,7 +1111,7 @@ impl GameUi {
                 if self.inspect_mode
                     && let Some(tutorial) = &mut self.tutorial
                 {
-                    tutorial.inspected(t, sq);
+                    tutorial.inspected(t, sq, false);
                 }
             }
             _ => self.overlapping = pieces,

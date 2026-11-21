@@ -702,6 +702,13 @@ fn tools(ui: &mut egui::Ui) {
             ),
         ),
         (
+            Icon::Skull,
+            crate::tr!(
+                "Череп внизу блока хода: погибшие фигуры, сначала белые, затем чёрные. Нажмите на фигуру, чтобы открыть первое мёртвое состояние её мировой линии.",
+                "The skull at the bottom of the turn panel lists dead pieces, White first and Black second. Select a piece to inspect its first dead worldline state."
+            ),
+        ),
+        (
             Icon::Continue,
             crate::tr!(
                 "Продолжить просчёт / C: доступно при остановке из-за влияющей на историю отмены хода. Не тратит ход; может снова остановиться на другой такой отмене.",

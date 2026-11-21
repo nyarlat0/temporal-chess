@@ -15,7 +15,6 @@ use Color::{Black, White};
 use PieceKind::{B, N};
 const ROOK: PieceKind = PieceKind::R { moved: true };
 const PAWN: PieceKind = PieceKind::P { moved: true };
-const KING: PieceKind = PieceKind::K { moved: true };
 
 fn state(kind: PieceKind, color: Color, point: Point, inverted: bool, ordinary: bool) -> State {
     let mut state = State::new(kind, color, point.sq);
@@ -203,23 +202,12 @@ pub(super) fn capture_ordinary() -> Setup {
 }
 
 pub(super) fn paradox() -> Setup {
-    let mut rook = line(ROOK, White, at(0, "a1"), 8, false);
-    for t in [0, 2, 4, 6, 8] {
-        rook[t].rights.ordinary = true;
-    }
-    stage(
-        setting(
-            vec![
-                rook,
-                line(KING, White, at(0, "h1"), 8, false),
-                vec![state(KING, Black, at(0, "h8"), true, false)],
-            ],
-            White,
-        ),
-        &[
-            Action::mv(2, "a1", "a3", Future),
-            Action::mv(4, "a3", "c3", Future),
+    setting(
+        vec![
+            line(PieceKind::R { moved: false }, White, at(0, "a1"), 1, true),
+            line(N, Black, at(0, "h8"), 1, false),
         ],
+        White,
     )
 }
 

@@ -16,12 +16,13 @@ use temporal_chess_engine::{
 use lessons::CHAPTERS;
 pub use panel::{begin_pass, paint_spotlight, panel};
 
-const STORAGE_KEY: &str = "temporal-chess.tutorial-v5";
-const OLDER_STORAGE_KEYS: [&str; 4] = [
+const STORAGE_KEY: &str = "temporal-chess.tutorial-v6";
+const OLDER_STORAGE_KEYS: [&str; 5] = [
     "temporal-chess.tutorial-v1",
     "temporal-chess.tutorial-v2",
     "temporal-chess.tutorial-v3",
     "temporal-chess.tutorial-v4",
+    "temporal-chess.tutorial-v5",
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -124,7 +125,7 @@ fn migrate_checkpoint(checkpoint: Checkpoint, version: usize) -> Checkpoint {
         if (version < 4 && cursor.chapter == 14) || (version < 3 && cursor.chapter == 13) {
             Cursor::chapter_start(cursor.chapter)
         } else {
-            if cursor.chapter == 15 && matches!(cursor.scene, 2 | 3) {
+            if cursor.chapter == 15 && (cursor.scene == 2 || (version < 5 && cursor.scene == 3)) {
                 cursor.step = 0;
             }
             cursor
@@ -357,26 +358,45 @@ impl Session {
         }
     }
 
-    pub fn clicked(&mut self, control: Control) {
-        if !self.completed && self.step().action == Action::Button(control) {
+    fn mode_in_script(&self, control: Control) -> bool {
+        self.cursor.scene().unwrap().steps[..self.cursor.step]
+            .iter()
+            .filter(|step| step.action == Action::Button(control))
+            .count()
+            % 2
+            != 0
+    }
+
+    fn show_spotlight(&self, game: &GameUi) -> bool {
+        !self.completed
+            && (matches!(
+                self.step().action,
+                Action::Button(Control::Worldline | Control::Inspect)
+            ) || (game.worldline_mode == self.mode_in_script(Control::Worldline)
+                && game.inspect_mode == self.mode_in_script(Control::Inspect)))
+    }
+
+    pub fn clicked(&mut self, control: Control, active: bool) {
+        let expected = match control {
+            Control::Worldline | Control::Inspect => !self.mode_in_script(control),
+            Control::Up | Control::Down => self.mode_in_script(Control::Worldline),
+            _ => active,
+        };
+        if self.tool_enabled(control) && active == expected {
             self.advance();
         }
     }
 
-    pub fn inspected(&mut self, t: BoardTime, sq: Sq) {
-        if self.step().action == Action::Inspect(Point { t, sq }) {
+    pub fn inspected(&mut self, t: BoardTime, sq: Sq, worldline: bool) {
+        if self.step().action == Action::Inspect(Point { t, sq })
+            && worldline == self.mode_in_script(Control::Worldline)
+        {
             self.advance();
         }
     }
 
     pub fn tool_enabled(&self, control: Control) -> bool {
         !self.completed && self.pending.is_none() && self.step().action == Action::Button(control)
-    }
-
-    pub fn inspect_target(&self, t: BoardTime, sq: Sq) -> bool {
-        !self.completed
-            && self.pending.is_none()
-            && self.step().action == Action::Inspect(Point { t, sq })
     }
 }
 
@@ -732,7 +752,7 @@ impl Action {
 
 pub fn mark(ctx: &egui::Context, game: &GameUi, anchor: Anchor, rect: Rect) {
     if let Some(session) = &game.tutorial
-        && !session.completed
+        && session.show_spotlight(game)
         && ((!session.step().automatic && session.step().action.spotlight(game) == Some(anchor))
             || session.step().focus.contains(&Some(anchor)))
     {
@@ -742,6 +762,9 @@ pub fn mark(ctx: &egui::Context, game: &GameUi, anchor: Anchor, rect: Rect) {
 
 pub fn spotlight_square(game: &GameUi, t: BoardTime) -> Option<Sq> {
     let session = game.tutorial.as_ref()?;
+    if !session.show_spotlight(game) {
+        return None;
+    }
     for anchor in std::iter::once(session.step().action.spotlight(game))
         .chain(session.step().focus)
         .flatten()
