@@ -8,7 +8,13 @@ use crate::{
 use bevy_egui::egui::{self, Color32, Rect, Sense, Stroke, StrokeKind, Vec2};
 use temporal_chess_engine::model::{Color, GameRules, PieceKind, Sq};
 
-pub fn show(ctx: &egui::Context, rules: GameRules, open: &mut bool, art: &PieceArt) {
+pub fn show(
+    ctx: &egui::Context,
+    rules: GameRules,
+    open: &mut bool,
+    art: &PieceArt,
+) -> Option<bool> {
+    let mut tutorial = None;
     let frame = egui::Frame::popup(&ctx.style_of(egui::Theme::Dark));
     let height = (ctx.viewport_rect().height() - 24.0 - frame.total_margin().sum().y).max(0.0);
     egui::Modal::new("help".into())
@@ -39,6 +45,20 @@ pub fn show(ctx: &egui::Context, rules: GameRules, open: &mut bool, art: &PieceA
                     "Temporal Chess rules, controls and legend"
                 ),
             );
+            ui.horizontal_wrapped(|ui| {
+                if crate::input::clicked(
+                    &ui.button(crate::tr!("Пройти обучение заново", "Replay tutorial")),
+                ) {
+                    tutorial = Some(false);
+                }
+                if crate::tutorial::can_resume()
+                    && crate::input::clicked(
+                        &ui.button(crate::tr!("Продолжить обучение", "Resume tutorial")),
+                    )
+                {
+                    tutorial = Some(true);
+                }
+            });
             ui.separator();
             egui::ScrollArea::vertical()
                 .id_salt("help_contents")
@@ -95,6 +115,7 @@ pub fn show(ctx: &egui::Context, rules: GameRules, open: &mut bool, art: &PieceA
     if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
         *open = false;
     }
+    tutorial
 }
 
 fn section(
@@ -153,10 +174,10 @@ fn rules_reference(ui: &mut egui::Ui) {
             ),
         ),
         (
-            crate::tr!("Информация и память", "Information and memory"),
+            crate::tr!("Видимая информация", "Visible information"),
             crate::tr!(
-                "Фигура видит противников на своей текущей доске. Наблюдение запоминается как клетка, тип фигуры и её инвертированность. Новая информация — то, что видно сейчас, но ещё не записано в память; если наблюдение исчезает, инфоактивация тоже исчезает. Состояние с записанным ходом не активируется от новой информации. Память пополняется перед ходом своей стороны на досках, где сбрасываются реакции. Протаскивание сразу запоминает актуальную информацию и само по себе не даёт инфоактивацию.",
-                "A piece observes opponents on its current board. An observation records the square, piece type and inversion. New information is visible now but not yet remembered; when an observation disappears, its information reaction disappears too. A state with a recorded move does not gain an information reaction. Memory is added before your side's command on boards whose reactions are being cleared. Waiting immediately remembers current information and does not itself trigger an information reaction."
+                "Фигура видит доступные цели на своей доске. Наблюдение определяется клеткой, типом фигуры и её ориентацией. Исчезнувшая цель перестаёт поддерживать инфоактивацию. Если она снова появится в поле зрения, фигура сможет отреагировать заново. Ход гасит реакции на те цели, которые фигуры видят к началу хода, а ожидание само по себе не активирует ждущую фигуру. Состояние с записанным ходом не получает инфоактивацию.",
+                "A piece sees targets on its own board. An observation is defined by the target’s square, type and orientation. When a target leaves sight, its information reaction goes away. Reappearing targets can trigger a new reaction. Taking a turn clears reactions to targets already visible at its start, and waiting does not itself activate the waiting piece. A state with a recorded move does not gain an information reaction."
             ),
         ),
         (
@@ -169,8 +190,8 @@ fn rules_reference(ui: &mut egui::Ui) {
         (
             crate::tr!("Шах и завершение партии", "Check and game endings"),
             crate::tr!(
-                "Шах не ограничивает выбор хода: можно пытаться изменить историю. Потеря короля в любом его состоянии приводит к поражению после согласования истории. Парадокс бесконечного пересчёта приводит к поражению вызвавшего его игрока. Мат при обычном шахе наступает, если у стороны есть активные фигуры, но ни одно продолжение не спасает короля без парадокса. Пат без обычного шаха наступает, если есть обычные активные фигуры и ни одного доступного действия, включая ожидание. Последствия возможных ходов для пата не просчитываются. Мат и пат откладываются, пока у соперника есть незавершённые обычные ходы в прошлом. Если активных фигур нет, очередь передаётся сопернику.",
-                "Check does not restrict your choice of move: you may try to change history. Losing any state of your king loses the game once history is reconciled. An endless reconciliation paradox loses the game for the player who caused it. An ordinary check becomes mate if the side has active pieces and no continuation saves the king without a paradox. Without an ordinary check, stalemate requires ordinary active pieces and no available action, including waiting. Possible moves are counted regardless of their consequences. Mate and stalemate are deferred while the opponent has outstanding ordinary moves in the past. A side with no active pieces passes the turn."
+                "Шах не ограничивает выбор хода: можно пытаться изменить историю. Победа за мат наступает при фактическом взятии короля на любой доске. Парадокс бесконечного пересчёта приводит к поражению вызвавшего его игрока. Пат без обычного шаха наступает, если есть обычные активные фигуры, но нет доступных ходов и ожиданий. Пат откладывается, пока у соперника есть незавершённые обычные ходы в прошлом. Если активных фигур нет, очередь передаётся сопернику.",
+                "Check does not restrict your choice of move: you may try to change history. Checkmate is won by actually capturing the king on any board. An endless reconciliation paradox loses the game for the player who caused it. Without ordinary check, stalemate requires ordinary active pieces and no available moves or waits. Stalemate is deferred while the opponent has outstanding ordinary moves in the past. A side with no active pieces passes the turn."
             ),
         ),
         (
@@ -271,7 +292,6 @@ enum Sample {
     Arrow(bool, bool),
     Inspect,
     Information,
-    Memory,
 }
 
 fn legend(ui: &mut egui::Ui, art: &PieceArt) {
@@ -328,8 +348,8 @@ fn legend(ui: &mut egui::Ui, art: &PieceArt) {
             Sample::Reaction(false),
             crate::tr!("Реакция на информацию", "Information reaction"),
             crate::tr!(
-                "Жёлтый глаз над фигурой: появилось ещё не запомненное наблюдение.",
-                "A yellow eye above the piece: an observation is visible but not yet remembered."
+                "Жёлтый глаз над фигурой: новая цель в поле зрения даёт право на реакцию.",
+                "A yellow eye above the piece: a new target in sight grants a reaction."
             ),
         ),
         (
@@ -352,8 +372,8 @@ fn legend(ui: &mut egui::Ui, art: &PieceArt) {
             Sample::Check(true),
             crate::tr!("Угроза из будущего", "Threat from the future"),
             crate::tr!(
-                "Розоватый контур короля: чисто инвертированная угроза. Сама по себе не ограничивает ходы и не считается обычным шахом для мата.",
-                "A pink king outline: a purely inverted threat. It does not restrict moves or count as an ordinary check for mate."
+                "Розоватый контур короля: чисто инвертированная угроза. Атакующая фигура может прийти с будущей доски.",
+                "A pink king outline: a purely inverted threat. The attacker can come from a future board."
             ),
         ),
         (
@@ -426,14 +446,6 @@ fn legend(ui: &mut egui::Ui, art: &PieceArt) {
             crate::tr!(
                 "Глаз в блоке инспекции. Новые наблюдения отмечены жёлтым контуром иконки фигуры; рядом указана клетка.",
                 "The eye in the inspection panel. Newly observed pieces have yellow icon outlines and square labels."
-            ),
-        ),
-        (
-            Sample::Memory,
-            crate::tr!("Память", "Memory"),
-            crate::tr!(
-                "Мозг в блоке инспекции. Здесь показаны запомненные наблюдения, которых сейчас нет в поле зрения. Пустые разделы скрыты.",
-                "The brain in the inspection panel. It lists remembered observations no longer visible. Empty sections are hidden."
             ),
         ),
     ] {
@@ -548,12 +560,6 @@ fn sample_paint(painter: &egui::Painter, rect: Rect, sample: Sample, art: &Piece
                 );
             }
         }
-        Sample::Memory => icons::paint(
-            painter,
-            Icon::Memory,
-            cell.shrink(8.0),
-            Stroke::new(1.8, TEXT),
-        ),
         Sample::Information => {
             icons::paint(
                 painter,
@@ -684,8 +690,8 @@ fn tools(ui: &mut egui::Ui) {
         (
             Icon::Inspect,
             crate::tr!(
-                "Инспекция фигуры / I: показывает выбранное состояние, его видимые наблюдения и память. Часы со стрелкой назад показывают fut_seen, когда временная информация отличается от времени доски или есть петля.",
-                "Piece inspection / I shows the selected state, its visible observations and memory. The backward clock displays fut_seen when temporal information differs from board time or the state belongs to a loop."
+                "Инспекция фигуры / I: показывает выбранное состояние, его видимые наблюдения. Часы со стрелкой назад показывают fut_seen, когда временная информация отличается от времени доски или есть петля.",
+                "Piece inspection / I shows the selected state, its visible observations. The backward clock displays fut_seen when temporal information differs from board time or the state belongs to a loop."
             ),
         ),
         (
@@ -772,8 +778,8 @@ fn modes(ui: &mut egui::Ui, rules: GameRules) {
             crate::tr!("Реагировать многократно", "React multiple"),
             !rules.global_reaction_reset,
             crate::tr!(
-                "Включено: после хода сохраняются реакции на досках позже исходной. Выключено по умолчанию: сбрасываются все реакции своей стороны; актуальная информация записывается в память до применения хода.",
-                "On: reactions on boards later than the source board remain after a move. Off by default: all your side's reactions are dismissed; current information is remembered before applying the command."
+                "Включено: после хода сохраняются реакции на досках позже исходной. Выключено по умолчанию: сбрасываются все реакции своей стороны. Новые цели после применения хода могут дать новые реакции.",
+                "On: reactions on boards later than the source board remain after a move. Off by default: all your side's reactions are dismissed. Targets that appear after applying the command can trigger new reactions."
             ),
         ),
         (

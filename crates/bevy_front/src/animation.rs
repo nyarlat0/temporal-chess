@@ -459,28 +459,6 @@ impl BoardTransition {
                 fall_sign: fall_sign(),
             });
         }
-        // Captures are checked on the adjacent board. A victim can exist only
-        // there, with no occurrence on the source board (e.g. Time War).
-        for victim in pieces(before, to_t) {
-            if after
-                .piece_state(identity(victim))
-                .is_some_and(|s| !s.alive)
-                && !tracks
-                    .iter()
-                    .any(|track| track.dying && identity(track.to) == identity(victim))
-            {
-                tracks.push(PieceMotion {
-                    from: victim,
-                    to: victim,
-                    visible_from: true,
-                    visible_to: false,
-                    reversed_move: false,
-                    move_direction: None,
-                    dying: true,
-                    fall_sign: fall_sign(),
-                });
-            }
-        }
         Some(Self {
             from_t,
             to_t,
@@ -493,6 +471,40 @@ impl BoardTransition {
             camera_from_rows: 0.0,
             clock: Default::default(),
         })
+    }
+
+    /// A piece that was alive on arrival may already be missing from both
+    /// snapshots of a later transition in the clip. Use the pre-command board
+    /// to recover it, and show its fall on the board where the death began.
+    pub fn add_arrival_deaths(&mut self, before: &Engine, after: &Engine) {
+        for victim in pieces(before, self.to_t) {
+            let id = after.history().remap_ancestry(identity(victim));
+            if after.piece_state(id).is_none_or(|s| s.alive)
+                || self
+                    .tracks
+                    .iter()
+                    .any(|track| track.dying && identity(track.to) == id)
+            {
+                continue;
+            }
+            let line = &after.history().worldlines()[victim.origin];
+            let Some((age, state)) = line.iter().enumerate().find(|(_, state)| !state.alive) else {
+                continue;
+            };
+            let dead = PieceView::from_state(state, victim.origin, age);
+            if identity(dead) == id {
+                self.tracks.push(PieceMotion {
+                    from: dead,
+                    to: dead,
+                    visible_from: false,
+                    visible_to: false,
+                    reversed_move: false,
+                    move_direction: None,
+                    dying: true,
+                    fall_sign: fall_sign(),
+                });
+            }
+        }
     }
 
     pub fn start(&mut self, camera_from_rows: f32) {
@@ -908,14 +920,15 @@ mod tests {
             .unwrap();
         let after = before.after_move(mv).unwrap();
         assert!(!after.history().worldlines()[1].last().unwrap().alive);
-        let transition = BoardTransition::between(&before, &after, 0, 1, Some(mv)).unwrap();
+        let mut transition = BoardTransition::between(&before, &after, 0, 1, Some(mv)).unwrap();
+        transition.add_arrival_deaths(&before, &after);
         let victim = transition
             .tracks
             .iter()
             .find(|t| t.to.origin == 1 && t.dying)
             .unwrap();
         assert_eq!(victim.to.sq, Sq(1, 4));
-        assert!(victim.visible_from && !victim.visible_to);
+        assert!(!victim.visible_from && !victim.visible_to);
         assert!(transition.travel_fraction() < 0.7);
     }
 }

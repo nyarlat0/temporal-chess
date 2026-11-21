@@ -293,7 +293,7 @@ impl Engine {
         Ok(())
     }
 
-    /// Editor cuts rebase the setting. Keep subjective IDs and remembered
+    /// Editor cuts rebase the setting. Keep subjective IDs and current
     /// future knowledge; only vector indices and references to erased states change.
     fn clean_lab_references(&mut self) {
         let mut remap = Vec::with_capacity(self.history.worldlines.len());

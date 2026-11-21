@@ -283,6 +283,23 @@ pub fn ribbon(
     let mut board_painter = painter.clone();
     board_painter.multiply_opacity(game.facing.opacity);
     for (t, board, response) in rows {
+        use crate::tutorial::{Anchor, mark};
+        mark(
+            ui.ctx(),
+            game,
+            Anchor::Board(t),
+            board
+                .expand(board_frame_padding(cell, 1.0))
+                .intersect(viewport),
+        );
+        if let Some(square) = crate::tutorial::spotlight_square(game, t) {
+            mark(
+                ui.ctx(),
+                game,
+                Anchor::Square(t, square),
+                square_rect(board, cell, square, flipped).intersect(viewport),
+            );
+        }
         let own_active = game
             .pieces(t)
             .iter()
@@ -373,21 +390,25 @@ pub fn ribbon(
     );
     tool.style_mut().visuals.selection.bg_fill = Color32::from_rgb(100, 35, 70);
     tool.style_mut().visuals.selection.stroke.color = Color32::from_rgb(255, 110, 180);
-    if icon_button(
+    let worldline = icon_button(
         &mut tool,
         Icon::Worldline,
         crate::tr!("Мировая линия фигуры", "Piece worldline"),
         game.worldline_mode,
-        !moving && game.replay_job.is_none(),
-    )
-    .clicked()
-    {
-        game.worldline_mode = !game.worldline_mode;
-        game.worldline_selected = None;
-        game.worldline_state = None;
-        game.worldline_transition = None;
-        game.clear_selection();
-        game.inspect_mode = false;
+        !moving
+            && game.replay_job.is_none()
+            && game.tutorial_tool_enabled(crate::tutorial::Control::Worldline),
+    );
+    use crate::tutorial::{Anchor, Control, mark};
+    mark(
+        ui.ctx(),
+        game,
+        Anchor::Control(Control::Worldline),
+        worldline.response().rect,
+    );
+    if worldline.clicked() {
+        game.toggle_worldline();
+        game.tutorial_clicked(Control::Worldline);
     }
     painter.rect_filled(controls, 8.0, BACKGROUND);
     let mut nav = ui.new_child(
@@ -442,13 +463,34 @@ pub fn ribbon(
         } else {
             hint
         };
-        let response = icon_button(&mut nav, icon, hint, following_line, enabled);
-        let opponent = response.secondary_clicked();
+        let control = if matches!(icon, Icon::Up) {
+            Control::Up
+        } else {
+            Control::Down
+        };
+        let lesson_navigation = game.tutorial.is_some() && following_line;
+        let response = icon_button(
+            &mut nav,
+            icon,
+            hint,
+            following_line,
+            enabled && (!lesson_navigation || game.tutorial_tool_enabled(control)),
+        );
+        mark(
+            ui.ctx(),
+            game,
+            Anchor::Control(control),
+            response.response().rect,
+        );
+        let opponent = !lesson_navigation && response.secondary_clicked();
         if response.clicked() || opponent {
-            if boundary {
+            if boundary && !lesson_navigation {
                 game.navigate_boundary(matches!(icon, Icon::Up));
             } else {
                 game.navigate_active(next, opponent);
+                if !opponent {
+                    game.tutorial_clicked(control);
+                }
             }
         }
     }
@@ -550,7 +592,9 @@ fn paint_transition(
     to: Rect,
     raw: f32,
 ) {
-    let phase = (raw / motion.travel_fraction()).clamp(0.0, 1.0);
+    let travel_fraction = motion.travel_fraction();
+    let phase = (raw / travel_fraction).clamp(0.0, 1.0);
+    let death_progress = ((raw - travel_fraction) / (1.0 - travel_fraction)).clamp(0.0, 1.0);
     let progress = travel_curve(phase);
     let center = from.center() + (to.center() - from.center()) * progress;
     let lift = (phase * std::f32::consts::PI).sin();
@@ -676,6 +720,9 @@ fn paint_transition(
                     (true, false) if track.dying => 1.0,
                     (true, false) => 1.0 - ease((phase - 0.65) / 0.35),
                     (false, true) => ease(phase / 0.35),
+                    // A victim on the destination board comes into view as the
+                    // mover arrives, then falls in front of it.
+                    (false, false) if track.dying => ease((phase - 0.7) / 0.3),
                     (false, false) => 0.0,
                 };
                 if track.reversed_move && moving {
@@ -690,9 +737,19 @@ fn paint_transition(
                 );
                 let alpha = opacity * visibility;
                 if track.dying {
-                    let death = ((raw-motion.travel_fraction())/(1.0-motion.travel_fraction())).clamp(0.0,1.0);
-                    art.paint_death(painter, track.to.kind, track.to.color, rect, alpha,
-                        PieceStyle { inverted: track.to.inverted, ..Default::default() }, death, track.fall_sign);
+                    art.paint_death(
+                        painter,
+                        track.to.kind,
+                        track.to.color,
+                        rect,
+                        alpha,
+                        PieceStyle {
+                            inverted: track.to.inverted,
+                            ..Default::default()
+                        },
+                        death_progress,
+                        track.fall_sign,
+                    );
                     continue;
                 }
                 reaction_badges.push((track.from, rect, alpha * (1.0 - progress)));

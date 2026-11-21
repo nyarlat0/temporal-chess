@@ -570,37 +570,50 @@ fn paradox_is_a_committed_loss_but_other_failures_roll_back() {
 }
 
 #[test]
-fn checked_active_pieces_without_defence_end_in_mate_without_growing_history() {
+fn a_checked_side_without_available_actions_waits_for_an_actual_capture() {
     let mut lines = stalemate_lines();
     for state in &mut lines[2] {
         state.y = 1;
     }
     let attacker = crate::model::Observation::from_state(&lines[2][0]);
     for state in &mut lines[3] {
-        state.remembered.insert(attacker);
+        state.acknowledged_observations.insert(attacker);
     }
     let engine = super::legacy_from_worldlines(lines, Color::White).unwrap();
-    assert_eq!(engine.turn(), Color::White);
+    assert_eq!(engine.turn(), Color::Black);
     assert_eq!(engine.history.horizon(), 4);
-    roundtrip(&engine);
+    assert_eq!(engine.outcome(), None);
     assert_eq!(
-        engine.outcome(),
-        Some(GameOutcome::Victory {
-            winner: Color::Black,
-            reason: WinReason::Checkmate
-        })
+        engine.status(),
+        GameStatus::Waiting {
+            player: Color::White,
+            reason: WaitingReason::KingUnderAttack,
+        }
     );
+    roundtrip(&engine);
 }
 
 #[test]
-fn checkmate_waits_for_opponent_causal_debt_then_finishes_when_it_is_closed() {
+fn legacy_predicted_mates_resume_without_a_capture() {
+    let mut history = Engine::default().history;
+    history.status = GameStatus::Finished(GameOutcome::Victory {
+        winner: Color::Black,
+        reason: WinReason::Checkmate,
+    });
+    let engine = Engine::from_history(history, Color::White).unwrap();
+    assert_eq!(engine.status(), GameStatus::Ongoing);
+    assert!(engine.move_sources().next().is_some());
+}
+
+#[test]
+fn closing_causal_debt_does_not_end_an_uncaptured_king() {
     let mut lines = stalemate_lines();
     for state in &mut lines[2] {
         state.y = 1;
     }
     let attacker = crate::model::Observation::from_state(&lines[2][0]);
     for state in &mut lines[3] {
-        state.remembered.insert(attacker);
+        state.acknowledged_observations.insert(attacker);
     }
     let mut debt = line(PieceKind::N, Color::Black, Sq(6, 7), 4);
     debt[1].rights.ordinary = true;
@@ -614,7 +627,7 @@ fn checkmate_waits_for_opponent_causal_debt_then_finishes_when_it_is_closed() {
         }
     }
     for state in &mut lines[3] {
-        state.remembered.insert(attacker);
+        state.acknowledged_observations.insert(attacker);
     }
     let mut engine = super::legacy_from_worldlines(lines, Color::White).unwrap();
     assert_eq!(
@@ -627,12 +640,14 @@ fn checkmate_waits_for_opponent_causal_debt_then_finishes_when_it_is_closed() {
     assert_eq!(engine.turn(), Color::Black);
     let source = Engine::piece_at(engine.get_piv(4, 1).unwrap());
     engine.skip_ordinary(source, 5).unwrap();
+    assert_eq!(engine.outcome(), None);
+    assert_eq!(engine.turn(), Color::Black);
     assert_eq!(
-        engine.outcome(),
-        Some(GameOutcome::Victory {
-            winner: Color::Black,
-            reason: WinReason::Checkmate
-        })
+        engine.status(),
+        GameStatus::Waiting {
+            player: Color::White,
+            reason: WaitingReason::KingUnderAttack,
+        }
     );
     assert_eq!(engine.history.horizon(), 5);
     roundtrip(&engine);

@@ -386,12 +386,13 @@ impl MultiplayerClient {
 
 pub fn poll(
     mut client: NonSendMut<MultiplayerClient>,
-    mut game: ResMut<GameUi>,
+    mut active: ResMut<GameUi>,
     mut contexts: EguiContexts,
 ) {
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
+    let game = crate::tutorial::background_game(&mut active);
     if let Some(action) = game.online.action.take() {
         match action {
             Action::LocalGame { rules, start, bot } => {
@@ -492,7 +493,7 @@ pub fn poll(
                 game.pending_move = None;
                 game.clear_selection();
                 if let Err(error) = client.connect(&game.online.endpoint, handshake, ctx) {
-                    client.disconnected(&mut game);
+                    client.disconnected(game);
                     if game.online.fatal {
                         game.online.status = error.into();
                     }
@@ -521,7 +522,7 @@ pub fn poll(
         return;
     }
     if client.deadline.is_some_and(|at| Instant::now() >= at) {
-        client.disconnected(&mut game);
+        client.disconnected(game);
         return;
     }
     // Limit messages processed per frame; animations must remain responsive.
@@ -537,7 +538,7 @@ pub fn poll(
             }
             WsEvent::Message(WsMessage::Text(text)) => {
                 match serde_json::from_str::<ServerMessage>(&text) {
-                    Ok(message) => receive(&mut client, &mut game, message),
+                    Ok(message) => receive(&mut client, game, message),
                     Err(_) => {
                         game.online.fatal = true;
                         game.online.ready = false;
@@ -549,7 +550,7 @@ pub fn poll(
                 }
             }
             WsEvent::Closed | WsEvent::Error(_) => {
-                client.disconnected(&mut game);
+                client.disconnected(game);
                 break;
             }
             _ => {}
@@ -561,7 +562,7 @@ pub fn poll(
     if game.online.synchronizing || game.replay_job.is_some() {
         return;
     }
-    client.poll_validation(&mut game);
+    client.poll_validation(game);
     if !game.history_playback
         && !game.replaying_move
         && client.validation.is_none()
@@ -589,7 +590,7 @@ pub fn poll(
         }
         if let Some((revision, text)) = client.accepted.pop_front() {
             if revision != game.online.revision + 1 {
-                client.resync(&mut game);
+                client.resync(game);
                 return;
             }
             let result = if client.prepared.as_ref().is_some_and(|(proposal, _)| {
@@ -604,7 +605,7 @@ pub fn poll(
             };
             if result.is_err() {
                 // A different engine build must not loop on the same invalid journal.
-                client.resync(&mut game);
+                client.resync(game);
                 return;
             }
             game.online.revision = revision;

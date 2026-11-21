@@ -71,7 +71,7 @@ fn first_observation_is_selected_in_causal_order_and_per_worldline() {
         assert!(
             engine.history.worldlines[0]
                 .iter()
-                .all(|s| s.remembered.is_empty())
+                .all(|s| s.acknowledged_observations.is_empty())
         );
         assert_eq!(
             Engine::from_history(engine.history.clone(), engine.turn).unwrap(),
@@ -96,7 +96,7 @@ fn disappearance_within_the_same_turn_clears_or_reassigns_the_reaction() {
         assert!(
             engine.history.worldlines[0]
                 .iter()
-                .all(|s| s.informed.is_empty() && s.remembered.is_empty())
+                .all(|s| s.informed.is_empty() && s.acknowledged_observations.is_empty())
         );
         engine.history.worldlines[1][first_t].x = 0;
         engine.reconcile().unwrap();
@@ -106,39 +106,62 @@ fn disappearance_within_the_same_turn_clears_or_reassigns_the_reaction() {
 }
 
 #[test]
-fn remembering_is_additive_and_does_not_accept_later_board_reactions() {
+fn acknowledgements_expire_out_of_sight_and_respect_board_scope() {
     let mut engine = observed(true);
+    engine.history.worldlines[1] = line(PieceKind::N, Color::Black, Sq(0, 4), true).into();
+    engine.reconcile().unwrap();
     let target = crate::model::Observation::from_state(&engine.history.worldlines[1][0]);
-    engine.remember_information(Color::White, 2);
+    engine.acknowledge_information(Color::White, 2);
     engine.reconcile().unwrap();
     assert_eq!(reacting_times(&engine, 0), [4]);
     for state in engine.history.worldlines[0].iter() {
         assert_eq!(
-            state.remembered.contains(&target),
+            state.acknowledged_observations.contains(&target),
             state.t <= 2 && state.t % 2 == 0
         );
     }
-    engine.remember_information(Color::White, 4);
+    engine.acknowledge_information(Color::White, 4);
     engine.reconcile().unwrap();
     assert!(reacting_times(&engine, 0).is_empty());
     for state in engine.history.worldlines[1].iter_mut() {
         state.x = 2;
     }
     engine.reconcile().unwrap();
-    engine.remember_information(Color::White, 4);
+    assert!(
+        engine.history.worldlines[0]
+            .iter()
+            .all(|s| s.acknowledged_observations.is_empty())
+    );
     for state in engine.history.worldlines[1].iter_mut() {
         state.x = 0;
     }
     engine.reconcile().unwrap();
+    assert_eq!(reacting_times(&engine, 0), [4]);
     assert!(
-        reacting_times(&engine, 0).is_empty(),
-        "an acknowledged target stays known after disappearing and returning"
+        !engine.history.worldlines[0][0]
+            .acknowledged_observations
+            .contains(&target)
     );
-    assert!(engine.history.worldlines[0][0].remembered.contains(&target));
 }
 
 #[test]
-fn move_remembers_the_view_before_its_spatial_and_temporal_edits() {
+fn lab_import_preserves_current_acknowledgements_and_ignores_archived_memory() {
+    use crate::record::GameRecord;
+
+    let mut engine = observed(false);
+    engine.acknowledge_information(Color::White, 4);
+    engine.reconcile().unwrap();
+    let live = GameRecord::from_lab(&engine).to_text();
+    let (loaded, _) = GameRecord::load(&live).unwrap();
+    assert!(reacting_times(&loaded, 0).is_empty());
+
+    let archived = live.replace("\"acknowledged_observations\"", "\"remembered\"");
+    let (loaded, _) = GameRecord::load(&archived).unwrap();
+    assert_eq!(reacting_times(&loaded, 0), [0]);
+}
+
+#[test]
+fn move_dismisses_the_view_before_its_spatial_and_temporal_edits() {
     let mut engine = observed(false);
     engine.history.rules.global_reaction_reset = false;
     let target = crate::model::Observation::from_state(&engine.history.worldlines[1][0]);
@@ -149,18 +172,26 @@ fn move_remembers_the_view_before_its_spatial_and_temporal_edits() {
         .find(|m| m.sq == Sq(1, 0) && m.direction == TimeDirection::Future)
         .unwrap();
     engine.apply_new_mv(mv).unwrap();
-    assert!(engine.history.worldlines[0][0].remembered.contains(&target));
-    assert!(engine.history.worldlines[0][2].remembered.is_empty());
+    assert!(
+        engine.history.worldlines[0][0]
+            .acknowledged_observations
+            .contains(&target)
+    );
+    assert!(
+        engine.history.worldlines[0][2]
+            .acknowledged_observations
+            .is_empty()
+    );
     assert!(
         engine.history.worldlines[1]
             .iter()
-            .all(|s| s.remembered.is_empty()),
+            .all(|s| s.acknowledged_observations.is_empty()),
         "never acknowledge the opponent's view"
     );
 }
 
 #[test]
-fn declining_acknowledges_all_reactions_and_prevents_reactivation() {
+fn declining_dismisses_all_reactions_to_targets_still_in_sight() {
     let mut engine = observed(false);
     engine.history.worldlines[0].states.pop();
     engine.reconcile().unwrap();
@@ -186,7 +217,11 @@ fn free_wait_does_not_acknowledge_other_figures_information() {
     let source = Engine::piece_at(engine.get_piv(2, 0).unwrap());
     engine.skip_ordinary(source, 4).unwrap();
     assert_eq!(reacting_times(&engine, 0), [0]);
-    assert!(engine.history.worldlines[0][0].remembered.is_empty());
+    assert!(
+        engine.history.worldlines[0][0]
+            .acknowledged_observations
+            .is_empty()
+    );
     assert_eq!(engine.turn(), Color::White);
     assert!(engine.history.moves.is_empty());
 }
@@ -218,7 +253,11 @@ fn disappearing_en_passant_dynamically_retires_the_reaction() {
         engine.history.worldlines[1][0].y = 5; // No double step any more.
         engine.reconcile().unwrap();
         assert!(reacting_times(&engine, 0).is_empty());
-        assert!(engine.history.worldlines[0][0].remembered.is_empty());
+        assert!(
+            engine.history.worldlines[0][0]
+                .acknowledged_observations
+                .is_empty()
+        );
     }
 }
 
@@ -238,7 +277,7 @@ fn free_wait_can_remove_an_existing_reaction_without_consuming_a_turn() {
     assert!(
         engine.history.worldlines[0]
             .iter()
-            .all(|s| s.informed.is_empty() && s.remembered.is_empty())
+            .all(|s| s.informed.is_empty() && s.acknowledged_observations.is_empty())
     );
     assert_eq!(engine.turn(), Color::White);
     assert!(engine.history.moves.is_empty());
@@ -257,7 +296,7 @@ fn target_appearance_ignores_future_knowledge_and_loop_turn() {
         }
         engine.reconcile().unwrap();
         assert_eq!(reacting_times(&engine, 0), [0]);
-        engine.remember_information(Color::White, 0);
+        engine.acknowledge_information(Color::White, 0);
         engine.reconcile().unwrap();
         assert!(engine.history.worldlines[0][2].rights.new_information);
     }
@@ -275,7 +314,7 @@ fn different_targets_can_activate_different_states_of_one_line() {
 }
 
 #[test]
-fn continuing_paused_calculation_refreshes_both_sides_without_learning() {
+fn continuing_paused_calculation_refreshes_both_sides_without_dismissing_reactions() {
     let mut source = State::new(PieceKind::N, Color::White, Sq(3, 3));
     source.t = 2;
     source.fut_seen = 4;
@@ -315,7 +354,11 @@ fn continuing_paused_calculation_refreshes_both_sides_without_learning() {
     assert!(reacting_times(&engine, 1).is_empty());
     engine.continue_calculation().unwrap();
     assert_eq!(reacting_times(&engine, 1), [3]);
-    assert!(engine.history.worldlines[1][0].remembered.is_empty());
+    assert!(
+        engine.history.worldlines[1][0]
+            .acknowledged_observations
+            .is_empty()
+    );
     assert_eq!(engine.turn(), Color::White);
     assert_eq!(
         Engine::from_history(engine.history.clone(), engine.turn).unwrap(),
@@ -379,7 +422,9 @@ fn reaction_modes_are_independent_and_preserve_ordinary_reserves() {
             );
             assert!(engine.history.worldlines[4][0].rights.ordinary);
             assert_eq!(
-                engine.history.worldlines[0][0].remembered.is_empty(),
+                engine.history.worldlines[0][0]
+                    .acknowledged_observations
+                    .is_empty(),
                 !global_reaction_reset
             );
             assert_eq!(
@@ -391,7 +436,7 @@ fn reaction_modes_are_independent_and_preserve_ordinary_reserves() {
 }
 
 #[test]
-fn waiting_remembers_its_result_without_activating_the_waiting_piece() {
+fn waiting_dismisses_its_current_view_without_activating_the_waiting_piece() {
     for inverted in [false, true] {
         for chain_info_activation in [false, true] {
             let mut engine = observed(inverted);
@@ -401,17 +446,17 @@ fn waiting_remembers_its_result_without_activating_the_waiting_piece() {
             engine.history.worldlines[0][4].rights.ordinary = true;
             engine.reconcile().unwrap();
             let target = crate::model::Observation::from_state(&engine.history.worldlines[1][0]);
-            let old_memory = crate::model::Observation {
+            let absent_target = crate::model::Observation {
                 square: Sq(7, 7),
                 kind: PieceKind::Q,
                 inverted: true,
             };
             engine.history.worldlines[0][0]
-                .remembered
-                .insert(old_memory);
-            let opponent_memory: Vec<_> = engine.history.worldlines[1]
+                .acknowledged_observations
+                .insert(absent_target);
+            let opponent_acknowledgements: Vec<_> = engine.history.worldlines[1]
                 .iter()
-                .map(|s| s.remembered.clone())
+                .map(|s| s.acknowledged_observations.clone())
                 .collect();
             let source = Engine::piece_at(engine.get_piv(0, 0).unwrap());
             engine
@@ -419,19 +464,19 @@ fn waiting_remembers_its_result_without_activating_the_waiting_piece() {
                 .unwrap();
             assert!(reacting_times(&engine, 0).is_empty());
             for state in engine.history.worldlines[0].iter().filter(|s| s.t % 2 == 0) {
-                assert!(state.remembered.contains(&target));
+                assert!(state.acknowledged_observations.contains(&target));
             }
             assert!(
-                engine.history.worldlines[0][0]
-                    .remembered
-                    .contains(&old_memory)
+                !engine.history.worldlines[0][0]
+                    .acknowledged_observations
+                    .contains(&absent_target)
             );
             assert_eq!(
                 engine.history.worldlines[1]
                     .iter()
-                    .map(|s| s.remembered.clone())
+                    .map(|s| s.acknowledged_observations.clone())
                     .collect::<Vec<_>>(),
-                opponent_memory
+                opponent_acknowledgements
             );
             assert_eq!(engine.turn(), Color::White);
             assert!(engine.history.moves.is_empty());
@@ -452,7 +497,7 @@ fn archived_bounce_journal_rejects_the_obsolete_return_incarnation() {
 }
 
 #[test]
-fn pre_move_memory_respects_reaction_scope_and_keeps_opponents_memory() {
+fn pre_move_acknowledgement_respects_scope_and_leaves_opponents_reactions() {
     for global in [false, true] {
         let mut rook = line(PieceKind::R { moved: true }, Color::White, Sq(0, 0), false);
         rook[0].rights.ordinary = true;
@@ -469,9 +514,13 @@ fn pre_move_memory_respects_reaction_scope_and_keeps_opponents_memory() {
             },
         )
         .unwrap();
-        let enemy_memory: Vec<_> = engine.history.worldlines[1..]
+        let enemy_acknowledgements: Vec<_> = engine.history.worldlines[1..]
             .iter()
-            .map(|l| l.iter().map(|s| s.remembered.clone()).collect::<Vec<_>>())
+            .map(|l| {
+                l.iter()
+                    .map(|s| s.acknowledged_observations.clone())
+                    .collect::<Vec<_>>()
+            })
             .collect();
         let mv = engine
             .possible_moves(0, 0)
@@ -490,13 +539,16 @@ fn pre_move_memory_respects_reaction_scope_and_keeps_opponents_memory() {
             .find(|s| s.t == 2)
             .unwrap();
         assert!(later.informed.contains(&observed));
-        assert!(!later.remembered.contains(&observed));
+        assert!(!later.acknowledged_observations.contains(&observed));
         assert_eq!(
             engine.history.worldlines[1..]
                 .iter()
-                .map(|l| l.iter().map(|s| s.remembered.clone()).collect::<Vec<_>>())
+                .map(|l| l
+                    .iter()
+                    .map(|s| s.acknowledged_observations.clone())
+                    .collect::<Vec<_>>())
                 .collect::<Vec<_>>(),
-            enemy_memory
+            enemy_acknowledgements
         );
         assert_eq!(
             Engine::from_history(engine.history.clone(), engine.turn()).unwrap(),

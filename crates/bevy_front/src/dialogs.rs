@@ -219,13 +219,17 @@ pub fn draw(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState, art:
             }
         });
     }
-    if shell.help_open {
-        crate::help::show(
+    if shell.help_open
+        && let Some(resume) = crate::help::show(
             ctx,
             game.engine.history().rules(),
             &mut shell.help_open,
             art,
-        );
+        )
+    {
+        shell.help_open = false;
+        crate::tutorial::replay(game, resume);
+        ctx.request_repaint();
     }
 }
 

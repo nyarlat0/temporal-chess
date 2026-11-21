@@ -192,7 +192,9 @@ pub fn handle(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState) {
         }
     }
     if !modal {
-        if escape || (right_click && !shell.zoom_gesture) {
+        if (escape || (right_click && !shell.zoom_gesture))
+            && (game.tutorial.is_none() || !game.inspect_mode && !game.worldline_mode)
+        {
             game.clear_selection();
         }
         if toggle
@@ -205,7 +207,7 @@ pub fn handle(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState) {
             game.toggle_direction();
         }
     }
-    if pressed || escape {
+    if (pressed || escape) && game.tutorial.is_none() {
         if game.inspect_mode {
             game.inspect_mode = false;
             game.clear_selection();
@@ -219,6 +221,9 @@ pub fn handle(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState) {
         shell.zoom_gesture = false;
     }
     if modal || game.playback_busy() || game.facing.animating() || ctx.egui_wants_keyboard_input() {
+        return;
+    }
+    if game.tutorial.is_some() {
         return;
     }
     ctx.input(|i| {

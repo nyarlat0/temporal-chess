@@ -146,7 +146,9 @@ impl Engine {
                 piece: PieceId::from_state(source, wid),
                 t: source.t,
             });
-            source.remembered.extend(source.informed.iter().copied());
+            source
+                .acknowledged_observations
+                .extend(source.informed.iter().copied());
             source.rights = MoveRights::default();
             for next in std::iter::once(first).chain(last) {
                 waited.push(PieceAt {
@@ -165,20 +167,25 @@ impl Engine {
         if waited.is_empty() {
             return Ok(false);
         }
-        let mut learned = false;
+        let mut acknowledged = false;
         for id in waited {
             if let Some(loc) = self.projection.pieces.get(id) {
                 let state = &mut self.history.worldlines[loc.wid][loc.age];
-                let before = state.remembered.len();
-                state.remembered.extend(state.informed.iter().copied());
-                learned |= state.remembered.len() != before;
+                let before = state.acknowledged_observations.len();
+                state
+                    .acknowledged_observations
+                    .extend(state.informed.iter().copied());
+                acknowledged |= state.acknowledged_observations.len() != before;
             }
         }
         self.update_infos()?;
         self.update_bufs()?;
-        // Learning can release a calculation barrier. Re-run validation before
+        // Dismissing reactions can release a calculation barrier. Re-run validation before
         // publishing any newly exposed boards, even without a collision.
-        Ok(self.build_boards(self.history.horizon)? == super::ValidRes::HistChanged || learned)
+        Ok(
+            self.build_boards(self.history.horizon)? == super::ValidRes::HistChanged
+                || acknowledged,
+        )
     }
 }
 

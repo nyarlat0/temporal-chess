@@ -4,6 +4,7 @@ use crate::{
     icons::{Icon, icon_button},
     piece_art::PieceArt,
     theme::*,
+    tutorial::{self, Anchor, Control},
 };
 use bevy::prelude::Resource;
 use bevy_egui::egui::{self, Vec2};
@@ -50,7 +51,7 @@ fn initial_sidebar(saved: Option<&str>, mobile: bool) -> bool {
     }
 }
 
-fn stored_setting(key: &str) -> Option<String> {
+pub(crate) fn stored_setting(key: &str) -> Option<String> {
     #[cfg(target_arch = "wasm32")]
     {
         web_sys::window()?
@@ -66,7 +67,7 @@ fn stored_setting(key: &str) -> Option<String> {
     }
 }
 
-fn store_setting(key: &str, value: &str) {
+pub(crate) fn store_setting(key: &str, value: &str) {
     #[cfg(target_arch = "wasm32")]
     if let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
         let _ = storage.set_item(key, value);
@@ -97,7 +98,14 @@ fn mobile_browser() -> bool {
 }
 
 pub fn mobile_layout(ctx: &egui::Context) -> bool {
-    mobile_browser() || ctx.viewport_rect().width() < 760.0
+    let width = ctx.viewport_rect().width();
+    mobile_browser()
+        || width < 760.0
+        || (width < 990.0
+            && ctx.data(|d| {
+                d.get_temp::<bool>("tutorial_layout".into())
+                    .unwrap_or_default()
+            }))
 }
 
 pub fn draw(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState, art: &PieceArt) {
@@ -121,7 +129,12 @@ pub fn draw(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState, art:
             .and_then(|v| v.parse::<bool>().ok())
             .unwrap_or(false);
         shell.initialized = true;
+        tutorial::on_first_draw(game);
     }
+    tutorial::update_scene(game);
+    let teaching = game.tutorial.is_some();
+    ctx.data_mut(|d| d.insert_temp(egui::Id::new("tutorial_layout"), teaching));
+    tutorial::begin_pass(ctx);
     let previous_sidebar = shell.sidebar_open;
     let previous_flip = game.local_auto_flip;
     let previous_speed = game.animation_speed;
@@ -135,7 +148,7 @@ pub fn draw(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState, art:
         });
     }
     let viewport = ctx.viewport_rect();
-    let mobile_drawer = if compact {
+    let mobile_drawer = if compact && !teaching {
         ctx.animate_bool_responsive(egui::Id::new("mobile_drawer_slide"), shell.sidebar_open)
     } else {
         0.0
@@ -157,9 +170,34 @@ pub fn draw(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState, art:
         root.disable();
     }
     if compact {
-        // Cover layout spacing as well as the header and the ribbon.
         ctx.layer_painter(root.layer_id())
             .rect_filled(viewport, 0.0, BACKGROUND);
+    }
+    let lesson_rect = if teaching {
+        let underneath = compact && (viewport.width() < 600.0 || viewport.height() >= 540.0);
+        let panel = if underneath {
+            egui::Panel::bottom("tutorial_panel").exact_size(
+                (viewport.height() * 0.34)
+                    .clamp(190.0, 270.0)
+                    .min(viewport.height() * 0.5),
+            )
+        } else {
+            egui::Panel::right("tutorial_panel").exact_size(if compact { 270.0 } else { 310.0 })
+        };
+        panel
+            .resizable(false)
+            .frame(
+                egui::Frame::new()
+                    .fill(PANEL)
+                    .inner_margin(if compact { 10 } else { 18 }),
+            )
+            .show(&mut root, |ui| tutorial::panel(ui, game, underneath))
+            .response
+            .rect
+    } else {
+        egui::Rect::NOTHING
+    };
+    if compact {
         egui::Frame::new()
             .inner_margin(egui::Margin::symmetric(12, 0))
             .show(&mut root, |ui| {
@@ -167,7 +205,7 @@ pub fn draw(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState, art:
                 if shell.settings_open || mobile_drawer > 0.0 {
                     ui.disable();
                 }
-                ui.add_space(58.0);
+                ui.add_space(if teaching { 8.0 } else { 58.0 });
                 let mut rect = ui.available_rect_before_wrap();
                 let width = if has_hud_selection(game) {
                     420.0
@@ -179,7 +217,7 @@ pub fn draw(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState, art:
                 ui.allocate_space(Vec2::new(0.0, height));
             });
     }
-    let desktop_sidebar_drawn = if compact {
+    let desktop_sidebar_drawn = if compact || teaching {
         false
     } else {
         let mut open = shell.sidebar_open;
@@ -250,7 +288,7 @@ pub fn draw(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState, art:
             shell.sidebar_open = false;
             ctx.request_repaint();
         }
-    } else if !desktop_sidebar_drawn {
+    } else if !desktop_sidebar_drawn && !teaching {
         menu_button(ctx, game, shell, modal);
     }
     if previous_sidebar != shell.sidebar_open {
@@ -283,6 +321,13 @@ pub fn draw(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState, art:
             } else {
                 "false"
             },
+        );
+    }
+    if teaching && game.tutorial.is_some() && !modal {
+        tutorial::paint_spotlight(
+            ctx,
+            lesson_rect,
+            game.playback_busy() || game.facing.animating(),
         );
     }
     crate::dialogs::draw(ctx, game, shell, art);
@@ -505,6 +550,7 @@ fn hud_turn(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt, compact: bool)
             Vec2::splat(if compact { 28.0 } else { 45.0 }),
             egui::Sense::click(),
         );
+        tutorial::mark(ui.ctx(), game, Anchor::Turn, king);
         art.paint_styled(
             ui.painter(),
             PieceKind::K { moved: false },
@@ -520,8 +566,11 @@ fn hud_turn(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt, compact: bool)
                 ..Default::default()
             },
         );
-        if crate::input::clicked(&response) && idle {
+        if crate::input::clicked(&response) && idle && game.tutorial_tool_enabled(Control::Check) {
             game.navigate_check();
+            if checked {
+                game.tutorial_clicked(Control::Check);
+            }
         }
         response.on_hover_text(crate::tr!("Перейти к шаху", "Go to check"));
         #[cfg(test)]
@@ -538,65 +587,89 @@ fn hud_turn(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt, compact: bool)
         crate::board_view::paint_board_badge(ui.painter(), badge, game.displayed_turn());
         ui.painter()
             .circle_filled(king.center().lerp(badge.center(), 0.5), 2.0, TEXT);
-        ui.label(
+        let count = ui.label(
             egui::RichText::new(format!(
                 "x {}",
                 game.active_times_for(game.displayed_turn()).len()
             ))
             .size(if compact { 16.0 } else { 18.0 }),
         );
+        tutorial::mark(ui.ctx(), game, Anchor::Activity, badge.union(count.rect));
     });
     // Columns justify direct children across their width. A button row keeps
     // the replay control square instead of stretching it with the column.
     ui.horizontal(|ui| {
-        if icon_button(
+        let replay = icon_button(
             ui,
             Icon::Replay,
             crate::tr!("Повторить предыдущий ход", "Replay previous move"),
             game.replaying_move,
-            game.can_replay_move(),
-        )
-        .clicked()
-        {
+            game.can_replay_move() && game.tutorial_tool_enabled(Control::Replay),
+        );
+        tutorial::mark(
+            ui.ctx(),
+            game,
+            Anchor::Control(Control::Replay),
+            replay.response().rect,
+        );
+        if replay.clicked() {
             game.replay_last_move();
+            game.tutorial_clicked(Control::Replay);
         }
-        if icon_button(
+        let inspect = icon_button(
             ui,
             Icon::Inspect,
             crate::tr!("Инспекция фигуры · I", "Inspect piece · I"),
             game.inspect_mode,
-            idle,
-        )
-        .clicked()
-        {
+            idle && game.tutorial_tool_enabled(Control::Inspect),
+        );
+        tutorial::mark(
+            ui.ctx(),
+            game,
+            Anchor::Control(Control::Inspect),
+            inspect.response().rect,
+        );
+        if inspect.clicked() {
             game.toggle_inspector();
+            game.tutorial_clicked(Control::Inspect);
         }
     });
-    if game.engine.can_decline_reactions()
-        && ui
+    if game.engine.can_decline_reactions() {
+        let decline = ui
             .add_enabled(
-                idle && game.can_submit(),
+                idle && game.can_submit() && game.tutorial_tool_enabled(Control::Decline),
                 egui::Button::new(crate::tr!("Не реагировать", "Decline reactions")),
             )
             .on_hover_text(crate::tr!(
                 "Деактивировать все свои реакции и передать ход сопернику.",
                 "Deactivate all your reactions and hand the turn to your opponent."
-            ))
-            .clicked()
-    {
-        game.decline_reactions();
+            ));
+        tutorial::mark(
+            ui.ctx(),
+            game,
+            Anchor::Control(Control::Decline),
+            decline.rect,
+        );
+        if decline.clicked() {
+            game.decline_reactions();
+        }
     }
     if let CalculationStatus::Paused { t, .. } = game.engine.calculation_status() {
         ui.horizontal_wrapped(|ui| {
-            if icon_button(
+            let resume = icon_button(
                 ui,
                 Icon::Continue,
                 crate::tr!("Продолжить просчёт · C", "Continue calculation · C"),
                 false,
-                idle && game.can_submit(),
-            )
-            .clicked()
-            {
+                idle && game.can_submit() && game.tutorial_tool_enabled(Control::Continue),
+            );
+            tutorial::mark(
+                ui.ctx(),
+                game,
+                Anchor::Control(Control::Continue),
+                resume.response().rect,
+            );
+            if resume.clicked() {
                 game.continue_calculation();
             }
             ui.colored_label(REACTION, crate::tr_format!("Доска {t}", "Board {t}"));
@@ -607,7 +680,7 @@ fn hud_turn(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt, compact: bool)
         && let Some(streak) = game.engine.turn_streak()
         && let Some(remaining) = streak.disqualification_countdown()
     {
-        ui.colored_label(
+        let countdown = ui.colored_label(
             REACTION,
             egui::RichText::new(crate::tr_format!(
                 "{} · до дисквалификации {}",
@@ -617,6 +690,7 @@ fn hud_turn(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt, compact: bool)
             ))
             .small(),
         );
+        tutorial::mark(ui.ctx(), game, Anchor::Streak, countdown.rect);
     }
     if !matches!(
         game.engine.status(),
@@ -629,7 +703,8 @@ fn hud_turn(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt, compact: bool)
 fn hud_selection(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt, compact: bool) {
     if game.inspect_mode || game.worldline_mode {
         if let Some(piece) = game.inspected_piece() {
-            inspection_hud(ui, game, art, piece);
+            let details = ui.scope(|ui| inspection_hud(ui, game, art, piece));
+            tutorial::mark(ui.ctx(), game, Anchor::Inspection, details.response.rect);
         }
         return;
     }
@@ -667,7 +742,7 @@ fn hud_selection(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt, compact: 
             });
         });
         ui.horizontal(|ui| {
-            if icon_button(
+            let direction_button = icon_button(
                 ui,
                 if direction == temporal_chess_engine::model::TimeDirection::Future {
                     Icon::Future
@@ -680,10 +755,16 @@ fn hud_selection(ui: &mut egui::Ui, game: &mut GameUi, art: &PieceArt, compact: 
                 ),
                 false,
                 !game.playback_busy(),
-            )
-            .clicked()
-            {
+            );
+            tutorial::mark(
+                ui.ctx(),
+                game,
+                Anchor::Control(Control::Direction),
+                direction_button.response().rect,
+            );
+            if direction_button.clicked() {
                 game.toggle_direction();
+                game.tutorial_clicked(Control::Direction);
             }
             ui.label(crate::controller::direction_name(direction));
         });
@@ -740,61 +821,13 @@ fn inspection_hud(
         let visible: Vec<_> = state
             .informed
             .iter()
-            .map(|o| (*o, !state.remembered.contains(o)))
+            .map(|o| (*o, !state.acknowledged_observations.contains(o)))
             .collect();
-        let board = game.pieces(piece.t);
-        let memory: Vec<_> = state
-            .remembered
-            .iter()
-            .filter(|o| {
-                !board.iter().any(|p| {
-                    p.color != piece.color
-                        && temporal_chess_engine::model::Observation {
-                            square: p.sq,
-                            kind: p.kind.set_moved(false),
-                            inverted: p.inverted,
-                        } == **o
-                })
-            })
-            .map(|o| (*o, false))
-            .collect();
-        // No nested scroller: compact the grids to the remaining screen height.
-        let remaining = (ui.max_rect().bottom() - ui.cursor().min.y - 22.0).max(64.0);
-        let columns = ((ui.available_width() + 4.0) / 40.0).floor().max(1.0);
-        let visible_rows = if visible.is_empty() {
-            0.0
-        } else {
-            ((visible.len() + 1) as f32 / columns).ceil()
-        };
-        let memory_rows = if memory.is_empty() {
-            0.0
-        } else {
-            ((memory.len() + 1) as f32 / columns).ceil()
-        };
-        let visible_height = remaining * visible_rows / (visible_rows + memory_rows).max(1.0);
         if !visible.is_empty() {
+            // Fit the current view in the HUD without an inner scroller.
+            let remaining = (ui.max_rect().bottom() - ui.cursor().min.y - 22.0).max(64.0);
             ui.separator();
-            observation_block(
-                ui,
-                art,
-                Icon::Information,
-                crate::tr!("Видимая информация", "Visible information"),
-                piece.color.opposite(),
-                &visible,
-                visible_height,
-            );
-        }
-        if !memory.is_empty() {
-            ui.separator();
-            observation_block(
-                ui,
-                art,
-                Icon::Memory,
-                crate::tr!("Память", "Memory"),
-                piece.color.opposite(),
-                &memory,
-                remaining - visible_height,
-            );
+            observation_block(ui, art, piece.color.opposite(), &visible, remaining);
         }
     });
 }
@@ -802,8 +835,6 @@ fn inspection_hud(
 fn observation_block(
     ui: &mut egui::Ui,
     art: &PieceArt,
-    icon: Icon,
-    title: &str,
     side: temporal_chess_engine::model::Color,
     observations: &[(temporal_chess_engine::model::Observation, bool)],
     height: f32,
@@ -822,11 +853,11 @@ fn observation_block(
         let (rect, response) = ui.allocate_exact_size(cell, egui::Sense::hover());
         crate::icons::paint(
             ui.painter(),
-            icon,
+            Icon::Information,
             egui::Rect::from_center_size(rect.center(), Vec2::splat(size.min(22.0))),
             egui::Stroke::new(1.5, TEXT),
         );
-        response.on_hover_text(title);
+        response.on_hover_text(crate::tr!("Видимая информация", "Visible information"));
         for (observation, new) in observations.iter().take(shown) {
             let (rect, response) = ui.allocate_exact_size(cell, egui::Sense::hover());
             let image = egui::Rect::from_min_size(rect.min, Vec2::splat(size));
@@ -891,7 +922,7 @@ fn observation_grid(width: f32, height: f32, count: usize) -> (f32, usize) {
     result
 }
 
-fn language_header(ui: &mut egui::Ui) {
+pub(crate) fn language_header(ui: &mut egui::Ui) {
     let mut language = crate::i18n::Language::current();
     ui.horizontal(|ui| {
         ui.set_min_height(38.0);
@@ -1430,24 +1461,20 @@ mod tests {
     }
 
     #[test]
-    fn large_inspection_memory_fits_phone_height_without_an_inner_scroller() {
+    fn visible_information_fits_phone_height_without_an_inner_scroller() {
         use temporal_chess_engine::{
             engine::Engine,
-            model::{Color, Observation, State},
+            model::{Color, State},
         };
-        let mut queen = State::new(PieceKind::Q, Color::White, Sq(3, 3));
-        for x in 0..8 {
-            for y in 0..8 {
-                for inverted in [false, true] {
-                    queen.remembered.insert(Observation {
-                        square: Sq(x, y),
-                        kind: PieceKind::Q,
-                        inverted,
-                    });
+        let mut lines = vec![vec![State::new(PieceKind::Q, Color::White, Sq(3, 3))]];
+        for x in 2..=4 {
+            for y in 2..=4 {
+                if (x, y) != (3, 3) {
+                    lines.push(vec![State::new(PieceKind::N, Color::Black, Sq(x, y))]);
                 }
             }
         }
-        let engine = Engine::from_worldlines(vec![vec![queen]], Color::White).unwrap();
+        let engine = Engine::from_worldlines(lines, Color::White).unwrap();
         let mut game = GameUi {
             engine,
             inspect_mode: true,
@@ -1471,7 +1498,7 @@ mod tests {
     }
 
     #[test]
-    fn inspector_hud_shows_current_information_and_absent_remembered_pieces() {
+    fn both_inspectors_show_current_information() {
         use temporal_chess_engine::{
             engine::Engine,
             model::{Color, Observation, State},
@@ -1479,12 +1506,9 @@ mod tests {
         let mut queen = State::new(PieceKind::Q, Color::White, Sq(3, 3));
         let knight = State::new(PieceKind::N, Color::Black, Sq(5, 5));
         let bishop = State::new(PieceKind::B, Color::Black, Sq(3, 6));
-        queen.remembered.insert(Observation::from_state(&knight));
-        queen.remembered.insert(Observation {
-            square: Sq(0, 7),
-            kind: PieceKind::R { moved: false },
-            inverted: false,
-        });
+        queen
+            .acknowledged_observations
+            .insert(Observation::from_state(&knight));
         let engine =
             Engine::from_worldlines(vec![vec![queen], vec![knight], vec![bishop]], Color::White)
                 .unwrap();
@@ -1498,7 +1522,6 @@ mod tests {
         let output = frame(&ctx, &mut game, vec![]);
         text_position(&output, "f6");
         text_position(&output, "d7");
-        text_position(&output, "a8");
         game.inspect_mode = false;
         game.worldline_mode = true;
         game.click_square(0, Sq(3, 3));
@@ -1506,7 +1529,6 @@ mod tests {
         let worldline_output = frame(&ctx, &mut game, vec![]);
         text_position(&worldline_output, "f6");
         text_position(&worldline_output, "d7");
-        text_position(&worldline_output, "a8");
     }
 
     #[test]
@@ -1539,7 +1561,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_information_and_memory_do_not_add_section_rows() {
+    fn empty_information_does_not_add_a_section() {
         let ctx = egui::Context::default();
         crate::theme::configure(&ctx);
         let art = PieceArt::new(&ctx);
@@ -1553,7 +1575,7 @@ mod tests {
             .engine
             .piece_state(crate::controller::identity(piece))
             .unwrap();
-        assert!(state.informed.is_empty() && state.remembered.is_empty());
+        assert!(state.informed.is_empty());
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
             ui.set_max_width(300.0);
             inspection_hud(ui, &game, &art, piece);

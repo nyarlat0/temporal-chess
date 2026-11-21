@@ -209,16 +209,21 @@ mod tests {
         );
     }
     #[test]
-    fn hash_collisions_and_changed_memory_cannot_reuse_a_position() {
+    fn hash_collisions_and_dismissed_reactions_cannot_reuse_a_position() {
         let state = State::new(PieceKind::N, Color::White, Sq(1, 0));
-        let a = Arc::new(Engine::from_worldlines(vec![vec![state.clone()]], Color::White).unwrap());
+        let target = State::new(PieceKind::N, Color::Black, Sq(2, 2));
+        let a = Arc::new(
+            Engine::from_worldlines(
+                vec![vec![state.clone()], vec![target.clone()]],
+                Color::White,
+            )
+            .unwrap(),
+        );
         let mut changed = state;
-        changed.remembered.insert(Observation {
-            square: Sq(3, 3),
-            kind: PieceKind::N,
-            inverted: true,
-        });
-        let b = Engine::from_worldlines(vec![vec![changed]], Color::White).unwrap();
+        changed
+            .acknowledged_observations
+            .insert(Observation::from_state(&target));
+        let b = Engine::from_worldlines(vec![vec![changed], vec![target]], Color::White).unwrap();
         assert_ne!(a.analysis_key(), b.analysis_key());
         let mut cache = Cache::default();
         cache.insert(42, a.clone());

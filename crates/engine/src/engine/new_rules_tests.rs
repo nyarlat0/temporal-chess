@@ -241,7 +241,9 @@ fn paid_wait_resets_reactions_according_to_react_multiple_and_free_wait_does_not
                 free || !global
             );
             assert_eq!(
-                engine.history.worldlines[1][4].remembered.is_empty(),
+                engine.history.worldlines[1][4]
+                    .acknowledged_observations
+                    .is_empty(),
                 free || !global
             );
         }

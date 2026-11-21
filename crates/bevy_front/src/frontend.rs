@@ -63,6 +63,12 @@ fn update_game(mut game: ResMut<GameUi>) {
     if game.replay_job.is_some() {
         game.poll_replay();
     }
+    if game.tutorial.is_some() {
+        let suspended = crate::tutorial::background_game(&mut game);
+        if suspended.replay_job.is_some() {
+            suspended.poll_replay();
+        }
+    }
 }
 
 fn draw(

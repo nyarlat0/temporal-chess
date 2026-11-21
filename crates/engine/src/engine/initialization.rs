@@ -126,11 +126,20 @@ impl Engine {
         Self::restore_history(history, turn, true, true)
     }
     pub(super) fn restore_history(
-        history: History,
+        mut history: History,
         turn: Color,
         auto: bool,
         adjudicate: bool,
     ) -> Result<Self, EngineErr> {
+        if matches!(
+            history.status,
+            super::GameStatus::Finished(super::GameOutcome::Victory {
+                reason: super::WinReason::Checkmate,
+                ..
+            })
+        ) {
+            history.status = super::GameStatus::Ongoing;
+        }
         if !history.starting_position.is_valid() || history.beginning > history.horizon {
             return Err(EngineErr::InvalidHistory("invalid timeline bounds"));
         }

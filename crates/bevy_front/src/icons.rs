@@ -29,7 +29,6 @@ pub enum Icon {
     Information,
     Inspect,
     PastClock,
-    Memory,
     CancelledMove,
 }
 
@@ -128,7 +127,7 @@ pub fn paint(painter: &egui::Painter, icon: Icon, rect: Rect, stroke: Stroke) {
         painter.rect_stroke(Rect::from_min_max(a, b), 2.0, stroke, StrokeKind::Inside);
     };
     match icon {
-        Icon::Inspect | Icon::Memory | Icon::Information | Icon::Settings => {
+        Icon::Inspect | Icon::Information | Icon::Settings => {
             for outline in lucide_outline(icon) {
                 let points: Vec<_> = outline
                     .iter()
@@ -309,7 +308,6 @@ fn pawn_outline() -> &'static [Vec<[f32; 2]>] {
 
 fn lucide_outline(icon: Icon) -> &'static [Vec<[f32; 2]>] {
     static INFO: std::sync::OnceLock<Vec<Vec<[f32; 2]>>> = std::sync::OnceLock::new();
-    static BRAIN: std::sync::OnceLock<Vec<Vec<[f32; 2]>>> = std::sync::OnceLock::new();
     static EYE: std::sync::OnceLock<Vec<Vec<[f32; 2]>>> = std::sync::OnceLock::new();
     static SETTINGS: std::sync::OnceLock<Vec<Vec<[f32; 2]>>> = std::sync::OnceLock::new();
     match icon {
@@ -320,9 +318,6 @@ fn lucide_outline(icon: Icon) -> &'static [Vec<[f32; 2]>] {
         }
         Icon::Inspect => {
             INFO.get_or_init(|| svg_outlines(include_str!("../assets/icons/lucide/info.svg")))
-        }
-        Icon::Memory => {
-            BRAIN.get_or_init(|| svg_outlines(include_str!("../assets/icons/lucide/brain.svg")))
         }
         _ => &[],
     }

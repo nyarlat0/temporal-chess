@@ -74,6 +74,7 @@ pub struct WorldlineFocusTransition {
 
 #[derive(Resource)]
 pub struct GameUi {
+    pub tutorial: Option<crate::tutorial::Session>,
     pub sound_events: Vec<crate::sound::Event>,
     pub online: crate::multiplayer::OnlineState,
     pub bot: crate::tempfish::BotState,
@@ -189,6 +190,7 @@ impl TimelineViewport {
 impl Default for GameUi {
     fn default() -> Self {
         Self {
+            tutorial: None,
             online: Default::default(),
             bot: Default::default(),
             new_game_bot: Default::default(),
@@ -404,13 +406,15 @@ impl GameUi {
             .windows(2)
             .enumerate()
             .filter_map(|(i, pair)| {
-                BoardTransition::between(
+                let mut motion = BoardTransition::between(
                     if i == 0 { before } else { after },
                     after,
                     pair[0],
                     pair[1],
                     command.spatial_move(),
-                )
+                )?;
+                motion.add_arrival_deaths(before, after);
+                Some(motion)
             })
             .collect::<std::collections::VecDeque<_>>();
         // A command may erase its own route. Its undo snapshot still contains
@@ -920,6 +924,27 @@ impl GameUi {
         self.worldline_transition = None;
     }
 
+    pub fn toggle_worldline(&mut self) {
+        self.worldline_mode = !self.worldline_mode;
+        self.worldline_selected = None;
+        self.worldline_state = None;
+        self.worldline_transition = None;
+        self.clear_selection();
+        self.inspect_mode = false;
+    }
+
+    pub fn tutorial_clicked(&mut self, control: crate::tutorial::Control) {
+        if let Some(tutorial) = &mut self.tutorial {
+            tutorial.clicked(control);
+        }
+    }
+
+    pub fn tutorial_tool_enabled(&self, control: crate::tutorial::Control) -> bool {
+        self.tutorial
+            .as_ref()
+            .is_none_or(|session| session.tool_enabled(control))
+    }
+
     pub fn click_square(&mut self, t: BoardTime, sq: Sq) {
         self.click_square_with_direction(t, sq, false);
     }
@@ -936,6 +961,14 @@ impl GameUi {
             return;
         }
         if !self.inspect_mode && !self.worldline_mode && self.lab_click(t, sq) {
+            return;
+        }
+        if (self.inspect_mode || self.worldline_mode)
+            && self
+                .tutorial
+                .as_ref()
+                .is_some_and(|lesson| !lesson.inspect_target(t, sq))
+        {
             return;
         }
         if reverse && !self.worldline_mode && !self.inspect_mode {
@@ -992,6 +1025,9 @@ impl GameUi {
                     .and_then(|at| states.iter().position(|p| p.2 == at))
                     .map_or(0, |i| (i + 1) % states.len());
                 self.focus_worldline(states[next].2, false);
+                if let Some(tutorial) = &mut self.tutorial {
+                    tutorial.inspected(t, sq);
+                }
             } else {
                 self.worldline_selected = None;
                 self.worldline_state = None;
@@ -1042,7 +1078,14 @@ impl GameUi {
                     self.inspected = None;
                 }
             }
-            1 => self.choose(pieces[0]),
+            1 => {
+                self.choose(pieces[0]);
+                if self.inspect_mode
+                    && let Some(tutorial) = &mut self.tutorial
+                {
+                    tutorial.inspected(t, sq);
+                }
+            }
             _ => self.overlapping = pieces,
         }
     }
@@ -1061,6 +1104,20 @@ impl GameUi {
 
     fn submit(&mut self, command: Command) {
         if !self.can_submit() || self.replay_job.is_some() || self.playback_busy() {
+            return;
+        }
+        if self
+            .tutorial
+            .as_ref()
+            .is_some_and(|tutorial| !tutorial.accepts_input(command))
+        {
+            self.message(
+                crate::message!(
+                    "Выполните действие из текущего задания.",
+                    "Complete the action in the current instruction."
+                ),
+                true,
+            );
             return;
         }
         if self.online.enabled {
@@ -1171,6 +1228,11 @@ impl GameUi {
             }
         }
         self.after_command(result, command.to_string());
+        if error.is_none()
+            && let Some(tutorial) = &mut self.tutorial
+        {
+            tutorial.played(command);
+        }
         error.map_or(Ok(()), Err)
     }
 

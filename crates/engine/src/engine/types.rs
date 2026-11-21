@@ -16,6 +16,8 @@ pub enum CaptureOutcome {
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum WinReason {
+    /// Read old Lab settings that declared mate before the king was taken.
+    #[doc(hidden)]
     Checkmate,
     KingCaptured,
     Paradox,
@@ -186,12 +188,14 @@ impl Engine {
         hash.finish()
     }
 
-    /// Conservative cache weight, counting states, remembered identities,
+    /// Conservative cache weight, counting states, observations,
     /// cancellation snapshots and projected board cells. Not game logic.
     pub fn analysis_weight(&self) -> usize {
         fn line_weight(line: &Worldline) -> usize {
             line.iter()
-                .map(|s| 1 + s.informed.len() + s.remembered.len() + s.loop_pivots.len())
+                .map(|s| {
+                    1 + s.informed.len() + s.acknowledged_observations.len() + s.loop_pivots.len()
+                })
                 .sum::<usize>()
                 + line.gaps().len()
         }

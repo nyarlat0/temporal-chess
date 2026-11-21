@@ -140,9 +140,10 @@ pub struct State {
     /// Current capturable appearances on this occurrence's board. Derived anew
     /// from the projection; disappearing targets must not leave stale reactions.
     pub informed: BTreeSet<Observation>,
-    /// Additive memory acknowledged by a player's turn action. Reconciliation,
-    /// free waiting and calculation never overwrite it.
-    pub remembered: BTreeSet<Observation>,
+    /// Already handled appearances in the current view. Leaving sight drops
+    /// the acknowledgement, so the same appearance can trigger a new reaction.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub acknowledged_observations: BTreeSet<Observation>,
     // points in time, on which piece inverted to and began moving to past.
     pub loop_pivots: Vec<BoardTime>,
 }
@@ -376,7 +377,7 @@ impl State {
             color,
             inverted: false,
             informed: BTreeSet::new(),
-            remembered: BTreeSet::new(),
+            acknowledged_observations: BTreeSet::new(),
             loop_pivots: Vec::new(),
         }
     }
@@ -396,7 +397,7 @@ impl State {
             color: self.color,
             inverted: self.inverted,
             informed: BTreeSet::new(),
-            remembered: BTreeSet::new(),
+            acknowledged_observations: BTreeSet::new(),
             loop_pivots: self.loop_pivots.clone(),
         }
     }
@@ -426,7 +427,7 @@ impl State {
         self.kind = kind;
     }
 
-    /// A returning occurrence exactly at a remembered temporal pivot.
+    /// A returning occurrence exactly at a temporal pivot.
     pub fn is_loop_exit(&self) -> bool {
         !self.inverted && self.loop_pivots.last() == Some(&self.t)
     }

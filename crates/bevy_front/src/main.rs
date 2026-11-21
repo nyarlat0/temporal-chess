@@ -14,6 +14,7 @@ mod piece_art;
 mod sound;
 mod tempfish;
 mod theme;
+mod tutorial;
 mod view;
 mod worldline_view;
 

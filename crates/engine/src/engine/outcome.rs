@@ -143,45 +143,6 @@ impl Engine {
             }))
     }
 
-    /// Probe commands without recursively adjudicating their resulting turns.
-    /// Only surviving, non-paradoxical continuations count as a defence.
-    /// The initiating move may still cancel itself during reconciliation.
-    fn can_save_king(&self, side: Color) -> Result<bool, EngineErr> {
-        let mut prepared = self.clone();
-        prepared.turn = side;
-        if prepared.can_decline_reactions() {
-            return Ok(true);
-        }
-        prepared.history.calculation.interactive = false;
-        prepared.history.status = GameStatus::Ongoing;
-        prepared.reconcile()?;
-        let sources: Vec<_> = prepared.move_sources().collect();
-        for piece in sources {
-            if piece.rights.ordinary {
-                for t in prepared.possible_skips(Self::piece_at(piece)) {
-                    let mut probe = prepared.clone();
-                    let result = probe.skip_with_information(Self::piece_at(piece), t);
-                    if result.is_ok() && !probe.king_died(side) {
-                        return Ok(true);
-                    }
-                }
-            }
-            for mv in prepared.candidate_moves(piece.origin, piece.age)? {
-                let mut probe = prepared.clone();
-                let result = probe.apply_move_inner(mv).and_then(|()| {
-                    probe.turn = side.opposite();
-                    probe.reconcile()
-                });
-                if result.is_ok() && !probe.king_died(side) {
-                    // A paradox is still a playable losing command, but it
-                    // cannot serve as a defence against an otherwise final mate.
-                    return Ok(true);
-                }
-            }
-        }
-        Ok(false)
-    }
-
     pub(super) fn finish_command(&mut self, actor: Color) -> Result<(), EngineErr> {
         if self.outcome().is_some() {
             return Ok(());
@@ -240,31 +201,13 @@ impl Engine {
 
     /// Return whether the player had to wait or the game ended.
     fn adjudicate_blocked(&mut self, player: Color, hand_over: bool) -> Result<bool, EngineErr> {
-        // An inverted threat alone does not trigger the mate defence probe.
-        let threatened = !self.checks(player)?.ordinary.is_empty();
-        let can_act = if threatened {
-            self.can_save_king(player)?
-        } else {
-            self.has_available_action(player)?
-        };
-        if can_act {
+        if self.has_available_action(player)? {
             return Ok(false);
         }
+        let threatened = !self.checks(player)?.ordinary.is_empty();
         let debt = self.has_past_debt(player.opposite());
-        let eligible = if threatened {
-            self.has_active_pieces(player)
-        } else {
-            self.active_occurrences(player).any(|p| p.rights.ordinary)
-        };
-        if eligible && !debt {
-            self.history.status = GameStatus::Finished(if threatened {
-                GameOutcome::Victory {
-                    winner: player.opposite(),
-                    reason: WinReason::Checkmate,
-                }
-            } else {
-                GameOutcome::Stalemate
-            });
+        if !threatened && !debt && self.active_occurrences(player).any(|p| p.rights.ordinary) {
+            self.history.status = GameStatus::Finished(GameOutcome::Stalemate);
             return Ok(true);
         }
         self.history.status = GameStatus::Waiting {

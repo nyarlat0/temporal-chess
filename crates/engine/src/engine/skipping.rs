@@ -30,7 +30,7 @@ impl Engine {
             } else {
                 source.t
             };
-            candidate.remember_information(actor, limit);
+            candidate.acknowledge_information(actor, limit);
             candidate.deact_prev_reactable(actor, limit);
             candidate.history.calculation.acknowledged.clear();
             candidate.history.calculation.responsible = Some(actor);
@@ -40,7 +40,7 @@ impl Engine {
 
     /// Waiting acknowledges the resulting view on the traversed occurrences,
     /// after reconciliation has resolved their actual positions and targets.
-    /// Other occurrences and other pieces retain their reaction memory.
+    /// Other occurrences and other pieces keep their current reactions.
     pub(super) fn skip_with_information(
         &mut self,
         source: PieceAt,
@@ -71,18 +71,20 @@ impl Engine {
         }
         loop {
             self.reconcile_with_auto_wait(auto)?;
-            let mut learned = false;
+            let mut acknowledged = false;
             for id in &traversed {
                 if let Some(location) = self.projection.pieces.get(id) {
                     let state = &mut self.history.worldlines[location.wid][location.age];
-                    let before = state.remembered.len();
-                    state.remembered.extend(state.informed.iter().copied());
-                    learned |= state.remembered.len() != before;
+                    let before = state.acknowledged_observations.len();
+                    state
+                        .acknowledged_observations
+                        .extend(state.informed.iter().copied());
+                    acknowledged |= state.acknowledged_observations.len() != before;
                 }
             }
             // Acknowledging a reaction may release a calculation barrier. If it
-            // does, also learn the resulting view, not a stale intermediate one.
-            if !learned {
+            // does, also acknowledge the resulting view.
+            if !acknowledged {
                 return Ok(());
             }
         }

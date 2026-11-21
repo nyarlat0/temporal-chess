@@ -66,13 +66,15 @@ impl Engine {
         Ok(ValidRes::Unchanged)
     }
 
-    /// Derive reactions from the current view and acknowledged memory. Never
-    /// learn merely by calculating a board: doing so would consume a reaction.
+    /// A reaction lasts while its new target is visible and unacknowledged.
     pub(super) fn update_infos(&mut self) -> Result<(), EngineErr> {
         for line in &mut self.history.worldlines {
             for state in line.iter_mut() {
                 state.informed.clear();
                 state.rights.new_information = false;
+                if !state.alive || state.color != Color::from_board(state.t) {
+                    state.acknowledged_observations.clear();
+                }
             }
         }
         for (&t, board) in &self.projection.boards {
@@ -85,7 +87,11 @@ impl Engine {
                 .collect();
             for (id, info) in board.calc_info_with_en_passant(&adjacent) {
                 if !self.history.worldlines[id.wid].is_borrowed(id.age) {
-                    self.history.worldlines[id.wid][id.age].informed = info;
+                    let state = &mut self.history.worldlines[id.wid][id.age];
+                    state
+                        .acknowledged_observations
+                        .retain(|target| info.contains(target));
+                    state.informed = info;
                 }
             }
         }
@@ -106,7 +112,7 @@ impl Engine {
                 {
                     continue;
                 }
-                for target in state.informed.difference(&state.remembered) {
+                for target in state.informed.difference(&state.acknowledged_observations) {
                     if self.history.rules.chain_info_activation || first_seen.insert(*target) {
                         state.rights.new_information = true;
                     }
@@ -116,10 +122,9 @@ impl Engine {
         Ok(())
     }
 
-    /// Accept the pre-command view on the boards whose reactions expire. Include
-    /// suppressed later observations too, so deduplication cannot postpone an
-    /// already acknowledged target's reaction until another recalculation.
-    pub(super) fn remember_information(&mut self, side: Color, until_t: BoardTime) {
+    /// Dismiss the current observations on boards whose reactions expire,
+    /// including those suppressed by first-observer selection.
+    pub(super) fn acknowledge_information(&mut self, side: Color, until_t: BoardTime) {
         for state in self
             .history
             .worldlines
@@ -127,7 +132,9 @@ impl Engine {
             .flat_map(|line| line.iter_mut())
         {
             if state.color == side && state.t <= until_t {
-                state.remembered.extend(state.informed.iter().copied());
+                state
+                    .acknowledged_observations
+                    .extend(state.informed.iter().copied());
             }
         }
     }

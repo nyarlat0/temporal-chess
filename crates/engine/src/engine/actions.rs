@@ -28,7 +28,7 @@ impl Engine {
                 return Err(EngineErr::WrongMove);
             }
             candidate.update_infos()?;
-            candidate.remember_information(candidate.turn, BoardTime::MAX);
+            candidate.acknowledge_information(candidate.turn, BoardTime::MAX);
             for state in candidate
                 .history
                 .worldlines
@@ -114,13 +114,13 @@ impl Engine {
             return Err(EngineErr::WrongPiece);
         }
         // Acknowledge the old view before replacing moves or editing routes.
-        // Reactions beyond this board remain unanswered and retain their memory.
+        // Depending on the rules, reactions beyond this board remain unanswered.
         let reaction_limit = if self.history.rules.global_reaction_reset {
             BoardTime::MAX
         } else {
             piece.t
         };
-        self.remember_information(piece.color, reaction_limit);
+        self.acknowledge_information(piece.color, reaction_limit);
         if let Some(old) = self.history.moves.get(&mv.id()).copied() {
             if old.pid != mv.pid || (old.castling().is_some() && !mv.to_past()) {
                 self.undo_mv(old.id())?;

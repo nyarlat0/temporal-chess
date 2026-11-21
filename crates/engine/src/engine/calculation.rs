@@ -62,11 +62,11 @@ impl Engine {
                         // Keep current observations/rights in both alternatives.
                         let rights = line[age].rights;
                         let informed = line[age].informed.clone();
-                        let remembered = line[age].remembered.clone();
+                        let acknowledged = line[age].acknowledged_observations.clone();
                         line[age] = previous.clone();
                         line[age].rights = rights;
                         line[age].informed = informed;
-                        line[age].remembered = remembered;
+                        line[age].acknowledged_observations = acknowledged;
                     } else {
                         line.states.remove(age);
                     }
@@ -255,7 +255,7 @@ impl Engine {
     }
 }
 
-/// Rights and remembered information are observations, not physical edits.
+/// Move rights and observations are independent of a state's physical placement.
 fn same_physical_state(a: &State, b: &State) -> bool {
     a.t == b.t
         && a.x == b.x
