@@ -28,13 +28,13 @@
     #loading { position:fixed; inset:0; display:grid; place-content:center; text-align:center; gap:12px; background:#16181d; z-index:2; padding:24px; }
     #loading small { color:#9ba3b4; max-width:480px; }
     #loading[hidden] { display:none; }
-    #mobile-import {
+    .native-dialog {
       box-sizing:border-box;
       position:fixed;
-      inset:calc(var(--import-viewport-top, 0px) + max(12px, env(safe-area-inset-top))) 0 auto;
+      inset:calc(var(--dialog-viewport-top, 0px) + max(12px, env(safe-area-inset-top))) 0 auto;
       margin:0 auto;
       width:min(560px, calc(100% - 24px));
-      max-height:calc(var(--import-viewport-height, 100dvh) - max(12px, env(safe-area-inset-top)) - 12px);
+      max-height:calc(var(--dialog-viewport-height, 100dvh) - max(12px, env(safe-area-inset-top)) - 12px);
       overflow:auto;
       padding:16px;
       color:inherit;
@@ -42,29 +42,29 @@
       border:1px solid #373c47;
       border-radius:14px;
     }
-    #mobile-import::backdrop { background:rgba(0,0,0,0.55); }
-    #mobile-import h2 { margin:0 0 8px; font-size:19px; }
-    #mobile-import label { display:block; margin-bottom:10px; color:#a3abbc; }
-    #mobile-import fieldset { min-width:0; margin:0; padding:0; border:0; }
-    #import-record {
+    .native-dialog::backdrop { background:rgba(0,0,0,0.55); }
+    .native-dialog h2 { margin:0 0 8px; font-size:19px; }
+    .native-dialog label { display:block; margin-bottom:10px; color:#a3abbc; }
+    .native-dialog fieldset { min-width:0; margin:0; padding:0; border:0; }
+    .native-dialog textarea, .native-dialog input {
       box-sizing:border-box;
       display:block;
       width:100%;
-      height:clamp(80px, 35dvh, 300px);
       padding:10px;
       color:inherit;
       background:#16181d;
       border:1px solid #373c47;
       border-radius:8px;
       font:16px monospace;
-      resize:vertical;
       touch-action:auto;
       user-select:text;
       -webkit-user-select:text;
     }
-    #import-record:focus-visible { outline:2px solid #9cb2ef; outline-offset:1px; }
-    .import-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
-    #mobile-import button {
+    .native-dialog textarea { height:clamp(80px, 35dvh, 300px); resize:vertical; }
+    .native-dialog input { min-height:44px; }
+    .native-dialog :is(textarea, input):focus-visible { outline:2px solid #9cb2ef; outline-offset:1px; }
+    .dialog-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
+    .native-dialog button {
       min-height:44px;
       padding:0 12px;
       color:inherit;
@@ -73,29 +73,40 @@
       border-radius:8px;
       font:inherit;
     }
-    #mobile-import button[type="submit"] { background:#3f4c6e; }
-    #import-status { margin:0; overflow-wrap:anywhere; }
-    #import-status:not(:empty) { margin-top:10px; }
-    #import-status[data-error="true"] { color:#ff8993; }
-    html:lang(ru) #mobile-import [lang="en"],
-    html:lang(en) #mobile-import [lang="ru"] { display:none; }
+    .native-dialog button[type="submit"] { background:#3f4c6e; }
+    .dialog-status { margin:0; overflow-wrap:anywhere; }
+    .dialog-status:not(:empty) { margin-top:10px; }
+    .dialog-status[data-error="true"] { color:#ff8993; }
+    html:lang(ru) .native-dialog [lang="en"],
+    html:lang(en) .native-dialog [lang="ru"] { display:none; }
   </style>
 </head>
 <body>
   <canvas id="game" tabindex="0" aria-label="Temporal Chess"></canvas>
-  <dialog id="mobile-import" aria-labelledby="import-title">
+  <dialog id="mobile-import" class="native-dialog" aria-labelledby="import-title">
     <h2 id="import-title" tabindex="-1" autofocus><span lang="ru">Загрузить партию</span><span lang="en">Import game</span></h2>
     <form id="import-form">
       <fieldset id="import-fields">
         <label for="import-record"><span lang="ru">Введите запись партии или вставьте её из буфера обмена.</span><span lang="en">Type or paste a game record.</span></label>
         <textarea id="import-record" spellcheck="false" autocapitalize="off" autocorrect="off" required></textarea>
-        <div class="import-actions">
+        <div class="dialog-actions">
           <button type="submit"><span lang="ru">Загрузить</span><span lang="en">Import</span></button>
           <button type="button" id="import-cancel"><span lang="ru">Отмена</span><span lang="en">Cancel</span></button>
         </div>
       </fieldset>
     </form>
-    <p id="import-status" role="status"></p>
+    <p id="import-status" class="dialog-status" role="status"></p>
+  </dialog>
+  <dialog id="mobile-input" class="native-dialog" aria-labelledby="mobile-input-title">
+    <h2 id="mobile-input-title" tabindex="-1" autofocus></h2>
+    <form id="mobile-input-form">
+      <input id="mobile-input-value" type="text" aria-labelledby="mobile-input-title" aria-describedby="mobile-input-status" spellcheck="false" autocapitalize="off" autocorrect="off" enterkeyhint="done">
+      <p id="mobile-input-status" class="dialog-status" data-error="true" role="status"></p>
+      <div class="dialog-actions">
+        <button type="submit"><span lang="ru">Готово</span><span lang="en">Done</span></button>
+        <button type="button" id="mobile-input-cancel"><span lang="ru">Отмена</span><span lang="en">Cancel</span></button>
+      </div>
+    </form>
   </dialog>
   <div id="loading"><strong>Temporal Chess</strong><small id="status">Loading game…</small></div>
   <noscript>JavaScript and WebGL2 are required. Для игры необходимы JavaScript и WebGL2.</noscript>
@@ -107,10 +118,14 @@
     const importDialog = document.getElementById('mobile-import');
     const importFields = document.getElementById('import-fields');
     const importRecord = document.getElementById('import-record');
+    const inputDialog = document.getElementById('mobile-input');
+    function signalAction(dialog, action) {
+      dialog.dataset.action = action;
+      dialog.dispatchEvent(new Event('nolan-native-form-action', { bubbles: true }));
+    }
     function chooseImportAction(action) {
       if (importFields.disabled) return;
-      importDialog.dataset.action = action;
-      importDialog.dispatchEvent(new Event('nolan-import-action'));
+      signalAction(importDialog, action);
     }
     document.getElementById('import-form').addEventListener('submit', event => {
       event.preventDefault();
@@ -121,20 +136,30 @@
       event.preventDefault();
       chooseImportAction('cancel');
     });
+    document.getElementById('mobile-input-form').addEventListener('submit', event => {
+      event.preventDefault();
+      signalAction(inputDialog, 'submit');
+    });
+    document.getElementById('mobile-input-cancel').addEventListener('click', () => inputDialog.close());
+    document.getElementById('mobile-input-value').addEventListener('input', () => {
+      document.getElementById('mobile-input-status').textContent = '';
+    });
     // Leave native editing and clipboard defaults in place. The canvas input
     // integration must not receive these events or steal focus from the field.
-    for (const name of ['keydown', 'keyup', 'copy', 'cut', 'paste', 'touchstart', 'touchend']) {
-      importDialog.addEventListener(name, event => event.stopPropagation());
+    for (const dialog of [importDialog, inputDialog]) {
+      for (const name of ['keydown', 'keyup', 'copy', 'cut', 'paste', 'touchstart', 'touchend']) {
+        dialog.addEventListener(name, event => event.stopPropagation());
+      }
     }
     if (window.visualViewport) {
       const visual = window.visualViewport;
-      const fitImportDialog = () => {
-        importDialog.style.setProperty('--import-viewport-height', `${visual.height}px`);
-        importDialog.style.setProperty('--import-viewport-top', `${visual.offsetTop}px`);
+      const fitDialogs = () => {
+        document.documentElement.style.setProperty('--dialog-viewport-height', `${visual.height}px`);
+        document.documentElement.style.setProperty('--dialog-viewport-top', `${visual.offsetTop}px`);
       };
-      visual.addEventListener('resize', fitImportDialog);
-      visual.addEventListener('scroll', fitImportDialog);
-      fitImportDialog();
+      visual.addEventListener('resize', fitDialogs);
+      visual.addEventListener('scroll', fitDialogs);
+      fitDialogs();
     }
     canvas.addEventListener('contextmenu', event => event.preventDefault());
     canvas.addEventListener('keydown', event => {

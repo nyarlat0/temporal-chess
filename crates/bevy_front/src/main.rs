@@ -9,6 +9,7 @@ mod i18n;
 mod icons;
 mod input;
 mod lab;
+mod mobile_input;
 mod multiplayer;
 mod piece_art;
 mod sound;

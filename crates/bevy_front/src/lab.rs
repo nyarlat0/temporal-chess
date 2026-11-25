@@ -245,8 +245,9 @@ pub fn panel(ui: &mut egui::Ui, game: &mut GameUi, art: &crate::piece_art::Piece
         });
         ui.separator();
         ui.horizontal(|ui| {
-            ui.label(crate::tr!("Добавить доски", "Add boards"));
-            ui.add(egui::DragValue::new(&mut lab.boards).range(1..=i64::MAX));
+            let label = crate::tr!("Добавить доски", "Add boards");
+            ui.label(label);
+            crate::mobile_input::integer(ui, &mut lab.boards, label, 1..=i64::MAX, 1.0);
         });
         ui.horizontal(|ui| {
             if ui
@@ -273,14 +274,17 @@ pub fn panel(ui: &mut egui::Ui, game: &mut GameUi, art: &crate::piece_art::Piece
             }
         });
         ui.horizontal(|ui| {
-            ui.label(crate::tr!("Удалить от доски", "Delete from board"));
-            lab.board_to_remove = lab.board_to_remove.clamp(
-                game.engine.history().beginning(),
-                game.engine.history().horizon(),
-            );
-            ui.add(
-                egui::DragValue::new(&mut lab.board_to_remove)
-                    .range(game.engine.history().beginning()..=game.engine.history().horizon()),
+            let label = crate::tr!("Удалить от доски", "Delete from board");
+            ui.label(label);
+            let beginning = game.engine.history().beginning();
+            let horizon = game.engine.history().horizon();
+            lab.board_to_remove = lab.board_to_remove.clamp(beginning, horizon);
+            crate::mobile_input::integer(
+                ui,
+                &mut lab.board_to_remove,
+                label,
+                beginning..=horizon,
+                1.0,
             );
         });
         let delete_label = if lab.board_to_remove < 0 {
@@ -302,11 +306,9 @@ pub fn panel(ui: &mut egui::Ui, game: &mut GameUi, art: &crate::piece_art::Piece
             game.jump_to = Some(0);
         }
         ui.horizontal(|ui| {
-            ui.label(crate::tr!(
-                "Шагов продления линии",
-                "Worldline extension steps"
-            ));
-            ui.add(egui::DragValue::new(&mut lab.prolong_steps).range(1..=usize::MAX));
+            let label = crate::tr!("Шагов продления линии", "Worldline extension steps");
+            ui.label(label);
+            crate::mobile_input::integer(ui, &mut lab.prolong_steps, label, 1..=usize::MAX, 1.0);
         });
         ui.horizontal(|ui| {
             ui.label(crate::tr!("Первый ход", "Side to move"));

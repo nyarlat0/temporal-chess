@@ -234,29 +234,6 @@ pub fn draw(ctx: &egui::Context, game: &mut GameUi, shell: &mut ShellState, art:
 }
 
 #[cfg(target_arch = "wasm32")]
-pub(crate) fn install_import_wakeup(proxy: &bevy::winit::EventLoopProxyWrapper) {
-    use wasm_bindgen::{JsCast, closure::Closure};
-
-    let Some(dialog) = web_sys::window()
-        .and_then(|window| window.document())
-        .and_then(|document| document.get_element_by_id("mobile-import"))
-    else {
-        return;
-    };
-    let proxy = (**proxy).clone();
-    let wake = Closure::<dyn FnMut()>::new(move || {
-        let _ = proxy.send_event(bevy::winit::WinitUserEvent::WakeUp);
-    });
-    if dialog
-        .add_event_listener_with_callback("nolan-import-action", wake.as_ref().unchecked_ref())
-        .is_ok()
-    {
-        // The dialog and its listener live for the lifetime of the page.
-        wake.forget();
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
 fn mobile_import(ctx: &egui::Context, game: &mut GameUi) -> Option<bool> {
     use wasm_bindgen::JsCast;
     use web_sys::{HtmlDialogElement, HtmlFieldSetElement, HtmlTextAreaElement};

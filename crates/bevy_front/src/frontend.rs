@@ -54,7 +54,7 @@ fn configure_ui(
     theme::configure(ctx);
     commands.insert_resource(PieceArt::new(ctx));
     #[cfg(target_arch = "wasm32")]
-    crate::dialogs::install_import_wakeup(&proxy);
+    crate::mobile_input::install_wakeup(&proxy);
     Ok(())
 }
 

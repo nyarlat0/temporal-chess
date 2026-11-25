@@ -1078,7 +1078,7 @@ pub fn undo_notification(ctx: &egui::Context, game: &mut GameUi) {
 
 pub fn lab_controls(ui: &mut egui::Ui, online: &mut OnlineState) {
     ui.label(crate::tr!("Адрес сервера", "Server URL"));
-    ui.text_edit_singleline(&mut online.endpoint);
+    server_address(ui, &mut online.endpoint);
     ui.horizontal_wrapped(|ui| {
         ui.selectable_value(
             &mut online.preference,
@@ -1096,6 +1096,17 @@ pub fn lab_controls(ui: &mut egui::Ui, online: &mut OnlineState) {
             crate::tr!("Чёрные", "Black"),
         );
     });
+}
+
+fn server_address(ui: &mut egui::Ui, endpoint: &mut String) {
+    crate::mobile_input::text(
+        ui,
+        endpoint,
+        crate::tr!("Адрес сервера", "Server URL"),
+        "wss://example.com/ws",
+        crate::mobile_input::Keyboard::Url,
+        None,
+    );
 }
 
 pub fn creation_panel(ui: &mut egui::Ui, game: &mut GameUi) {
@@ -1200,10 +1211,14 @@ pub fn creation_panel(ui: &mut egui::Ui, game: &mut GameUi) {
                     }
                 }
                 ui.separator();
-                ui.add(
-                    egui::TextEdit::singleline(&mut game.online.room_input)
-                        .hint_text(crate::tr!("Код комнаты", "Room code"))
-                        .char_limit(12),
+                let room_code = crate::tr!("Код комнаты", "Room code");
+                crate::mobile_input::text(
+                    ui,
+                    &mut game.online.room_input,
+                    room_code,
+                    room_code,
+                    crate::mobile_input::Keyboard::Text,
+                    Some(12),
                 );
                 if ui
                     .add_enabled(
@@ -1215,10 +1230,7 @@ pub fn creation_panel(ui: &mut egui::Ui, game: &mut GameUi) {
                     game.online.action = Some(Action::Join);
                 }
                 egui::CollapsingHeader::new(crate::tr!("Сервер", "Server")).show(ui, |ui| {
-                    ui.add(
-                        egui::TextEdit::singleline(&mut game.online.endpoint)
-                            .hint_text("wss://example.com/ws"),
-                    );
+                    server_address(ui, &mut game.online.endpoint);
                 });
                 ui.small(crate::tr!(
                     "При подключении текущую позицию заменит сетевая партия.",

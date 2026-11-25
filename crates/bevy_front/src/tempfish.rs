@@ -543,11 +543,20 @@ fn settings_inner(ui: &mut egui::Ui, config: &mut Settings, mut online: Option<&
         config.threads = if automatic { 0 } else { automatic_threads() };
     }
     if !automatic {
-        ui.add(
-            egui::Slider::new(&mut config.threads, 1..=tempfish::parallel::MAX_THREADS)
-                .integer()
-                .text(crate::tr!("Потоки поиска", "Search workers")),
-        );
+        let label = crate::tr!("Потоки поиска", "Search workers");
+        let range = 1..=tempfish::parallel::MAX_THREADS;
+        let native = crate::mobile_input::available(ui.ctx());
+        ui.horizontal_wrapped(|ui| {
+            ui.add(
+                egui::Slider::new(&mut config.threads, range.clone())
+                    .integer()
+                    .show_value(!native)
+                    .text(label),
+            );
+            if native {
+                crate::mobile_input::integer(ui, &mut config.threads, label, range, 1.0);
+            }
+        });
     }
     ui.small(crate::tr!(
         "Больше узлов — сильнее игра, дольше расчёт. Каждый поток использует собственный кэш.",

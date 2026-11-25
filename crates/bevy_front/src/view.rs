@@ -462,13 +462,28 @@ fn sidebar_header(
                     &mut shell.disable_waiting_music,
                     crate::tr!("Выключить музыку ожидания", "Disable waiting music"),
                 );
-                ui.add(
-                    egui::Slider::new(&mut game.animation_speed, 0.25..=3.0)
-                        .step_by(0.05)
-                        .max_decimals(2)
-                        .suffix("×")
-                        .text(crate::tr!("Скорость анимаций", "Animation speed")),
-                );
+                let label = crate::tr!("Скорость анимаций", "Animation speed");
+                let native = crate::mobile_input::available(ui.ctx());
+                ui.horizontal_wrapped(|ui| {
+                    ui.add(
+                        egui::Slider::new(&mut game.animation_speed, 0.25..=3.0)
+                            .step_by(0.05)
+                            .max_decimals(2)
+                            .suffix("×")
+                            .show_value(!native)
+                            .text(label),
+                    );
+                    if native {
+                        crate::mobile_input::decimal(
+                            ui,
+                            &mut game.animation_speed,
+                            label,
+                            0.25..=3.0,
+                            0.05,
+                            "×",
+                        );
+                    }
+                });
             });
         shell.settings_open = open;
         icon_button(
@@ -1502,12 +1517,9 @@ pub fn starting_position_controls(
     }
     if let StartingPosition::TimeWar { separation } = position {
         ui.horizontal(|ui| {
-            ui.label(crate::tr!("Разнос по времени", "Time separation"));
-            ui.add(
-                egui::DragValue::new(separation)
-                    .range(3..=MAX_TIME_WAR_SEPARATION)
-                    .speed(2.0),
-            );
+            let label = crate::tr!("Разнос по времени", "Time separation");
+            ui.label(label);
+            crate::mobile_input::integer(ui, separation, label, 3..=MAX_TIME_WAR_SEPARATION, 2.0);
         });
         ui.small(crate::tr!("Нечётное число от 3 до 255. Белые — на 0, чёрные — на N. Ходы могут расширять историю в обе стороны.", "Odd number from 3 to 255. White starts at 0, Black at N. Moves can extend the timeline in both directions."));
         if *separation % 2 == 0 {
